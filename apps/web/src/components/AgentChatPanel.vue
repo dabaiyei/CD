@@ -217,6 +217,38 @@ const runStatusLabel = computed(() => {
   if (liveStream.value?.phase === 'finalizing') return '正在整理结果'
   return 'Agent 正在理解上下文并创作'
 })
+const mediaProgressValue = computed(() => {
+  const value = Number(trackedTask.value?.progress ?? 0)
+  return Math.min(100, Math.max(0, Number.isFinite(value) ? value : 0))
+})
+const mediaProgressIndeterminate = computed(() => (
+  trackedTask.value?.status === 'queued' || mediaProgressValue.value === 0
+))
+const mediaProgressDisplay = computed(() => (
+  trackedTask.value?.status === 'queued' ? '排队中' : `${mediaProgressValue.value}%`
+))
+const currentMediaSpecs = computed(() => {
+  const rawOptions = trackedTask.value?.request_payload?.media_options
+  const taskOptions = rawOptions && typeof rawOptions === 'object'
+    ? rawOptions as Record<string, unknown>
+    : {}
+  const readText = (key: string, fallback: string) => (
+    typeof taskOptions[key] === 'string' && taskOptions[key] ? String(taskOptions[key]) : fallback
+  )
+
+  if (currentRunMode.value === 'video') {
+    const duration = Number(taskOptions.duration_seconds ?? videoDuration.value)
+    return [
+      readText('resolution', videoResolution.value),
+      readText('aspect_ratio', videoAspectRatio.value),
+      `${Number.isFinite(duration) ? duration : videoDuration.value} 秒`,
+    ]
+  }
+  return [
+    readText('resolution', imageResolution.value),
+    readText('aspect_ratio', imageAspectRatio.value),
+  ]
+})
 const enabledUserSkills = computed(() => userSkills.value.filter((skill) => skill.enabled))
 const selectedUserSkills = computed(() => selectedSkillIds.value.flatMap((id) => {
   const skill = enabledUserSkills.value.find((item) => item.id === id)
@@ -1435,18 +1467,47 @@ async function sendMessage(): Promise<void> {
                       <div class="agent-markdown agent-stream-markdown" v-html="streamedMarkdown"></div>
                       <i class="agent-stream-caret" aria-hidden="true"></i>
                     </div>
-                    <div
+                    <section
                       v-else-if="personalMode && ['image', 'video'].includes(currentRunMode)"
-                      class="agent-media-progress"
-                      :data-mode="currentRunMode"
+                      class="agent-generated-media agent-generated-media--pending"
+                      :data-kind="currentRunMode"
                       role="status"
                       aria-live="polite"
                     >
-                      <span><ImageIcon v-if="currentRunMode === 'image'" :size="17" /><Video v-else :size="17" /></span>
-                      <div><strong>{{ currentRunMode === 'image' ? '正在生成图片' : '正在生成视频' }}</strong><small>{{ runStatusLabel }}</small></div>
-                      <b>{{ trackedTask?.progress ?? 0 }}%</b>
-                      <i><span :style="{ width: `${trackedTask?.progress ?? 0}%` }"></span></i>
-                    </div>
+                      <div class="agent-media-progress__preview">
+                        <div class="agent-media-progress__skeleton" aria-hidden="true">
+                          <span></span><span></span><span></span>
+                        </div>
+                        <span class="agent-media-progress__preview-icon">
+                          <ImageIcon v-if="currentRunMode === 'image'" :size="28" />
+                          <Video v-else :size="28" />
+                        </span>
+                        <span class="agent-media-progress__badge"><LoaderCircle class="spin" :size="13" />生成中</span>
+                      </div>
+                      <div class="agent-generated-media__info agent-media-progress__info">
+                        <div>
+                          <span class="agent-generated-media__kind">
+                            <ImageIcon v-if="currentRunMode === 'image'" :size="14" />
+                            <Video v-else :size="14" />
+                          </span>
+                          <span>
+                            <strong>{{ currentRunMode === 'image' ? '正在生成图片' : '正在生成视频' }}</strong>
+                            <Transition name="agent-media-status" mode="out-in">
+                              <small :key="runStatusLabel" class="agent-media-progress__status" :data-text="runStatusLabel">{{ runStatusLabel }}</small>
+                            </Transition>
+                          </span>
+                        </div>
+                        <b class="agent-media-progress__value">{{ mediaProgressDisplay }}</b>
+                      </div>
+                      <footer class="agent-media-progress__footer">
+                        <div class="agent-media-progress__specs" aria-label="生成规格">
+                          <span v-for="spec in currentMediaSpecs" :key="spec">{{ spec }}</span>
+                        </div>
+                        <i class="agent-media-progress__track" :class="{ 'is-indeterminate': mediaProgressIndeterminate }" aria-hidden="true">
+                          <span :style="mediaProgressIndeterminate ? undefined : { width: `${mediaProgressValue}%` }"></span>
+                        </i>
+                      </footer>
+                    </section>
                   </div>
                   <AgentExecutionPanel
                     :steps="liveExecutionSteps"
