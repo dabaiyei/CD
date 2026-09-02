@@ -1185,19 +1185,6 @@ async function saveSkill(): Promise<void> {
 
 <template>
   <div class="admin-page page-stack">
-    <header v-motion="{ preset: 'section' }" class="page-header admin-page__header">
-      <div>
-        <span class="eyebrow">ADMIN CONSOLE</span>
-        <h1>管理控制台</h1>
-        <p>模型、Agent 与创作规则</p>
-      </div>
-      <span v-if="readiness" class="readiness-badge" :data-ready="readiness.ready">
-        <Check v-if="readiness.ready" :size="16" />
-        <CircleAlert v-else :size="16" />
-        {{ readiness.ready ? '核心模型已就绪' : '存在必填配置' }}
-      </span>
-    </header>
-
     <div class="admin-workspace-layout">
       <aside class="admin-settings-rail">
         <span>SETTINGS</span>
@@ -1222,7 +1209,14 @@ async function saveSkill(): Promise<void> {
           <article class="metric"><span>创作手册</span><strong class="tabular-nums">{{ handbooks.length }}</strong><BookOpen :size="20" /></article>
         </div>
         <div class="readiness-panel">
-          <div class="section-heading"><div><h2>系统就绪状态</h2><p>完整创作链路所需的默认模型</p></div></div>
+          <div class="section-heading">
+            <div><h2>系统就绪状态</h2><p>完整创作链路所需的默认模型</p></div>
+            <span v-if="readiness" class="readiness-summary" :data-ready="readiness.ready">
+              <Check v-if="readiness.ready" :size="15" />
+              <CircleAlert v-else :size="15" />
+              {{ readiness.ready ? '核心模型已就绪' : '存在必填配置' }}
+            </span>
+          </div>
           <div class="readiness-list">
             <div v-for="type in (['text', 'image', 'video'] as const)" :key="type">
               <span class="status-icon" :data-ok="readiness?.required_defaults[type]">
@@ -1233,7 +1227,10 @@ async function saveSkill(): Promise<void> {
               <strong>{{ readiness?.required_defaults[type] ? '已配置' : '待配置' }}</strong>
             </div>
             <div>
-              <span class="status-icon" :data-ok="readiness?.optional_defaults.tts"><Check :size="15" /></span>
+              <span class="status-icon" :data-ok="readiness?.optional_defaults.tts">
+                <Check v-if="readiness?.optional_defaults.tts" :size="15" />
+                <CircleAlert v-else :size="15" />
+              </span>
               <span>默认 TTS 模型</span>
               <strong>{{ readiness?.optional_defaults.tts ? '已配置' : '可选' }}</strong>
             </div>
@@ -1243,7 +1240,7 @@ async function saveSkill(): Promise<void> {
 
       <AdminUsersPanel v-else-if="section === 'users'" />
 
-      <section v-else-if="section === 'models'" class="admin-section">
+      <section v-else-if="section === 'models'" class="admin-section model-services-section">
         <header class="section-heading">
           <div><h2>模型服务</h2><p>供应商接入、万能适配协议与模型能力在同一工作台维护</p></div>
           <div class="section-actions">

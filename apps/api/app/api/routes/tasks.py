@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime
+from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy import delete, func, select
@@ -42,6 +43,7 @@ from app.services.task_events import publish_task_event, record_task_event
 from app.services.task_queue import enqueue_task
 
 router = APIRouter(prefix="/tasks", tags=["ai-tasks"])
+TERMINAL_TASK_STATUSES = {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELLED}
 
 
 def task_public(task: AITask, event: TaskEvent | None = None) -> TaskPublic:
@@ -161,6 +163,28 @@ async def list_tasks(
     )
 
 
+@router.delete("", status_code=status.HTTP_204_NO_CONTENT)
+async def clear_tasks(
+    group: Literal["terminal", "failed", "completed"] = Query(default="terminal"),
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    statuses = {
+        "terminal": TERMINAL_TASK_STATUSES,
+        "failed": {TaskStatus.FAILED, TaskStatus.CANCELLED},
+        "completed": {TaskStatus.SUCCEEDED},
+    }[group]
+    await session.execute(
+        delete(AITask).where(
+            AITask.tenant_id == user.tenant_id,
+            AITask.user_id == user.id,
+            AITask.status.in_(statuses),
+            AITask.task_type != "agent_memory_maintenance",
+        )
+    )
+    await session.commit()
+
+
 @router.get("/{task_id}", response_model=TaskPublic)
 async def get_task(
     task_id: str,
@@ -169,6 +193,19 @@ async def get_task(
 ) -> TaskPublic:
     task = await task_for_user(session, task_id, user)
     return await task_public_with_latest_event(session, task)
+
+
+@router.delete("/{task_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_task(
+    task_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    task = await task_for_user(session, task_id, user, for_update=True)
+    if task.status not in TERMINAL_TASK_STATUSES:
+        raise HTTPException(status_code=409, detail="只有已完成、失败或已取消的任务可以删除")
+    await session.delete(task)
+    await session.commit()
 
 
 @router.get("/{task_id}/events", response_model=list[TaskEventPublic])

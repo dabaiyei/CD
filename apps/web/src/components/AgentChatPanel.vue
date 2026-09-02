@@ -11,9 +11,6 @@ import {
   CircleCheckBig,
   Clapperboard,
   Copy,
-  FilePenLine,
-  FilePlus2,
-  Files,
   FolderKanban,
   History,
   Image as ImageIcon,
@@ -56,7 +53,6 @@ import type {
   AgentChatRunQueued,
   AgentChatSession,
   AgentChatSessionDetail,
-  AgentExecutionStep,
   AgentGeneratedMedia,
   AgentProjectFileChangeOutcome,
   DirectorWorkflowDetail,
@@ -78,8 +74,9 @@ const props = withDefaults(
     scene?: 'workspace' | 'director'
     chapterId?: string
     chapterTitle?: string
+    defaultCollapsed?: boolean
   }>(),
-  { projects: () => [], personal: false, scene: 'workspace' },
+  { projects: () => [], personal: false, scene: 'workspace', defaultCollapsed: false },
 )
 const emit = defineEmits<{
   projectFilesChanged: [projectId: string]
@@ -102,13 +99,11 @@ const fileInput = ref<HTMLInputElement | null>(null)
 const contextMenu = ref<HTMLDetailsElement | null>(null)
 const thread = ref<HTMLDivElement | null>(null)
 const stickToLatest = ref(true)
-const expandedFileRuns = ref<string[]>([])
-const expandedExecutionRuns = ref<string[]>([])
-const liveExecutionExpanded = ref(true)
 const focusMode = ref(false)
-const collapsed = ref(false)
+const collapsed = ref(props.defaultCollapsed)
 const copiedMessageId = ref('')
 const cancelling = ref(false)
+const streamHandoff = ref(false)
 const uploadingAttachments = ref(false)
 const pendingAttachments = ref<AgentChatAttachment[]>([])
 const userSkills = ref<UserSkill[]>([])
@@ -292,7 +287,6 @@ watch(
 
 watch(runTaskId, () => {
   resetStreamTyping(streamedText.value)
-  liveExecutionExpanded.value = true
   if (runTaskId.value && props.scene === 'director') requestDirectorWorkflowSync()
 })
 
@@ -925,7 +919,8 @@ function containConversationScroll(event: WheelEvent): void {
   if (event.ctrlKey || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return
 
   const studio = event.currentTarget
-  if (!(studio instanceof HTMLElement) || !studio.contains(document.activeElement)) return
+  if (!(studio instanceof HTMLElement)) return
+  if (!focusMode.value && !studio.contains(document.activeElement)) return
 
   const messageThread = thread.value
   event.stopPropagation()
@@ -982,20 +977,6 @@ function fileChangeCount(message: AgentChatMessage, status: AgentProjectFileChan
   return fileChanges(message).filter((item) => item.status === status).length
 }
 
-function fileChangeLabel(operation: AgentProjectFileChangeOutcome['operation']): string {
-  return {
-    create: '新建',
-    update: '更新',
-    delete: '删除',
-    batch: '批量操作',
-    publish_script_version: '发布剧本',
-    publish_storyboard_version: '发布分镜',
-    queue_asset_prompt_generation: '排队生成提示词',
-    queue_asset_image_generation: '排队生成图片',
-    queue_storyboard_workflow: '启动分镜工作流',
-  }[operation]
-}
-
 function fileSyncTitle(message: AgentChatMessage): string {
   const changes = fileChanges(message)
   if (changes.some((item) => item.operation.startsWith('queue_asset_'))) return '平台任务已安排'
@@ -1005,110 +986,22 @@ function fileSyncTitle(message: AgentChatMessage): string {
   return '项目文件已同步'
 }
 
-function fileChangeDetail(change: AgentProjectFileChangeOutcome): string {
-  if (change.operation === 'queue_asset_prompt_generation') {
-    const count = change.asset_count ?? change.asset_ids?.length ?? 0
-    return `${count} 个资产提示词任务已排队${change.auto_queue_images_after_prompt ? '，完成后自动进入生图' : ''}`
-  }
-  if (change.operation === 'queue_asset_image_generation') {
-    const imageCount = change.asset_count ?? change.asset_ids?.length ?? 0
-    const promptCount = change.prompt_asset_count ?? change.prompt_asset_ids?.length ?? 0
-    if (promptCount && imageCount) return `${promptCount} 个资产先补提示词，${imageCount} 个资产已排队生图`
-    if (promptCount) return `${promptCount} 个资产先补提示词，完成后自动进入生图`
-    return `${imageCount} 个资产生图任务已排队`
-  }
-  if (change.operation === 'queue_storyboard_workflow') {
-    return `分镜工作流已接管，当前阶段：${change.stage || '排队中'}`
-  }
-  return fileChangeLabel(change.operation)
+function fileSyncSummary(message: AgentChatMessage): string {
+  const applied = fileChangeCount(message, 'applied')
+  const conflicts = fileChangeCount(message, 'conflict')
+  const rejected = fileChangeCount(message, 'rejected')
+  const parts = [
+    applied ? `${applied} 项完成` : '',
+    conflicts ? `${conflicts} 项冲突` : '',
+    rejected ? `${rejected} 项受限` : '',
+  ].filter(Boolean)
+  return parts.join(' · ') || `${fileChanges(message).length} 项已记录`
 }
 
-function fileRunExpanded(messageId: string): boolean {
-  return expandedFileRuns.value.includes(messageId)
-}
-
-function executionRunExpanded(messageId: string): boolean {
-  return expandedExecutionRuns.value.includes(messageId)
-}
-
-function toggleExecutionRun(messageId: string): void {
-  expandedExecutionRuns.value = executionRunExpanded(messageId)
-    ? expandedExecutionRuns.value.filter((id) => id !== messageId)
-    : [...expandedExecutionRuns.value, messageId]
-  void nextTick(() => messageVirtualizer.value.measure())
-}
-
-function normalizeExecutionStatus(value: unknown): AgentExecutionStep['status'] {
-  const status = String(value || '').toLowerCase()
-  if (['error', 'failed', 'failure', 'cancelled', 'canceled'].includes(status)) return 'failed'
-  if (['running', 'started', 'pending'].includes(status)) return 'running'
-  return 'succeeded'
-}
-
-function executionSteps(message: AgentChatMessage): AgentExecutionStep[] {
-  const steps: AgentExecutionStep[] = []
-  const byId = new Map<string, AgentExecutionStep>()
-  const activeModels: string[] = []
-  const activeTools: string[] = []
-  let sequence = 0
-  for (const event of message.runtime_events || []) {
-    const type = String(event.type || '')
-    const createdAt = typeof event.created_at === 'string' ? event.created_at : undefined
-    if (type === 'MODEL_CALL_START') {
-      const id = String(event.model_call_id || '') || `model-${++sequence}`
-      const step: AgentExecutionStep = {
-        id,
-        kind: 'model',
-        name: 'Model',
-        status: 'running',
-        startedAt: createdAt,
-      }
-      steps.push(step)
-      byId.set(id, step)
-      activeModels.push(id)
-    } else if (type === 'MODEL_CALL_END') {
-      const id = String(event.model_call_id || '') || activeModels.pop()
-      const step = id ? byId.get(id) : undefined
-      if (step) {
-        step.status = normalizeExecutionStatus(event.state)
-        step.completedAt = createdAt
-      }
-    } else if (type === 'TOOL_CALL_START') {
-      const id = String(event.tool_call_id || '') || `tool-${++sequence}`
-      const step: AgentExecutionStep = {
-        id,
-        kind: 'tool',
-        name: String(event.tool_call_name || 'Tool'),
-        status: 'running',
-        startedAt: createdAt,
-      }
-      steps.push(step)
-      byId.set(id, step)
-      activeTools.push(id)
-    } else if (type === 'TOOL_RESULT_END') {
-      const requestedId = String(event.tool_call_id || '')
-      const id = requestedId || activeTools.pop()
-      const step = id ? byId.get(id) : undefined
-      if (step) {
-        step.status = normalizeExecutionStatus(event.state)
-        step.completedAt = createdAt
-        const activeIndex = activeTools.indexOf(step.id)
-        if (activeIndex >= 0) activeTools.splice(activeIndex, 1)
-      }
-    }
-  }
-  if (message.finish_reason) {
-    steps.forEach((step) => {
-      if (step.status === 'running') step.status = 'succeeded'
-    })
-  }
-  return steps
-}
-
-function toggleFileRun(messageId: string): void {
-  expandedFileRuns.value = fileRunExpanded(messageId)
-    ? expandedFileRuns.value.filter((id) => id !== messageId)
-    : [...expandedFileRuns.value, messageId]
+function fileSyncState(message: AgentChatMessage): 'success' | 'warning' {
+  return fileChangeCount(message, 'conflict') || fileChangeCount(message, 'rejected')
+    ? 'warning'
+    : 'success'
 }
 
 function trackRunTask(task: AITask | null): void {
@@ -1118,6 +1011,7 @@ function trackRunTask(task: AITask | null): void {
     runTaskId.value = ''
     return
   }
+  streamHandoff.value = false
   activity.upsertTask(task)
   runTaskId.value = task.id
   activity.beginAgentStream(task.id, String(task.request_payload.agent_chat_session_id ?? ''))
@@ -1154,9 +1048,13 @@ async function settleRunTask(task: AITask): Promise<void> {
         activity.reconcileAgentStreamText(task.id, assistant.content)
       }
       await finishStreamTyping()
+
+      // Commit the persisted message and remove its live counterpart in one render.
+      streamHandoff.value = true
+      const applyDetail = applySessionDetail(detail, loadVersion, false)
       activity.clearAgentStream(task.id)
       if (runTaskId.value === task.id) runTaskId.value = ''
-      const applied = await applySessionDetail(detail, loadVersion, false)
+      const applied = await applyDetail
       if (!applied) return
       if (task.status === 'succeeded') {
         if (assistant && fileChangeCount(assistant, 'applied')) {
@@ -1191,6 +1089,7 @@ async function settleRunTask(task: AITask): Promise<void> {
       tone: 'error',
     })
   } finally {
+    streamHandoff.value = false
     activity.clearAgentStream(task.id)
     if (runTaskId.value === task.id) trackRunTask(null)
   }
@@ -1490,13 +1389,6 @@ async function sendMessage(): Promise<void> {
                   </details>
                 </section>
 
-                <AgentExecutionPanel
-                  v-if="message.role === 'assistant' && executionSteps(message).length"
-                  :steps="executionSteps(message)"
-                  :expanded="executionRunExpanded(message.id)"
-                  @toggle="toggleExecutionRun(message.id)"
-                />
-
                 <div class="agent-message__actions" :aria-label="message.role === 'user' ? '用户消息操作' : 'Agent 消息操作'">
                   <button type="button" :title="copiedMessageId === message.id ? '已复制' : '复制消息'" @click="copyMessage(message)">
                     <Check v-if="copiedMessageId === message.id" :size="14" />
@@ -1508,42 +1400,18 @@ async function sendMessage(): Promise<void> {
                   </button>
                 </div>
 
-                <section v-if="message.role === 'assistant' && fileChanges(message).length" class="agent-file-sync">
-                  <button
-                    class="agent-file-sync__trigger"
-                    type="button"
-                    :aria-expanded="fileRunExpanded(message.id)"
-                    @click="toggleFileRun(message.id)"
-                  >
-                    <span class="agent-file-sync__icon"><Files :size="16" /></span>
-                    <span>
-                      <strong>{{ fileSyncTitle(message) }}</strong>
-                      <small>
-                        <template v-if="fileChangeCount(message, 'applied')">{{ fileChangeCount(message, 'applied') }} 项已应用</template>
-                        <template v-if="fileChangeCount(message, 'conflict')"> · {{ fileChangeCount(message, 'conflict') }} 项冲突</template>
-                        <template v-if="fileChangeCount(message, 'rejected')"> · {{ fileChangeCount(message, 'rejected') }} 项受限</template>
-                      </small>
-                    </span>
-                    <ChevronDown class="agent-file-sync__chevron" :class="{ active: fileRunExpanded(message.id) }" :size="15" />
-                  </button>
-                  <div class="agent-file-sync__reveal" :class="{ active: fileRunExpanded(message.id) }">
-                    <div>
-                      <ul>
-                        <li v-for="(change, index) in fileChanges(message)" :key="`${change.file_id || change.name}-${index}`" :class="`is-${change.status}`">
-                          <span>
-                            <ImagePlus v-if="change.operation === 'queue_asset_image_generation' || change.operation === 'queue_asset_prompt_generation'" :size="15" />
-                            <FilePlus2 v-else-if="change.operation === 'create'" :size="15" />
-                            <Trash2 v-else-if="change.operation === 'delete'" :size="15" />
-                            <FilePenLine v-else :size="15" />
-                          </span>
-                          <span><strong>{{ change.name }}</strong><small>{{ fileChangeDetail(change) }}<template v-if="change.reason"> · {{ change.reason }}</template></small></span>
-                          <CircleCheckBig v-if="change.status === 'applied'" :size="15" />
-                          <TriangleAlert v-else :size="15" />
-                        </li>
-                      </ul>
-                    </div>
-                  </div>
-                </section>
+                <div
+                  v-if="message.role === 'assistant' && fileChanges(message).length"
+                  class="agent-file-sync"
+                  :data-state="fileSyncState(message)"
+                  role="status"
+                  :aria-label="`${fileSyncTitle(message)}，${fileSyncSummary(message)}`"
+                >
+                  <CircleCheckBig v-if="fileSyncState(message) === 'success'" :size="13" />
+                  <TriangleAlert v-else :size="13" />
+                  <span>{{ fileSyncTitle(message) }}</span>
+                  <small>{{ fileSyncSummary(message) }}</small>
+                </div>
               </div>
                 </article>
               </div>
@@ -1558,7 +1426,7 @@ async function sendMessage(): Promise<void> {
               />
             </Transition>
 
-            <Transition name="agent-stream">
+            <Transition name="agent-stream" :css="!streamHandoff">
               <article v-if="sending" class="agent-message agent-message--assistant agent-message--thinking">
                 <span class="agent-avatar agent-avatar--live"><Sparkles :size="15" /></span>
                 <div class="agent-message__body agent-message__body--streaming">
@@ -1583,9 +1451,6 @@ async function sendMessage(): Promise<void> {
                   <AgentExecutionPanel
                     :steps="liveExecutionSteps"
                     :active="sending"
-                    :expanded="liveExecutionExpanded"
-                    :output-length="displayedStreamText.length"
-                    @toggle="liveExecutionExpanded = !liveExecutionExpanded"
                   />
                 </div>
               </article>

@@ -270,24 +270,11 @@ async function generateCover(): Promise<void> {
 
 <template>
   <div ref="workspaceRoot" class="workspace-page page-stack">
-    <header class="workspace-hero workspace-reveal workspace-reveal--header">
-      <div class="workspace-hero__content">
-        <span class="eyebrow">YOUR PRODUCTION STUDIO</span>
-        <h1>{{ auth.session?.user.display_name }}的创作台</h1>
-        <p>把故事、视觉资产和镜头制作放进同一条清晰的生产线。</p>
-        <div class="workspace-hero__metrics" aria-label="创作台概览">
-          <span><Film :size="15" /><strong class="tabular-nums">{{ projectStore.projects.length }}</strong> 个短剧项目</span>
-          <span><Sparkles :size="15" /><strong class="tabular-nums">{{ projectStore.options?.video_models.length || 0 }}</strong> 个视频模型</span>
-          <span><Palette :size="15" /><strong class="tabular-nums">{{ projectStore.options?.visual_handbooks.length || 0 }}</strong> 套视觉手册</span>
-        </div>
-      </div>
-      <button class="button workspace-hero__action" type="button" aria-label="新建项目" @click="openCreate">
-        <Plus :size="18" />
-        <span>开始新项目</span>
-      </button>
-    </header>
+    <section class="workspace-agent-stage workspace-reveal workspace-reveal--agent" aria-label="AI 创作助手">
+      <AgentChatPanel personal :pricing="projectStore.pricing" />
+    </section>
 
-    <div class="workspace-command-grid">
+    <div class="workspace-command-grid workspace-command-grid--projects">
       <main class="project-library workspace-reveal workspace-reveal--toolbar">
         <header class="project-library__header">
           <div><span>PROJECT LIBRARY</span><h2>制作项目</h2></div>
@@ -297,6 +284,10 @@ async function generateCover(): Promise<void> {
               <input v-model="query" type="search" placeholder="搜索项目" aria-label="搜索项目" />
             </label>
             <span class="result-count tabular-nums">{{ filteredProjects.length }} 个项目</span>
+            <button class="button button--primary workspace-create-button" type="button" @click="openCreate">
+              <Plus :size="17" />
+              <span>新建项目</span>
+            </button>
           </section>
         </header>
 
@@ -329,10 +320,6 @@ async function generateCover(): Promise<void> {
         </section>
       </main>
 
-      <aside class="workspace-agent-column workspace-reveal workspace-reveal--agent">
-        <header><span>AI DESK</span><h2>创作助手</h2><p>灵感、图片与视频在这里直接生成</p></header>
-        <AgentChatPanel personal :pricing="projectStore.pricing" />
-      </aside>
     </div>
 
     <BaseDialog

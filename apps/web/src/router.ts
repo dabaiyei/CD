@@ -3,6 +3,10 @@ import { createRouter, createWebHistory } from 'vue-router'
 import { pinia } from '@/stores'
 import { useAuthStore } from '@/stores/auth'
 
+function defaultAuthenticatedRoute(isAdmin: boolean): string {
+  return isAdmin ? '/admin/overview' : '/workspace'
+}
+
 export const router = createRouter({
   history: createWebHistory(),
   routes: [
@@ -29,7 +33,9 @@ export const router = createRouter({
 router.beforeEach(async (to) => {
   const auth = useAuthStore(pinia)
   await auth.restore()
-  if (to.meta.public) return auth.isAuthenticated ? '/workspace' : true
+  if (to.meta.public) {
+    return auth.isAuthenticated ? defaultAuthenticatedRoute(auth.isAdmin) : true
+  }
   if (!auth.isAuthenticated) return { name: 'login', query: { redirect: to.fullPath } }
   if (to.meta.admin && !auth.isAdmin) return '/workspace'
   return true

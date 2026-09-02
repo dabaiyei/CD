@@ -37,7 +37,7 @@ class ApiModel(BaseModel):
 
 
 class LoginRequest(BaseModel):
-    tenant: str = "demo"
+    tenant: str | None = None
     email: str
     password: str
 

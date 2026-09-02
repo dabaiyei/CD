@@ -1,17 +1,24 @@
 <script setup lang="ts">
-import { computed, ref } from 'vue'
+import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
+import { gsap } from 'gsap'
 import {
   ArrowLeft, Bell, Bot, Boxes, CheckCheck, CircleCheck, CircleX, Clapperboard, Clock3,
   FileOutput, FileSearch, Image, LayoutTemplate, LoaderCircle, MessageSquareText,
-  Music2, RefreshCcw, RotateCcw, Sparkles, Video, WandSparkles, X,
+  Music2, RefreshCcw, RotateCcw, Sparkles, Trash2, Video, WandSparkles, X,
 } from 'lucide-vue-next'
 import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from 'reka-ui'
 
+import BaseDialog from '@/components/BaseDialog.vue'
 import { useActivityStore } from '@/stores/activity'
 import { useToastStore } from '@/stores/toast'
 import type { AITask, NotificationItem, TaskEvent, TaskStatus } from '@/types'
 
 type TaskFilter = 'all' | 'active' | 'failed' | 'completed'
+type DeleteTarget =
+  | { kind: 'task'; id: string; title: string }
+  | { kind: 'tasks'; group: 'terminal' | 'failed' | 'completed'; title: string }
+  | { kind: 'notification'; id: string; title: string }
+  | { kind: 'notifications'; title: string }
 
 const activity = useActivityStore()
 const toast = useToastStore()
@@ -22,6 +29,13 @@ const actionId = ref<string | null>(null)
 const selectedTask = ref<AITask | null>(null)
 const selectedEvents = ref<TaskEvent[]>([])
 const detailLoading = ref(false)
+const animationRoot = ref<HTMLElement | null>(null)
+const triggerIcon = ref<HTMLElement | null>(null)
+const deleteTarget = ref<DeleteTarget | null>(null)
+const deleteLoading = ref(false)
+const reducedMotion = ref(false)
+let motionContext: gsap.Context | undefined
+let motionMedia: gsap.MatchMedia | undefined
 
 function closePanel(): void {
   open.value = false
@@ -35,6 +49,25 @@ const filteredTasks = computed(() => activity.tasks.filter((task) => {
   if (filter.value === 'completed') return task.status === 'succeeded'
   return true
 }))
+const terminalTaskCount = computed(() => activity.tasks.filter((task) => (
+  ['succeeded', 'failed', 'cancelled'] as TaskStatus[]
+).includes(task.status)).length)
+const filteredTerminalCount = computed(() => filteredTasks.value.filter((task) => (
+  ['succeeded', 'failed', 'cancelled'] as TaskStatus[]
+).includes(task.status)).length)
+const clearTaskLabel = computed(() => {
+  if (filter.value === 'failed') return '清空失败任务'
+  if (filter.value === 'completed') return '清空已完成'
+  return '清空已结束'
+})
+const deleteDescription = computed(() => {
+  const target = deleteTarget.value
+  if (!target) return ''
+  if (target.kind === 'task') return '该任务的执行轨迹及关联任务通知会一并删除，生成结果文件不会受影响。'
+  if (target.kind === 'tasks') return '只清理当前范围内已完成、失败或已取消的任务，不会中断排队中和运行中的任务。'
+  if (target.kind === 'notification') return '该通知会从你的动态中心永久移除。'
+  return '当前账号的全部消息通知都会被永久移除，任务记录不会受影响。'
+})
 
 const statusCopy: Record<TaskStatus, { label: string; icon: typeof Clock3 }> = {
   queued: { label: '排队中', icon: Clock3 },
@@ -147,16 +180,148 @@ async function taskAction(task: AITask, action: 'retry' | 'cancel'): Promise<voi
     actionId.value = null
   }
 }
+
+function resetMotionContext(): void {
+  motionContext?.revert()
+  motionContext = animationRoot.value ? gsap.context(() => undefined, animationRoot.value) : undefined
+}
+
+async function animateOverview(): Promise<void> {
+  await nextTick()
+  if (!animationRoot.value || reducedMotion.value) return
+  resetMotionContext()
+  motionContext?.add(() => {
+    gsap.fromTo(
+      '.activity-panel__header > *',
+      { autoAlpha: 0, y: 7 },
+      { autoAlpha: 1, y: 0, duration: 0.28, stagger: 0.045, ease: 'power2.out', clearProps: 'all' },
+    )
+    gsap.fromTo(
+      '.activity-tabs > button',
+      { autoAlpha: 0, y: 6, scale: 0.98 },
+      { autoAlpha: 1, y: 0, scale: 1, duration: 0.26, stagger: 0.04, ease: 'power2.out', clearProps: 'all' },
+    )
+    gsap.fromTo(
+      '.activity-list > .task-activity, .activity-list > .notification-activity',
+      { autoAlpha: 0, y: 8, scale: 0.985 },
+      { autoAlpha: 1, y: 0, scale: 1, duration: 0.3, stagger: { amount: 0.28 }, ease: 'power2.out', clearProps: 'all' },
+    )
+  })
+}
+
+async function animateList(): Promise<void> {
+  await nextTick()
+  if (!animationRoot.value || reducedMotion.value) return
+  const rows = animationRoot.value.querySelectorAll<HTMLElement>(
+    '.activity-list > .task-activity, .activity-list > .notification-activity',
+  )
+  gsap.killTweensOf(rows)
+  gsap.fromTo(
+    rows,
+    { autoAlpha: 0, y: 6 },
+    { autoAlpha: 1, y: 0, duration: 0.24, stagger: { amount: 0.22 }, ease: 'power2.out', clearProps: 'all' },
+  )
+}
+
+async function animateRemoval(selector: string): Promise<void> {
+  const elements = animationRoot.value?.querySelectorAll<HTMLElement>(selector)
+  if (!elements?.length || reducedMotion.value) return
+  await new Promise<void>((resolve) => {
+    gsap.to(elements, {
+      autoAlpha: 0,
+      x: 12,
+      scale: 0.985,
+      duration: 0.2,
+      stagger: { amount: 0.18 },
+      ease: 'power2.in',
+      onComplete: resolve,
+    })
+  })
+}
+
+function requestTaskDelete(task: AITask): void {
+  deleteTarget.value = { kind: 'task', id: task.id, title: metaFor(task).title }
+}
+
+function requestTaskClear(): void {
+  const group = filter.value === 'failed' ? 'failed' : filter.value === 'completed' ? 'completed' : 'terminal'
+  deleteTarget.value = { kind: 'tasks', group, title: clearTaskLabel.value }
+}
+
+function requestNotificationDelete(item: NotificationItem): void {
+  deleteTarget.value = { kind: 'notification', id: item.id, title: item.title }
+}
+
+async function confirmDelete(): Promise<void> {
+  const target = deleteTarget.value
+  if (!target || deleteLoading.value) return
+  deleteLoading.value = true
+  try {
+    if (target.kind === 'task') {
+      await animateRemoval(`[data-task-id="${target.id}"]`)
+      await activity.deleteTask(target.id)
+      if (selectedTask.value?.id === target.id) selectedTask.value = null
+    } else if (target.kind === 'tasks') {
+      await animateRemoval('.task-activity[data-terminal="true"]')
+      await activity.clearTasks(target.group)
+      selectedTask.value = null
+    } else if (target.kind === 'notification') {
+      await animateRemoval(`[data-notification-id="${target.id}"]`)
+      await activity.deleteNotification(target.id)
+    } else {
+      await animateRemoval('.notification-activity')
+      await activity.clearNotifications()
+    }
+    deleteTarget.value = null
+    toast.show(target.kind === 'task' || target.kind === 'tasks' ? '任务记录已清理' : '消息通知已清理', { tone: 'success' })
+  } catch (error) {
+    await activity.refresh()
+    await animateList()
+    toast.show('清理失败', { message: error instanceof Error ? error.message : undefined, tone: 'error' })
+  } finally {
+    deleteLoading.value = false
+  }
+}
+
+watch(open, (isOpen) => {
+  if (isOpen) void animateOverview()
+  else motionContext?.revert()
+})
+watch([tab, filter], () => void animateList())
+watch(badgeCount, (count, previous) => {
+  if (count <= previous || reducedMotion.value || !triggerIcon.value) return
+  gsap.fromTo(
+    triggerIcon.value,
+    { scale: 0.25, autoAlpha: 0, filter: 'blur(4px)', rotation: -12 },
+    { scale: 1, autoAlpha: 1, filter: 'blur(0px)', rotation: 0, duration: 0.3, ease: 'power2.out', overwrite: 'auto' },
+  )
+})
+
+onMounted(() => {
+  motionMedia = gsap.matchMedia()
+  motionMedia.add('(prefers-reduced-motion: reduce)', () => {
+    reducedMotion.value = true
+    return () => { reducedMotion.value = false }
+  })
+})
+
+onUnmounted(() => {
+  if (animationRoot.value) gsap.killTweensOf(animationRoot.value.querySelectorAll('*'))
+  motionContext?.revert()
+  motionMedia?.revert()
+  if (triggerIcon.value) gsap.killTweensOf(triggerIcon.value)
+})
 </script>
 
 <template>
   <PopoverRoot v-model:open="open">
     <PopoverTrigger class="icon-button activity-trigger" type="button" title="任务与通知" aria-label="任务与通知">
-      <Bell :size="18" />
+      <span ref="triggerIcon" class="activity-trigger__icon"><Bell :size="18" /></span>
       <span v-if="badgeCount" class="activity-trigger__badge">{{ Math.min(badgeCount, 99) }}</span>
     </PopoverTrigger>
     <PopoverPortal>
       <PopoverContent class="activity-panel" :side-offset="10" align="end">
+        <div ref="animationRoot" class="activity-panel__inner">
         <Transition name="activity-view" mode="out-in">
           <section v-if="selectedTask" :key="`detail-${selectedTask.id}`" class="activity-detail">
             <header class="activity-panel__header activity-detail__header">
@@ -208,9 +373,10 @@ async function taskAction(task: AITask, action: 'retry' | 'cancel'): Promise<voi
               </section>
             </div>
 
-            <footer v-if="['queued', 'failed', 'cancelled'].includes(selectedTask.status)" class="task-detail-actions">
+            <footer v-if="selectedTask.status !== 'running'" class="task-detail-actions">
               <button v-if="selectedTask.status === 'queued'" type="button" :disabled="actionId === selectedTask.id" @click="taskAction(selectedTask, 'cancel')"><X :size="15" />取消任务</button>
-              <button v-else class="primary" type="button" :disabled="actionId === selectedTask.id" @click="taskAction(selectedTask, 'retry')"><RotateCcw :size="15" />重新执行</button>
+              <button v-if="selectedTask.status === 'failed' || selectedTask.status === 'cancelled'" class="primary" type="button" :disabled="actionId === selectedTask.id" @click="taskAction(selectedTask, 'retry')"><RotateCcw :size="15" />重新执行</button>
+              <button v-if="['succeeded', 'failed', 'cancelled'].includes(selectedTask.status)" class="danger" type="button" @click="requestTaskDelete(selectedTask)"><Trash2 :size="15" />删除记录</button>
             </footer>
           </section>
 
@@ -238,9 +404,11 @@ async function taskAction(task: AITask, action: 'retry' | 'cancel'): Promise<voi
             <section v-if="tab === 'tasks'" class="activity-task-view">
               <div class="activity-filters" aria-label="任务状态筛选">
                 <button v-for="item in filters" :key="item.value" :class="{ active: filter === item.value }" type="button" @click="filter = item.value">{{ item.label }}</button>
+                <span class="activity-filters__spacer"></span>
+                <button v-if="filter !== 'active' && filteredTerminalCount" class="activity-clear-button" type="button" @click="requestTaskClear"><Trash2 :size="13" />{{ clearTaskLabel }} <span>{{ filter === 'all' ? terminalTaskCount : filteredTerminalCount }}</span></button>
               </div>
               <div class="activity-list">
-                <article v-for="(task, index) in filteredTasks" :key="task.id" v-motion="{ preset: 'row', index }" class="task-activity" :data-status="task.status">
+                <article v-for="task in filteredTasks" :key="task.id" class="task-activity" :data-task-id="task.id" :data-status="task.status" :data-terminal="['succeeded', 'failed', 'cancelled'].includes(task.status)">
                   <button class="task-activity__open" type="button" @click="openTask(task)">
                     <span class="task-activity__icon"><component :is="metaFor(task).icon" :size="18" /></span>
                     <span class="task-activity__body">
@@ -250,28 +418,47 @@ async function taskAction(task: AITask, action: 'retry' | 'cancel'): Promise<voi
                     </span>
                     <span class="task-activity__status"><component :is="statusCopy[task.status].icon" :class="{ spin: task.status === 'running' }" :size="14" />{{ task.status === 'running' ? `${task.progress}%` : statusCopy[task.status].label }}</span>
                   </button>
-                  <button v-if="task.status === 'failed' || task.status === 'cancelled'" class="task-activity__action" type="button" :disabled="actionId === task.id" @click="taskAction(task, 'retry')"><RotateCcw :size="14" />重试</button>
-                  <button v-else-if="task.status === 'queued'" class="task-activity__action" type="button" :disabled="actionId === task.id" @click="taskAction(task, 'cancel')"><X :size="14" />取消</button>
+                  <span v-if="task.status !== 'running'" class="task-activity__actions">
+                    <button v-if="task.status === 'failed' || task.status === 'cancelled'" class="task-activity__action" type="button" :disabled="actionId === task.id" title="重新执行" @click="taskAction(task, 'retry')"><RotateCcw :size="14" /><span>重试</span></button>
+                    <button v-else-if="task.status === 'queued'" class="task-activity__action" type="button" :disabled="actionId === task.id" title="取消任务" @click="taskAction(task, 'cancel')"><X :size="14" /><span>取消</span></button>
+                    <button v-if="['succeeded', 'failed', 'cancelled'].includes(task.status)" class="task-activity__delete" type="button" title="删除任务记录" aria-label="删除任务记录" @click="requestTaskDelete(task)"><Trash2 :size="14" /></button>
+                  </span>
                 </article>
                 <div v-if="!filteredTasks.length" class="activity-empty"><Clock3 :size="24" /><span>当前筛选下暂无任务</span></div>
               </div>
             </section>
 
             <div v-else class="activity-list notification-list">
-              <button v-for="(item, index) in activity.notifications" :key="item.id" v-motion="{ preset: 'row', index }" class="notification-activity" :class="{ unread: !item.is_read }" type="button" @click="openNotification(item)">
-                <span class="notification-activity__icon"><Bell :size="15" /></span>
-                <span><strong>{{ item.title }}</strong><p>{{ item.message }}</p><time>{{ relativeTime(item.created_at) }}</time></span>
-                <span v-if="!item.is_read" class="notification-activity__dot"></span>
-              </button>
+              <article v-for="item in activity.notifications" :key="item.id" class="notification-activity" :class="{ unread: !item.is_read }" :data-notification-id="item.id">
+                <button class="notification-activity__open" type="button" @click="openNotification(item)">
+                  <span class="notification-activity__icon"><Bell :size="15" /></span>
+                  <span><strong>{{ item.title }}</strong><p>{{ item.message }}</p><time>{{ relativeTime(item.created_at) }}</time></span>
+                  <span v-if="!item.is_read" class="notification-activity__dot"></span>
+                </button>
+                <button class="notification-activity__delete" type="button" title="删除通知" aria-label="删除通知" @click="requestNotificationDelete(item)"><Trash2 :size="14" /></button>
+              </article>
               <div v-if="!activity.notifications.length" class="activity-empty"><Bell :size="24" /><span>暂无消息通知</span></div>
             </div>
 
-            <footer v-if="tab === 'notifications' && activity.unreadCount" class="activity-panel__footer">
-              <button type="button" @click="activity.markAllRead"><CheckCheck :size="15" />全部标为已读</button>
+            <footer v-if="tab === 'notifications' && activity.notifications.length" class="activity-panel__footer">
+              <button v-if="activity.unreadCount" type="button" @click="activity.markAllRead"><CheckCheck :size="15" />全部已读</button>
+              <button class="danger" type="button" @click="deleteTarget = { kind: 'notifications', title: '清空全部通知' }"><Trash2 :size="15" />清空通知</button>
             </footer>
           </section>
         </Transition>
+        </div>
       </PopoverContent>
     </PopoverPortal>
   </PopoverRoot>
+
+  <BaseDialog :open="deleteTarget !== null" title="确认清理记录" @update:open="!$event && !deleteLoading && (deleteTarget = null)">
+    <div class="danger-confirm">
+      <span><Trash2 :size="22" /></span>
+      <div><strong>{{ deleteTarget?.title }}</strong><p>{{ deleteDescription }}</p></div>
+    </div>
+    <template #footer>
+      <button class="button button--ghost" type="button" :disabled="deleteLoading" @click="deleteTarget = null">取消</button>
+      <button class="button button--danger" type="button" :disabled="deleteLoading" @click="confirmDelete"><LoaderCircle v-if="deleteLoading" class="spin" :size="16" /><Trash2 v-else :size="16" />确认清理</button>
+    </template>
+  </BaseDialog>
 </template>

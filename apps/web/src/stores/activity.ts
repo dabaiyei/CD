@@ -297,6 +297,17 @@ export const useActivityStore = defineStore('activity', {
       this.notifications.forEach((item) => (item.is_read = true))
       this.unreadCount = 0
     },
+    async deleteNotification(id: string): Promise<void> {
+      await api(`/notifications/${id}`, { method: 'DELETE' })
+      const item = this.notifications.find((notification) => notification.id === id)
+      if (item && !item.is_read) this.unreadCount = Math.max(0, this.unreadCount - 1)
+      this.notifications = this.notifications.filter((notification) => notification.id !== id)
+    },
+    async clearNotifications(): Promise<void> {
+      await api('/notifications', { method: 'DELETE' })
+      this.notifications = []
+      this.unreadCount = 0
+    },
     async retryTask(id: string): Promise<void> {
       await api(`/tasks/${id}/retry`, { method: 'POST' })
       await this.refresh()
@@ -304,6 +315,40 @@ export const useActivityStore = defineStore('activity', {
     async cancelTask(id: string): Promise<void> {
       await api(`/tasks/${id}/cancel`, { method: 'POST' })
       await this.refresh()
+    },
+    async deleteTask(id: string): Promise<void> {
+      await api(`/tasks/${id}`, { method: 'DELETE' })
+      this.tasks = this.tasks.filter((task) => task.id !== id)
+      delete this.agentStreams[id]
+      const removed = this.notifications.filter((notification) => notification.task_id === id)
+      this.unreadCount = Math.max(
+        0,
+        this.unreadCount - removed.filter((notification) => !notification.is_read).length,
+      )
+      this.notifications = this.notifications.filter((notification) => notification.task_id !== id)
+    },
+    async clearTasks(group: 'terminal' | 'failed' | 'completed'): Promise<void> {
+      await api(`/tasks?group=${group}`, { method: 'DELETE' })
+      const removableStatuses = group === 'completed'
+        ? new Set<TaskStatus>(['succeeded'])
+        : group === 'failed'
+          ? new Set<TaskStatus>(['failed', 'cancelled'])
+          : new Set<TaskStatus>(['succeeded', 'failed', 'cancelled'])
+      const removedIds = new Set(
+        this.tasks.filter((task) => removableStatuses.has(task.status)).map((task) => task.id),
+      )
+      this.tasks = this.tasks.filter((task) => !removedIds.has(task.id))
+      removedIds.forEach((id) => delete this.agentStreams[id])
+      const removedNotifications = this.notifications.filter(
+        (notification) => notification.task_id && removedIds.has(notification.task_id),
+      )
+      this.unreadCount = Math.max(
+        0,
+        this.unreadCount - removedNotifications.filter((notification) => !notification.is_read).length,
+      )
+      this.notifications = this.notifications.filter(
+        (notification) => !notification.task_id || !removedIds.has(notification.task_id),
+      )
     },
     async taskEvents(id: string): Promise<TaskEvent[]> {
       return api<TaskEvent[]>(`/tasks/${id}/events`)

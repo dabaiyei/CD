@@ -7,7 +7,7 @@ from collections.abc import AsyncIterator
 from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from fastapi.responses import StreamingResponse
 from redis.exceptions import RedisError
-from sqlalchemy import func, select, update
+from sqlalchemy import delete, func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
@@ -166,4 +166,37 @@ async def read_all_notifications(
         )
         .values(is_read=True)
     )
+    await session.commit()
+
+
+@router.delete("", status_code=204)
+async def clear_notifications(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    await session.execute(
+        delete(Notification).where(
+            Notification.tenant_id == user.tenant_id,
+            Notification.user_id == user.id,
+        )
+    )
+    await session.commit()
+
+
+@router.delete("/{notification_id}", status_code=204)
+async def delete_notification(
+    notification_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    notification = await session.scalar(
+        select(Notification).where(
+            Notification.id == notification_id,
+            Notification.tenant_id == user.tenant_id,
+            Notification.user_id == user.id,
+        )
+    )
+    if notification is None:
+        raise HTTPException(status_code=404, detail="通知不存在")
+    await session.delete(notification)
     await session.commit()

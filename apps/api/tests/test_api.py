@@ -18,7 +18,7 @@ from sqlalchemy import delete, select, update
 
 from app.api.routes import admin as admin_routes
 from app.api.routes import auth as auth_routes
-from app.core.security import decode_access_token, decode_refresh_token, verify_password
+from app.core.security import decode_access_token, decode_refresh_token, hash_password, verify_password
 from app.db.models import (
     AIModel,
     AITask,
@@ -37,6 +37,7 @@ from app.db.models import (
     RefreshSession,
     SecurityEvent,
     TaskStatus,
+    Tenant,
     User,
 )
 from app.db.session import SessionLocal
@@ -670,6 +671,88 @@ def test_health_and_login(client: TestClient, creator_headers: dict[str, str]) -
     assert response.status_code == 200
     assert response.json()["user"]["role"] == "user"
     assert Decimal(response.json()["credit_balance"]) == Decimal("1280.00")
+
+
+def test_login_resolves_tenant_from_unique_email(client: TestClient) -> None:
+    response = client.post(
+        "/api/v1/auth/login",
+        json={"email": "creator@cineforge.local", "password": "Creator123!"},
+    )
+    assert response.status_code == 200
+    session = client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {response.json()['access_token']}"},
+    )
+    assert session.status_code == 200
+    assert session.json()["tenant_slug"] == "demo"
+    assert session.json()["user"]["role"] == "user"
+
+    admin = client.post(
+        "/api/v1/auth/login",
+        json={"email": "admin@cineforge.local", "password": "Admin123!"},
+    )
+    assert admin.status_code == 200
+    admin_session = client.get(
+        "/api/v1/auth/me",
+        headers={"Authorization": f"Bearer {admin.json()['access_token']}"},
+    )
+    assert admin_session.json()["user"]["role"] == "admin"
+
+
+def test_login_rejects_ambiguous_cross_tenant_email(client: TestClient) -> None:
+    email = "shared-login@cineforge.local"
+
+    async def create_duplicate_accounts() -> tuple[str, str, str, str]:
+        async with SessionLocal() as session:
+            first_tenant = Tenant(name="第一测试租户", slug="login-first")
+            second_tenant = Tenant(name="第二测试租户", slug="login-second")
+            session.add_all([first_tenant, second_tenant])
+            await session.flush()
+            first_user = User(
+                tenant_id=first_tenant.id,
+                email=email,
+                display_name="测试用户一",
+                password_hash=hash_password("SharedLogin123!"),
+            )
+            second_user = User(
+                tenant_id=second_tenant.id,
+                email=email,
+                display_name="测试用户二",
+                password_hash=hash_password("SharedLogin123!"),
+            )
+            session.add_all([first_user, second_user])
+            await session.commit()
+            return first_tenant.id, second_tenant.id, first_user.id, second_user.id
+
+    async def remove_duplicate_accounts(ids: tuple[str, str, str, str]) -> None:
+        first_tenant_id, second_tenant_id, first_user_id, second_user_id = ids
+        async with SessionLocal() as session:
+            await session.execute(delete(User).where(User.id.in_([first_user_id, second_user_id])))
+            await session.execute(
+                delete(Tenant).where(Tenant.id.in_([first_tenant_id, second_tenant_id]))
+            )
+            await session.commit()
+
+    ids = asyncio.run(create_duplicate_accounts())
+    try:
+        ambiguous = client.post(
+            "/api/v1/auth/login",
+            json={"email": email, "password": "SharedLogin123!"},
+        )
+        assert ambiguous.status_code == 409
+        assert ambiguous.json()["detail"] == "该邮箱关联了多个租户，请联系管理员处理账号归属"
+
+        legacy = client.post(
+            "/api/v1/auth/login",
+            json={
+                "tenant": "login-first",
+                "email": email,
+                "password": "SharedLogin123!",
+            },
+        )
+        assert legacy.status_code == 200
+    finally:
+        asyncio.run(remove_duplicate_accounts(ids))
 
 
 def test_refresh_token_rotation_replay_and_logout(client: TestClient) -> None:
@@ -1942,6 +2025,172 @@ def test_failed_task_refunds_and_can_be_retried_then_cancelled(
     read_all = client.post("/api/v1/notifications/read-all", headers=creator_headers)
     assert read_all.status_code == 204
     assert client.get("/api/v1/notifications", headers=creator_headers).json()["unread_count"] == 0
+
+
+def test_activity_records_can_be_deleted_without_cross_user_access(
+    client: TestClient,
+    admin_headers: dict[str, str],
+) -> None:
+    email = "activity-cleanup@cineforge.local"
+    password = "Activity123!"
+    created_user_id = ""
+    admin_notification_id = ""
+
+    async def cleanup() -> None:
+        async with SessionLocal() as session:
+            if admin_notification_id:
+                await session.execute(
+                    delete(Notification).where(Notification.id == admin_notification_id)
+                )
+            if created_user_id:
+                await session.execute(delete(RefreshSession).where(RefreshSession.user_id == created_user_id))
+                await session.execute(delete(CreditLedger).where(CreditLedger.user_id == created_user_id))
+                await session.execute(delete(CreditAccount).where(CreditAccount.user_id == created_user_id))
+                await session.execute(delete(User).where(User.id == created_user_id))
+            await session.commit()
+
+    try:
+        created = client.post(
+            "/api/v1/admin/users",
+            headers=admin_headers,
+            json={
+                "email": email,
+                "display_name": "动态中心测试用户",
+                "password": password,
+                "role": "user",
+                "initial_credits": "0",
+            },
+        )
+        assert created.status_code == 201
+        created_user_id = created.json()["id"]
+        login = client.post(
+            "/api/v1/auth/login",
+            json={"tenant": "demo", "email": email, "password": password},
+        )
+        assert login.status_code == 200
+        user_headers = {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+        async def seed_records() -> tuple[str, str, str, str, str]:
+            nonlocal admin_notification_id
+            async with SessionLocal() as session:
+                user = await session.get(User, created_user_id)
+                admin = await session.scalar(select(User).where(User.email == "admin@cineforge.local"))
+                assert user is not None and admin is not None
+                succeeded = AITask(
+                    tenant_id=user.tenant_id,
+                    user_id=user.id,
+                    task_type="activity_delete_succeeded",
+                    status=TaskStatus.SUCCEEDED,
+                )
+                second_succeeded = AITask(
+                    tenant_id=user.tenant_id,
+                    user_id=user.id,
+                    task_type="activity_clear_succeeded",
+                    status=TaskStatus.SUCCEEDED,
+                )
+                failed = AITask(
+                    tenant_id=user.tenant_id,
+                    user_id=user.id,
+                    task_type="activity_clear_failed",
+                    status=TaskStatus.FAILED,
+                )
+                queued = AITask(
+                    tenant_id=user.tenant_id,
+                    user_id=user.id,
+                    task_type="activity_keep_queued",
+                    status=TaskStatus.QUEUED,
+                )
+                session.add_all([succeeded, second_succeeded, failed, queued])
+                await session.flush()
+                linked_notice = Notification(
+                    tenant_id=user.tenant_id,
+                    user_id=user.id,
+                    task_id=succeeded.id,
+                    category="task",
+                    title="已完成任务",
+                    message="应随任务删除",
+                )
+                standalone_notice = Notification(
+                    tenant_id=user.tenant_id,
+                    user_id=user.id,
+                    category="system",
+                    title="独立消息",
+                    message="支持单独删除",
+                )
+                failed_notice = Notification(
+                    tenant_id=user.tenant_id,
+                    user_id=user.id,
+                    task_id=failed.id,
+                    category="task",
+                    title="失败任务",
+                    message="支持清空",
+                )
+                admin_notice = Notification(
+                    tenant_id=admin.tenant_id,
+                    user_id=admin.id,
+                    category="system",
+                    title="管理员消息",
+                    message="不得被其他用户清空",
+                )
+                session.add_all([linked_notice, standalone_notice, failed_notice, admin_notice])
+                await session.commit()
+                admin_notification_id = admin_notice.id
+                return (
+                    succeeded.id,
+                    second_succeeded.id,
+                    failed.id,
+                    queued.id,
+                    standalone_notice.id,
+                )
+
+        succeeded_id, second_succeeded_id, failed_id, queued_id, standalone_notice_id = asyncio.run(
+            seed_records()
+        )
+
+        assert client.delete(f"/api/v1/tasks/{queued_id}", headers=user_headers).status_code == 409
+        assert client.delete(f"/api/v1/tasks/{succeeded_id}", headers=admin_headers).status_code == 404
+        assert (
+            client.delete(
+                f"/api/v1/notifications/{standalone_notice_id}", headers=admin_headers
+            ).status_code
+            == 404
+        )
+
+        assert client.delete(f"/api/v1/tasks/{succeeded_id}", headers=user_headers).status_code == 204
+        assert client.get(f"/api/v1/tasks/{succeeded_id}", headers=user_headers).status_code == 404
+        notifications = client.get("/api/v1/notifications", headers=user_headers).json()["items"]
+        assert all(item["task_id"] != succeeded_id for item in notifications)
+
+        assert (
+            client.delete(
+                f"/api/v1/notifications/{standalone_notice_id}", headers=user_headers
+            ).status_code
+            == 204
+        )
+        assert client.delete("/api/v1/notifications", headers=user_headers).status_code == 204
+        assert client.get("/api/v1/notifications", headers=user_headers).json() == {
+            "items": [],
+            "unread_count": 0,
+        }
+        admin_notifications = client.get("/api/v1/notifications", headers=admin_headers).json()["items"]
+        assert any(item["id"] == admin_notification_id for item in admin_notifications)
+
+        assert client.delete("/api/v1/tasks?group=failed", headers=user_headers).status_code == 204
+        remaining_ids = {
+            item["id"] for item in client.get("/api/v1/tasks", headers=user_headers).json()["items"]
+        }
+        assert failed_id not in remaining_ids
+        assert second_succeeded_id in remaining_ids
+        assert queued_id in remaining_ids
+
+        assert client.delete("/api/v1/tasks?group=completed", headers=user_headers).status_code == 204
+        remaining_ids = {
+            item["id"] for item in client.get("/api/v1/tasks", headers=user_headers).json()["items"]
+        }
+        assert second_succeeded_id not in remaining_ids
+        assert queued_id in remaining_ids
+    finally:
+        asyncio.run(cleanup())
 
 
 def test_stale_synchronous_media_task_fails_and_refunds_from_database(

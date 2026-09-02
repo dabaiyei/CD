@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { gsap } from 'gsap'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ChevronDown,
@@ -8,10 +9,14 @@ import {
   BrainCircuit,
   LayoutGrid,
   LogOut,
-  Settings2,
   ShieldCheck,
 } from 'lucide-vue-next'
-import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from 'reka-ui'
+import {
+  PopoverContent,
+  PopoverPortal,
+  PopoverRoot,
+  PopoverTrigger,
+} from 'reka-ui'
 
 import { useAuthStore } from '@/stores/auth'
 import { useActivityStore } from '@/stores/activity'
@@ -25,13 +30,14 @@ const route = useRoute()
 const router = useRouter()
 const { theme } = useTheme()
 const accountMenuOpen = ref(false)
+const topbarRef = ref<HTMLElement | null>(null)
 
-const currentSection = computed(() => {
+const currentSectionImage = computed(() => {
   const light = theme.value === 'light'
-  if (route.name === 'director') return { eyebrow: 'PRODUCTION', title: '导演制作台', image: light ? '/covers/studio-hero-light.webp' : '/covers/default-project-city-v2-wide.webp', caption: 'Director suite' }
-  if (route.path.startsWith('/skills')) return { eyebrow: 'CAPABILITIES', title: '我的 Skills', image: light ? '/covers/skills-lab-light.webp' : '/covers/skills-lab-v2.webp', caption: 'Skill library' }
-  if (route.path.startsWith('/admin')) return { eyebrow: 'ADMINISTRATION', title: '系统管理', image: light ? '/covers/admin-console-light.webp' : '/covers/admin-console-v2.webp', caption: 'Control room' }
-  return { eyebrow: 'STUDIO', title: '项目创作台', image: light ? '/covers/studio-hero-light.webp' : '/covers/studio-hero-v2.webp', caption: 'Production floor' }
+  if (route.name === 'director') return light ? '/covers/studio-hero-light.webp' : '/covers/default-project-city-v2-wide.webp'
+  if (route.path.startsWith('/skills')) return light ? '/covers/skills-lab-light.webp' : '/covers/skills-lab-v2.webp'
+  if (route.path.startsWith('/admin')) return light ? '/covers/admin-console-light.webp' : '/covers/admin-console-v2.webp'
+  return light ? '/covers/studio-hero-light.webp' : '/covers/studio-hero-v2.webp'
 })
 
 const navItems = computed(() => [
@@ -42,8 +48,40 @@ const navItems = computed(() => [
     : []),
 ])
 
-onMounted(() => activity.start())
-onUnmounted(() => activity.stop())
+onMounted(() => {
+  activity.start()
+})
+
+onUnmounted(() => {
+  activity.stop()
+  if (topbarRef.value) gsap.killTweensOf(topbarRef.value)
+})
+
+function moveTopbarScene(event: PointerEvent): void {
+  const topbar = topbarRef.value
+  if (!topbar || window.matchMedia('(prefers-reduced-motion: reduce), (pointer: coarse)').matches) return
+  const bounds = topbar.getBoundingClientRect()
+  const x = ((event.clientX - bounds.left) / bounds.width - 0.5) * 20
+  const y = ((event.clientY - bounds.top) / bounds.height - 0.5) * 10
+  gsap.to(topbar, {
+    '--masthead-x': `${x}px`,
+    '--masthead-y': `${y}px`,
+    duration: 0.72,
+    ease: 'power3.out',
+    overwrite: 'auto',
+  })
+}
+
+function resetTopbarScene(): void {
+  if (!topbarRef.value) return
+  gsap.to(topbarRef.value, {
+    '--masthead-x': '0px',
+    '--masthead-y': '0px',
+    duration: 0.9,
+    ease: 'power3.out',
+    overwrite: 'auto',
+  })
+}
 
 async function logout(): Promise<void> {
   accountMenuOpen.value = false
@@ -53,71 +91,77 @@ async function logout(): Promise<void> {
 </script>
 
 <template>
-  <div class="app-shell">
-    <aside class="sidebar">
-      <RouterLink class="brand" to="/workspace" aria-label="CineForge 创作台">
-        <span class="brand__mark"><Clapperboard :size="20" /></span>
-        <span class="brand__name"><strong>CineForge</strong><small>Production OS</small></span>
-      </RouterLink>
-
-      <span class="sidebar__label">Workspace</span>
-      <nav class="primary-nav" aria-label="主导航">
-        <RouterLink
-          v-for="item in navItems"
-          :key="item.to"
-          class="nav-item"
-          :class="{ 'nav-item--active': item.active }"
-          :to="item.to"
-        >
-          <component :is="item.icon" :size="19" stroke-width="1.8" />
-          <span>{{ item.label }}</span>
-        </RouterLink>
-      </nav>
-
-      <figure class="sidebar-scene" aria-hidden="true">
-        <img :src="currentSection.image" alt="" />
-        <figcaption><i></i><span>{{ currentSection.caption }}</span></figcaption>
-      </figure>
-
-      <div class="sidebar__footer">
-        <RouterLink v-if="auth.isAdmin" class="nav-item" to="/admin/overview">
-          <Settings2 :size="19" />
-          <span>系统设置</span>
-        </RouterLink>
-        <div class="studio-status"><i></i><span>Studio online</span></div>
-      </div>
-    </aside>
-
+  <div class="app-shell app-shell--top-navigation">
     <section class="shell-main">
-      <header class="topbar">
-        <div class="topbar__context">
-          <span>{{ currentSection.eyebrow }}</span>
-          <strong>{{ currentSection.title }}</strong>
+      <header
+        ref="topbarRef"
+        class="topbar topbar--scene"
+        :style="{ '--topbar-image': `url(${currentSectionImage})` }"
+        @pointermove="moveTopbarScene"
+        @pointerleave="resetTopbarScene"
+      >
+        <div class="topbar__navigation">
+          <RouterLink class="topbar-brand" to="/workspace" aria-label="CineForge 创作台">
+            <span class="topbar-brand__mark"><Clapperboard :size="19" /></span>
+            <span class="topbar-brand__copy"><strong>CineForge</strong><small>Production OS</small></span>
+          </RouterLink>
+          <nav class="topbar-nav" aria-label="主导航">
+            <RouterLink
+              v-for="item in navItems"
+              :key="item.to"
+              class="topbar-nav__item"
+              :class="{ 'topbar-nav__item--active': item.active }"
+              :to="item.to"
+            >
+              <component :is="item.icon" :size="16" stroke-width="1.9" />
+              <span>{{ item.label }}</span>
+            </RouterLink>
+          </nav>
         </div>
-        <div class="topbar__actions">
-          <ThemeToggle />
-          <div class="credit-pill" title="当前积分">
-            <Coins :size="16" />
-            <span class="tabular-nums">{{ auth.session?.credit_balance ?? '0' }}</span>
+        <div class="topbar__actions" aria-label="账户与系统菜单">
+          <div class="topbar-tool" data-tooltip="切换主题">
+            <ThemeToggle />
           </div>
-          <ActivityCenter />
+          <div class="credit-pill" title="当前积分" aria-label="当前积分">
+            <Coins :size="16" />
+            <span class="credit-pill__copy"><small>积分</small><strong class="tabular-nums">{{ auth.session?.credit_balance ?? '0' }}</strong></span>
+          </div>
+          <div class="topbar-tool topbar-tool--activity" data-tooltip="任务与通知">
+            <ActivityCenter />
+          </div>
+          <span class="topbar__divider" aria-hidden="true"></span>
           <div class="account-menu">
             <PopoverRoot v-model:open="accountMenuOpen">
               <PopoverTrigger as-child>
                 <button class="account-menu__trigger" type="button" aria-label="账户菜单" title="账户菜单">
                   <span class="avatar">{{ auth.session?.user.display_name.slice(0, 1) }}</span>
-                  <span class="account-menu__name">{{ auth.session?.user.display_name }}</span>
+                  <span class="account-menu__copy">
+                    <strong class="account-menu__name">{{ auth.session?.user.display_name }}</strong>
+                    <small>{{ auth.isAdmin ? '平台管理员' : '创作者' }}</small>
+                  </span>
                   <ChevronDown class="account-menu__chevron" :size="14" />
                 </button>
               </PopoverTrigger>
               <PopoverPortal>
-                <PopoverContent class="account-popover" :side-offset="9" align="end">
-                  <div class="account-popover__identity">
-                    <span class="avatar">{{ auth.session?.user.display_name.slice(0, 1) }}</span>
-                    <span>
-                      <strong>{{ auth.session?.user.display_name }}</strong>
-                      <small>{{ auth.isAdmin ? '管理员账户' : '创作者账户' }}</small>
-                    </span>
+                <PopoverContent
+                  class="account-popover account-popover--scene"
+                  :style="{ '--account-cover': `url(${currentSectionImage})` }"
+                  :side-offset="10"
+                  align="end"
+                >
+                  <div class="account-popover__hero">
+                    <div class="account-popover__identity">
+                      <span class="avatar account-popover__avatar">{{ auth.session?.user.display_name.slice(0, 1) }}</span>
+                      <span>
+                        <strong>{{ auth.session?.user.display_name }}</strong>
+                        <small>{{ auth.isAdmin ? '平台管理员' : '创作者账户' }}</small>
+                      </span>
+                    </div>
+                    <span class="account-popover__online"><i></i>ONLINE</span>
+                  </div>
+                  <div class="account-popover__summary">
+                    <div><Coins :size="15" /><span><small>可用积分</small><strong class="tabular-nums">{{ auth.session?.credit_balance ?? '0' }}</strong></span></div>
+                    <div><component :is="auth.isAdmin ? ShieldCheck : Clapperboard" :size="15" /><span><small>当前身份</small><strong>{{ auth.isAdmin ? '管理员' : '创作者' }}</strong></span></div>
                   </div>
                   <button class="account-popover__logout" type="button" @click="logout">
                     <LogOut :size="16" />

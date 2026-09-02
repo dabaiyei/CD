@@ -206,15 +206,37 @@ async def login(
     session: AsyncSession = Depends(get_session),
 ) -> TokenResponse:
     now = datetime.now(UTC)
-    tenant_slug = payload.tenant.strip().lower()
     email = payload.email.strip().lower()
+    requested_tenant = payload.tenant.strip().lower() if payload.tenant else None
+    tenant: Tenant | None = None
+    user: User | None = None
+
+    if requested_tenant:
+        tenant = await session.scalar(select(Tenant).where(Tenant.slug == requested_tenant))
+        if tenant is not None and tenant.is_active:
+            user = await session.scalar(
+                select(User).where(User.tenant_id == tenant.id, User.email == email)
+            )
+    else:
+        matches = (
+            await session.execute(
+                select(User, Tenant)
+                .join(Tenant, Tenant.id == User.tenant_id)
+                .where(User.email == email, Tenant.is_active.is_(True))
+            )
+        ).all()
+        if len(matches) > 1:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail="该邮箱关联了多个租户，请联系管理员处理账号归属",
+            )
+        if matches:
+            user, tenant = matches[0]
+
+    tenant_slug = tenant.slug if tenant is not None else (requested_tenant or "auto")
     identity_hash = login_identity_hash(tenant_slug, email)
-    tenant = await session.scalar(select(Tenant).where(Tenant.slug == tenant_slug))
-    user = None
-    if tenant is not None and tenant.is_active:
-        user = await session.scalar(
-            select(User).where(User.tenant_id == tenant.id, User.email == email)
-        )
+    if tenant is None or not tenant.is_active:
+        user = None
     tenant_id = tenant.id if tenant else None
     user_id = user.id if user else None
 
@@ -273,7 +295,7 @@ async def login(
         await session.commit()
         if locked_until is not None:
             raise retry_later(int((locked_until - now).total_seconds()))
-        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="租户、邮箱或密码不正确")
+        raise HTTPException(status_code=status.HTTP_401_UNAUTHORIZED, detail="邮箱或密码不正确")
 
     if guard is not None:
         await session.delete(guard)

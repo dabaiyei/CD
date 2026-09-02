@@ -12,12 +12,12 @@ export const useAuthStore = defineStore('auth', () => {
   const isAuthenticated = computed(() => Boolean(session.value))
   const isAdmin = computed(() => session.value?.user.role === 'admin')
 
-  async function login(tenant: string, email: string, password: string): Promise<void> {
+  async function login(email: string, password: string): Promise<void> {
     loading.value = true
     try {
       const token = await api<{ access_token: string }>('/auth/login', {
         method: 'POST',
-        body: JSON.stringify({ tenant, email, password }),
+        body: JSON.stringify({ email, password }),
       })
       setToken(token.access_token)
       session.value = await api<UserSession>('/auth/me')

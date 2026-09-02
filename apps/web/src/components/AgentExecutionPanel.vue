@@ -1,72 +1,64 @@
 <script setup lang="ts">
-import { computed } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
+import { gsap } from 'gsap'
 import {
   BrainCircuit,
-  Check,
-  ChevronDown,
   FilePenLine,
   FileSearch,
   FileText,
-  ListChecks,
   LoaderCircle,
   Search,
   Sparkles,
-  TriangleAlert,
   Wrench,
 } from 'lucide-vue-next'
 
+import { prefersReducedMotion } from '@/lib/motion'
 import type { AgentExecutionStep } from '@/types'
 
 const props = withDefaults(defineProps<{
   steps: AgentExecutionStep[]
   active?: boolean
-  expanded?: boolean
-  outputLength?: number
 }>(), {
   active: false,
-  expanded: false,
-  outputLength: 0,
 })
 
-defineEmits<{ toggle: [] }>()
+const displayedLabel = ref('')
+const typing = ref(false)
+const activeStep = computed(() => [...props.steps].reverse().find((step) => step.status === 'running'))
 
-const completedCount = computed(() => props.steps.filter((step) => step.status === 'succeeded').length)
-const failedCount = computed(() => props.steps.filter((step) => step.status === 'failed').length)
-const runningCount = computed(() => props.steps.filter((step) => step.status === 'running').length)
-const currentStep = computed(() => [...props.steps].reverse().find((step) => step.status === 'running'))
-const summary = computed(() => {
-  if (currentStep.value) return stepLabel(currentStep.value)
-  if (props.active && !props.steps.length) return '正在理解项目上下文'
-  if (failedCount.value) return `${failedCount.value} 个步骤需要关注`
-  return props.steps.length ? '执行步骤已完成' : '已完成本轮生成'
-})
-const detail = computed(() => {
-  const parts: string[] = []
-  if (completedCount.value) parts.push(`${completedCount.value} 已完成`)
-  if (runningCount.value) parts.push(`${runningCount.value} 进行中`)
-  if (failedCount.value) parts.push(`${failedCount.value} 失败`)
-  return parts.join(' · ') || (props.active ? '准备执行' : '无额外工具调用')
-})
+let textTimeline: gsap.core.Timeline | null = null
+let stopLabelWatch: (() => void) | null = null
 
-function stepLabel(step: AgentExecutionStep): string {
-  if (step.kind === 'model') return '模型规划与生成'
+const segmenter = typeof Intl.Segmenter === 'function'
+  ? new Intl.Segmenter('zh-CN', { granularity: 'grapheme' })
+  : null
+
+function splitGraphemes(value: string): string[] {
+  if (!segmenter) return Array.from(value)
+  return Array.from(segmenter.segment(value), (item) => item.segment)
+}
+
+function actionLabel(step: AgentExecutionStep): string {
+  if (step.kind === 'model') return '规划并生成回复'
   return {
     Read: '读取项目文件',
     Write: '写入项目内容',
     Edit: '编辑项目内容',
     Glob: '检索项目文件',
     Grep: '搜索文件内容',
-    Skill: '加载创作技能',
-  }[step.name] || '执行项目工具'
+    Skill: '加载创作 Skill',
+  }[step.name] || '调用创作工具'
 }
 
-function stepStatusLabel(step: AgentExecutionStep): string {
-  if (step.status === 'running') return '进行中'
-  if (step.status === 'failed') return '失败'
-  return '已完成'
-}
+const targetLabel = computed(() => {
+  if (!props.active) return ''
+  if (!props.steps.length) return '正在理解创作上下文'
+  return activeStep.value ? `正在${actionLabel(activeStep.value)}` : ''
+})
 
-function stepIcon(step: AgentExecutionStep) {
+const currentIcon = computed(() => {
+  const step = activeStep.value
+  if (!step) return LoaderCircle
   if (step.kind === 'model') return BrainCircuit
   return {
     Read: FileText,
@@ -76,55 +68,83 @@ function stepIcon(step: AgentExecutionStep) {
     Grep: Search,
     Skill: Sparkles,
   }[step.name] || Wrench
+})
+
+function animateLabel(nextLabel: string): void {
+  textTimeline?.kill()
+  if (prefersReducedMotion()) {
+    displayedLabel.value = nextLabel
+    typing.value = false
+    return
+  }
+
+  const currentSegments = splitGraphemes(displayedLabel.value)
+  const nextSegments = splitGraphemes(nextLabel)
+  const eraseProgress = { value: currentSegments.length }
+  const typeProgress = { value: 0 }
+  typing.value = true
+
+  textTimeline = gsap.timeline({
+    defaults: { ease: 'none', overwrite: 'auto' },
+    onComplete: () => {
+      displayedLabel.value = nextLabel
+      typing.value = false
+    },
+  })
+
+  if (currentSegments.length) {
+    textTimeline.to(eraseProgress, {
+      value: 0,
+      duration: Math.min(0.24, Math.max(0.1, currentSegments.length * 0.012)),
+      onUpdate: () => {
+        displayedLabel.value = currentSegments.slice(0, Math.ceil(eraseProgress.value)).join('')
+      },
+    })
+  }
+
+  textTimeline.call(() => {
+    displayedLabel.value = ''
+  })
+
+  if (nextSegments.length) {
+    textTimeline.to(typeProgress, {
+      value: nextSegments.length,
+      duration: Math.min(0.72, Math.max(0.28, nextSegments.length * 0.036)),
+      onUpdate: () => {
+        displayedLabel.value = nextSegments.slice(0, Math.floor(typeProgress.value)).join('')
+      },
+    })
+  }
 }
+
+onMounted(() => {
+  stopLabelWatch = watch(targetLabel, animateLabel, { immediate: true })
+})
+
+onUnmounted(() => {
+  stopLabelWatch?.()
+  textTimeline?.kill()
+})
 </script>
 
 <template>
-  <section class="agent-execution" :class="{ 'is-active': active, 'has-failure': failedCount }">
-    <button
-      class="agent-execution__trigger"
-      type="button"
-      :aria-expanded="expanded"
-      title="查看 Agent 的模型与工具执行状态"
-      @click="$emit('toggle')"
+  <Transition name="agent-execution-status">
+    <div
+      v-if="displayedLabel || targetLabel"
+      class="agent-execution"
+      role="status"
+      aria-live="polite"
+      aria-atomic="true"
     >
-      <span class="agent-execution__icon">
-        <LoaderCircle v-if="active" class="spin" :size="16" />
-        <ListChecks v-else :size="16" />
+      <span class="agent-execution__glyph">
+        <component
+          :is="currentIcon"
+          :class="{ spin: !activeStep }"
+          :size="15"
+        />
       </span>
-      <span class="agent-execution__summary">
-        <strong>{{ summary }}</strong>
-        <small>{{ detail }}</small>
-      </span>
-      <b v-if="outputLength">{{ outputLength }} 字</b>
-      <ChevronDown class="agent-execution__chevron" :class="{ active: expanded }" :size="15" />
-    </button>
-
-    <div class="agent-execution__reveal" :class="{ active: expanded }">
-      <div>
-        <ol v-if="steps.length">
-          <li v-for="step in steps" :key="step.id" :class="`is-${step.status}`">
-            <span class="agent-execution__step-icon">
-              <component :is="stepIcon(step)" :size="14" />
-            </span>
-            <span>
-              <strong>{{ stepLabel(step) }}</strong>
-              <small>{{ step.kind === 'model' ? 'Agent 推理阶段' : '安全工具调用' }}</small>
-            </span>
-            <span class="agent-execution__step-state">
-              <LoaderCircle v-if="step.status === 'running'" class="spin" :size="14" />
-              <TriangleAlert v-else-if="step.status === 'failed'" :size="14" />
-              <Check v-else :size="14" />
-              {{ stepStatusLabel(step) }}
-            </span>
-          </li>
-        </ol>
-        <div v-else class="agent-execution__preparing">
-          <LoaderCircle v-if="active" class="spin" :size="14" />
-          <Check v-else :size="14" />
-          <span>{{ active ? '正在准备模型、项目资料与技能上下文' : '本轮未调用额外工具' }}</span>
-        </div>
-      </div>
+      <span class="agent-execution__text">{{ displayedLabel }}</span>
+      <i v-if="typing" class="agent-execution__caret" aria-hidden="true"></i>
     </div>
-  </section>
+  </Transition>
 </template>

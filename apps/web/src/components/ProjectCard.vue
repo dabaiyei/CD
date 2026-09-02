@@ -49,6 +49,11 @@ function handlePointerLeave(): void {
   lift?.(0)
 }
 
+function openProject(event: MouseEvent): void {
+  if ((event.target as HTMLElement).closest('button, a, input, select, textarea')) return
+  emit('open')
+}
+
 onMounted(() => {
   const card = cardRoot.value
   if (!card) return
@@ -79,8 +84,8 @@ onBeforeUnmount(() => motionMedia?.revert())
     ref="cardRoot"
     class="project-card"
     tabindex="0"
-    @click="emit('open')"
-    @keydown.enter="emit('open')"
+    @click="openProject"
+    @keydown.enter.self="emit('open')"
     @pointerenter="handlePointerEnter"
     @pointermove="handlePointerMove"
     @pointerleave="handlePointerLeave"
@@ -92,10 +97,10 @@ onBeforeUnmount(() => motionMedia?.revert())
         loading="lazy"
       />
       <div class="project-card__actions">
-        <button class="media-action" type="button" title="项目设置" aria-label="项目设置" @click.stop="emit('settings')">
+        <button class="media-action" type="button" title="项目设置" aria-label="项目设置" @pointerdown.stop @click.stop="emit('settings')">
           <Settings2 :size="16" />
         </button>
-        <button class="media-action media-action--danger" type="button" title="删除项目" aria-label="删除项目" @click.stop="emit('delete')">
+        <button class="media-action media-action--danger" type="button" title="删除项目" aria-label="删除项目" @pointerdown.stop @click.stop="emit('delete')">
           <Trash2 :size="16" />
         </button>
       </div>
