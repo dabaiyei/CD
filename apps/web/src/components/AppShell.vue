@@ -16,6 +16,7 @@ import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from 'reka
 import { useAuthStore } from '@/stores/auth'
 import { useActivityStore } from '@/stores/activity'
 import ActivityCenter from '@/components/ActivityCenter.vue'
+import ThemeToggle from '@/components/ThemeToggle.vue'
 
 const auth = useAuthStore()
 const activity = useActivityStore()
@@ -86,6 +87,7 @@ async function logout(): Promise<void> {
           <strong>{{ currentSection.title }}</strong>
         </div>
         <div class="topbar__actions">
+          <ThemeToggle />
           <div class="credit-pill" title="当前积分">
             <Coins :size="16" />
             <span class="tabular-nums">{{ auth.session?.credit_balance ?? '0' }}</span>

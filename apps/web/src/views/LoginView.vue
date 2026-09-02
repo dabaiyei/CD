@@ -11,6 +11,7 @@ import {
 
 import { ApiError } from "@/lib/api";
 import { useAuthStore } from "@/stores/auth";
+import ThemeToggle from "@/components/ThemeToggle.vue";
 
 const auth = useAuthStore();
 const route = useRoute();
@@ -51,6 +52,7 @@ async function submit(): Promise<void> {
 
 <template>
   <main class="login-page">
+    <ThemeToggle class="login-theme-toggle" />
     <section class="login-visual" aria-label="影视创作现场">
       <div class="login-visual__brand">
         <span class="brand__mark"><Clapperboard :size="21" /></span>

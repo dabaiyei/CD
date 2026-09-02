@@ -5,8 +5,12 @@ import { router } from "@/router";
 import { pinia } from "@/stores";
 import { useAuthStore } from "@/stores/auth";
 import { motionDirective } from "@/lib/motion";
+import { initializeTheme } from "@/lib/theme";
 import "@/styles.css";
 import "@/studio-ui.css";
+import "@/light-theme.css";
+
+initializeTheme();
 
 window.addEventListener("cineforge:auth-expired", () => {
   const auth = useAuthStore(pinia);

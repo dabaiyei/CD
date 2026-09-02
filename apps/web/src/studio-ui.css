@@ -1998,6 +1998,54 @@ input:-webkit-autofill:focus {
     display: none;
   }
 
+  .workspace-agent-column {
+    overflow: visible;
+  }
+
+  .workspace-agent-column>.agent-studio {
+    min-height: 0;
+    max-height: none;
+  }
+
+  .workspace-agent-column .agent-composer-shell,
+  .workspace-agent-column .agent-workspace-body {
+    overflow: visible;
+  }
+
+  .workspace-agent-column .agent-thread {
+    max-height: min(48dvh, 420px);
+    min-height: 190px;
+  }
+
+  .workspace-agent-column .agent-media-options {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    overflow: visible;
+    margin-right: 0;
+    padding-right: 0;
+  }
+
+  .workspace-agent-column .agent-media-options>span {
+    min-height: 26px;
+    grid-column: 1 / -1;
+    padding-inline: 0;
+  }
+
+  .workspace-agent-column .agent-option-group {
+    width: 100%;
+    min-width: 0;
+  }
+
+  .workspace-agent-column .agent-option-group button {
+    min-width: 0;
+    flex: 1;
+    padding-inline: 6px;
+  }
+
+  .workspace-agent-column .agent-media-options--video .agent-option-group:last-child {
+    grid-column: 1 / -1;
+  }
+
   .skill-overview {
     grid-template-columns: repeat(3, 1fr);
   }
