@@ -1,0 +1,15 @@
+{
+  "name": "cineforge-platform",
+  "private": true,
+  "version": "0.1.0",
+  "packageManager": "pnpm@11.7.0",
+  "scripts": {
+    "dev:web": "pnpm --filter @cineforge/web dev",
+    "build:web": "pnpm --filter @cineforge/web build",
+    "typecheck:web": "pnpm --filter @cineforge/web typecheck",
+    "test:api": ".venv\\Scripts\\python.exe -m pytest apps/api/tests -q",
+    "lint:api": ".venv\\Scripts\\python.exe -m ruff check apps/api/app apps/api/tests apps/api/migrations",
+    "test:runtime": ".venv\\Scripts\\python.exe -m pytest services/agent-runtime/agentscope/tests -q",
+    "lint:runtime": ".venv\\Scripts\\python.exe -m ruff check services/agent-runtime/agentscope/runtime services/agent-runtime/agentscope/tests"
+  }
+}

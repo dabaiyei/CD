@@ -1,0 +1,50 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "cineforge-api"
+version = "0.1.0"
+description = "Multi-tenant API for the CineForge AI short-drama platform"
+requires-python = ">=3.12"
+dependencies = [
+  "alembic>=1.16,<2",
+  "aiosqlite>=0.21,<1",
+  "beautifulsoup4>=4.13,<5",
+  "cryptography>=45,<47",
+  "ebooklib>=0.19,<1",
+  "fastapi>=0.116,<1",
+  "httpx>=0.28,<1",
+  "pillow>=11.3,<12",
+  "pgvector>=0.4,<1",
+  "python-multipart>=0.0.20,<1",
+  "pyjwt>=2.10,<3",
+  "pydantic-settings>=2.10,<3",
+  "redis[hiredis]>=6.4,<7",
+  "sqlalchemy[asyncio]>=2.0.43,<3",
+  "uvicorn[standard]>=0.35,<1",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=8.4,<9",
+  "pytest-asyncio>=1.1,<2",
+  "ruff>=0.12,<1",
+]
+postgres = ["asyncpg>=0.30,<1"]
+s3 = ["aioboto3>=15.2,<16"]
+
+[tool.hatch.build.targets.wheel]
+packages = ["app"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 110
+target-version = "py312"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = ["B008"]
