@@ -93,6 +93,29 @@ class InvitationSettingsUpdate(BaseModel):
         return value.strip().rstrip("/")
 
 
+class PlatformBrandingPublic(BaseModel):
+    login_background_video_url: str
+    login_background_video_source: Literal["default", "url", "upload"]
+    updated_at: datetime | None = None
+
+
+class LoginBackgroundVideoUrlUpdate(BaseModel):
+    url: str = Field(min_length=8, max_length=2000)
+
+    @field_validator("url")
+    @classmethod
+    def validate_video_url(cls, value: str) -> str:
+        from urllib.parse import urlsplit
+
+        normalized = value.strip()
+        parsed = urlsplit(normalized)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            raise ValueError("请输入有效的 HTTP 或 HTTPS 视频地址")
+        if parsed.username or parsed.password:
+            raise ValueError("视频地址不能包含用户名或密码")
+        return normalized
+
+
 class InvitationCreate(BaseModel):
     name: str = Field(default="创作者邀请", min_length=1, max_length=80)
     max_registrations: int = Field(default=1, ge=1, le=100_000)

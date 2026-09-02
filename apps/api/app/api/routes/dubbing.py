@@ -72,7 +72,12 @@ async def dialogue_for_user(
 ) -> tuple[DialogueVersion, object]:
     chapter = await chapter_for_user(session, project_id, chapter_id, user)
     dialogue = await session.get(DialogueVersion, dialogue_id)
-    if dialogue is None or dialogue.chapter_id != chapter.id or dialogue.tenant_id != user.tenant_id:
+    if (
+        dialogue is None
+        or dialogue.chapter_id != chapter.id
+        or dialogue.tenant_id != user.tenant_id
+        or dialogue.user_id != user.id
+    ):
         raise HTTPException(status_code=404, detail="台词版本不存在")
     return dialogue, chapter
 
@@ -103,6 +108,7 @@ async def dubbing_options(
                 select(Asset)
                 .where(
                     Asset.tenant_id == user.tenant_id,
+                    Asset.user_id == user.id,
                     Asset.project_id == project_id,
                     Asset.scope == AssetScope.PROJECT,
                     Asset.asset_type == AssetType.CHARACTER,
@@ -117,6 +123,7 @@ async def dubbing_options(
                 select(VoiceBinding)
                 .where(
                     VoiceBinding.tenant_id == user.tenant_id,
+                    VoiceBinding.user_id == user.id,
                     VoiceBinding.project_id == project_id,
                 )
                 .order_by(VoiceBinding.updated_at.desc())
@@ -139,6 +146,7 @@ async def upsert_voice_binding(
     if (
         asset is None
         or asset.tenant_id != user.tenant_id
+        or asset.user_id != user.id
         or asset.project_id != project_id
         or asset.scope != AssetScope.PROJECT
         or asset.asset_type != AssetType.CHARACTER
@@ -154,6 +162,7 @@ async def upsert_voice_binding(
     binding = await session.scalar(
         select(VoiceBinding).where(
             VoiceBinding.project_id == project_id,
+            VoiceBinding.user_id == user.id,
             VoiceBinding.character_asset_id == asset.id,
         )
     )
@@ -203,7 +212,12 @@ async def delete_voice_binding(
 ) -> None:
     await project_for_user(session, project_id, user)
     binding = await session.get(VoiceBinding, binding_id)
-    if binding is None or binding.project_id != project_id or binding.tenant_id != user.tenant_id:
+    if (
+        binding is None
+        or binding.project_id != project_id
+        or binding.tenant_id != user.tenant_id
+        or binding.user_id != user.id
+    ):
         raise HTTPException(status_code=404, detail="音色绑定不存在")
     clip_count = await session.scalar(
         select(func.count(AudioClip.id)).where(AudioClip.voice_binding_id == binding.id)
@@ -249,7 +263,10 @@ async def list_dialogue_versions(
         (
             await session.scalars(
                 select(DialogueVersion)
-                .where(DialogueVersion.chapter_id == chapter_id)
+                .where(
+                    DialogueVersion.chapter_id == chapter_id,
+                    DialogueVersion.user_id == user.id,
+                )
                 .order_by(DialogueVersion.version.desc())
             )
         ).all()
@@ -278,7 +295,10 @@ async def get_dialogue_version(
         (
             await session.scalars(
                 select(DialogueLine)
-                .where(DialogueLine.dialogue_version_id == dialogue.id)
+                .where(
+                    DialogueLine.dialogue_version_id == dialogue.id,
+                    DialogueLine.user_id == user.id,
+                )
                 .order_by(DialogueLine.order_index)
             )
         ).all()
@@ -287,7 +307,10 @@ async def get_dialogue_version(
         (
             await session.scalars(
                 select(AudioClip)
-                .where(AudioClip.dialogue_version_id == dialogue.id)
+                .where(
+                    AudioClip.dialogue_version_id == dialogue.id,
+                    AudioClip.user_id == user.id,
+                )
                 .order_by(AudioClip.dialogue_line_id, AudioClip.version.desc())
             )
         ).all()
@@ -315,6 +338,7 @@ async def generate_dialogues(
     storyboard = await session.scalar(
         select(StoryboardVersion).where(
             StoryboardVersion.chapter_id == chapter.id,
+            StoryboardVersion.user_id == user.id,
             StoryboardVersion.is_active.is_(True),
         )
     )
@@ -422,7 +446,11 @@ async def update_dialogue_line(
     if not dialogue.is_active:
         raise HTTPException(status_code=409, detail="只能编辑当前生效台词版本")
     line = await session.get(DialogueLine, line_id)
-    if line is None or line.dialogue_version_id != dialogue.id:
+    if (
+        line is None
+        or line.dialogue_version_id != dialogue.id
+        or line.user_id != user.id
+    ):
         raise HTTPException(status_code=404, detail="台词行不存在")
     for field, value in payload.model_dump(exclude_unset=True).items():
         setattr(line, field, value)
@@ -525,7 +553,10 @@ async def generate_dialogue_audio(
     )
     if not dialogue.is_active:
         raise HTTPException(status_code=409, detail="只能为当前生效台词版本生成配音")
-    line_query = select(DialogueLine).where(DialogueLine.dialogue_version_id == dialogue.id)
+    line_query = select(DialogueLine).where(
+        DialogueLine.dialogue_version_id == dialogue.id,
+        DialogueLine.user_id == user.id,
+    )
     if payload.dialogue_line_ids is not None:
         line_query = line_query.where(DialogueLine.id.in_(payload.dialogue_line_ids))
     lines = list((await session.scalars(line_query.order_by(DialogueLine.order_index))).all())
@@ -549,6 +580,7 @@ async def generate_dialogue_audio(
             await session.scalars(
                 select(Asset).where(
                     Asset.project_id == project_id,
+                    Asset.user_id == user.id,
                     Asset.asset_type == AssetType.CHARACTER,
                 )
             )
@@ -560,6 +592,7 @@ async def generate_dialogue_audio(
             await session.scalars(
                 select(VoiceBinding).where(
                     VoiceBinding.project_id == project_id,
+                    VoiceBinding.user_id == user.id,
                     VoiceBinding.enabled.is_(True),
                 )
             )

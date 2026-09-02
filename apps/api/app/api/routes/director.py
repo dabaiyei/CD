@@ -94,6 +94,7 @@ async def project_file_for_user(
         project_file is None
         or project_file.project_id != project_id
         or project_file.tenant_id != user.tenant_id
+        or project_file.user_id != user.id
     ):
         raise HTTPException(status_code=404, detail="项目文件不存在")
     return project_file
@@ -107,7 +108,12 @@ async def chapter_for_user(
 ) -> Chapter:
     await project_for_user(session, project_id, user)
     chapter = await session.get(Chapter, chapter_id)
-    if chapter is None or chapter.project_id != project_id or chapter.tenant_id != user.tenant_id:
+    if (
+        chapter is None
+        or chapter.project_id != project_id
+        or chapter.tenant_id != user.tenant_id
+        or chapter.user_id != user.id
+    ):
         raise HTTPException(status_code=404, detail="章节不存在")
     return chapter
 
@@ -169,6 +175,7 @@ async def list_project_files(
                 .where(
                     ProjectFile.project_id == project_id,
                     ProjectFile.tenant_id == user.tenant_id,
+                    ProjectFile.user_id == user.id,
                 )
                 .order_by(ProjectFile.updated_at.desc())
             )
@@ -299,7 +306,11 @@ async def list_chapters(
         (
             await session.scalars(
                 select(Chapter)
-                .where(Chapter.project_id == project_id, Chapter.tenant_id == user.tenant_id)
+                .where(
+                    Chapter.project_id == project_id,
+                    Chapter.tenant_id == user.tenant_id,
+                    Chapter.user_id == user.id,
+                )
                 .order_by(Chapter.created_at, Chapter.order_index)
             )
         ).all()
@@ -321,7 +332,10 @@ async def list_chapter_analyses(
         (
             await session.scalars(
                 select(ChapterAnalysis)
-                .where(ChapterAnalysis.chapter_id == chapter_id)
+                .where(
+                    ChapterAnalysis.chapter_id == chapter_id,
+                    ChapterAnalysis.user_id == user.id,
+                )
                 .order_by(ChapterAnalysis.version.desc())
             )
         ).all()
@@ -393,7 +407,10 @@ async def list_script_versions(
         (
             await session.scalars(
                 select(ScriptVersion)
-                .where(ScriptVersion.chapter_id == chapter_id)
+                .where(
+                    ScriptVersion.chapter_id == chapter_id,
+                    ScriptVersion.user_id == user.id,
+                )
                 .order_by(ScriptVersion.version.desc())
             )
         ).all()
@@ -418,19 +435,30 @@ async def generate_script_version(
         if payload.analysis_id
         else await session.scalar(
             select(ChapterAnalysis)
-            .where(ChapterAnalysis.chapter_id == chapter.id)
+            .where(
+                ChapterAnalysis.chapter_id == chapter.id,
+                ChapterAnalysis.user_id == user.id,
+            )
             .order_by(ChapterAnalysis.version.desc())
             .limit(1)
         )
     )
-    if analysis is not None and analysis.chapter_id != chapter.id:
+    if analysis is not None and (
+        analysis.chapter_id != chapter.id
+        or analysis.tenant_id != user.tenant_id
+        or analysis.user_id != user.id
+    ):
         raise HTTPException(status_code=422, detail="章节分析版本不可用")
     base_script = (
         await session.get(ScriptVersion, payload.base_script_version_id)
         if payload.base_script_version_id
         else None
     )
-    if base_script is not None and base_script.chapter_id != chapter.id:
+    if base_script is not None and (
+        base_script.chapter_id != chapter.id
+        or base_script.tenant_id != user.tenant_id
+        or base_script.user_id != user.id
+    ):
         raise HTTPException(status_code=422, detail="参考剧本版本不可用")
     for pending in await active_tasks(
         session,
@@ -526,7 +554,12 @@ async def activate_script_version(
 ) -> ScriptVersion:
     chapter = await chapter_for_user(session, project_id, chapter_id, user)
     script = await session.get(ScriptVersion, script_id)
-    if script is None or script.chapter_id != chapter.id or script.tenant_id != user.tenant_id:
+    if (
+        script is None
+        or script.chapter_id != chapter.id
+        or script.tenant_id != user.tenant_id
+        or script.user_id != user.id
+    ):
         raise HTTPException(status_code=404, detail="剧本版本不存在")
     await activate_script(session, chapter, script)
     await session.commit()
@@ -547,7 +580,12 @@ async def list_script_reviews(
 ) -> list[ScriptReview]:
     chapter = await chapter_for_user(session, project_id, chapter_id, user)
     script = await session.get(ScriptVersion, script_id)
-    if script is None or script.chapter_id != chapter.id or script.tenant_id != user.tenant_id:
+    if (
+        script is None
+        or script.chapter_id != chapter.id
+        or script.tenant_id != user.tenant_id
+        or script.user_id != user.id
+    ):
         raise HTTPException(status_code=404, detail="剧本版本不存在")
     return list(
         (
@@ -556,6 +594,7 @@ async def list_script_reviews(
                 .where(
                     ScriptReview.script_version_id == script.id,
                     ScriptReview.tenant_id == user.tenant_id,
+                    ScriptReview.user_id == user.id,
                 )
                 .order_by(ScriptReview.created_at.desc(), ScriptReview.id.desc())
             )
@@ -578,7 +617,12 @@ async def review_script_version(
 ) -> ScriptReviewResult:
     chapter = await chapter_for_user(session, project_id, chapter_id, user)
     script = await session.get(ScriptVersion, script_id)
-    if script is None or script.chapter_id != chapter.id or script.tenant_id != user.tenant_id:
+    if (
+        script is None
+        or script.chapter_id != chapter.id
+        or script.tenant_id != user.tenant_id
+        or script.user_id != user.id
+    ):
         raise HTTPException(status_code=404, detail="剧本版本不存在")
     notes = payload.notes.strip()
     if payload.decision == ScriptReviewDecision.CHANGES_REQUESTED:
@@ -633,7 +677,12 @@ async def delete_script_version(
 ) -> None:
     chapter = await chapter_for_user(session, project_id, chapter_id, user)
     script = await session.get(ScriptVersion, script_id)
-    if script is None or script.chapter_id != chapter.id or script.tenant_id != user.tenant_id:
+    if (
+        script is None
+        or script.chapter_id != chapter.id
+        or script.tenant_id != user.tenant_id
+        or script.user_id != user.id
+    ):
         raise HTTPException(status_code=404, detail="剧本版本不存在")
     if script.is_active or chapter.active_script_version_id == script.id:
         raise HTTPException(status_code=409, detail="生效中的剧本版本不能删除")

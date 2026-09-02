@@ -15,8 +15,9 @@ import {
 } from 'lucide-vue-next'
 
 import ThemeToggle from '@/components/ThemeToggle.vue'
-import { ApiError } from '@/lib/api'
+import { api, ApiError } from '@/lib/api'
 import { useAuthStore } from '@/stores/auth'
+import type { PlatformBranding } from '@/types'
 
 const auth = useAuthStore()
 const route = useRoute()
@@ -29,6 +30,9 @@ const email = ref('')
 const password = ref('')
 const showPassword = ref(false)
 const errorMessage = ref('')
+const defaultBackgroundVideoUrl = '/videos/login-background.mp4'
+const backgroundVideoUrl = ref(defaultBackgroundVideoUrl)
+const backgroundFallbackUsed = ref(false)
 
 let mediaContext: ReturnType<typeof gsap.matchMedia> | null = null
 let feedbackTimeline: gsap.core.Timeline | null = null
@@ -99,7 +103,23 @@ function resetCardTilt(): void {
   cardRotateY?.(0)
 }
 
+async function loadBranding(): Promise<void> {
+  try {
+    const branding = await api<PlatformBranding>('/public/branding')
+    if (branding.login_background_video_url) backgroundVideoUrl.value = branding.login_background_video_url
+  } catch {
+    backgroundVideoUrl.value = defaultBackgroundVideoUrl
+  }
+}
+
+function handleBackgroundVideoError(): void {
+  if (backgroundFallbackUsed.value || backgroundVideoUrl.value === defaultBackgroundVideoUrl) return
+  backgroundFallbackUsed.value = true
+  backgroundVideoUrl.value = defaultBackgroundVideoUrl
+}
+
 onMounted(() => {
+  void loadBranding()
   if (!pageRoot.value) return
   mediaContext = gsap.matchMedia()
   mediaContext.add(
@@ -195,6 +215,7 @@ onUnmounted(() => {
 <template>
   <main ref="pageRoot" class="cinematic-login">
     <video
+      :key="backgroundVideoUrl"
       class="cinematic-login__video"
       autoplay
       muted
@@ -203,8 +224,9 @@ onUnmounted(() => {
       preload="metadata"
       poster="/covers/login-studio-v2.webp"
       aria-hidden="true"
+      @error="handleBackgroundVideoError"
     >
-      <source :src="'/videos/login-background.mp4'" type="video/mp4" />
+      <source :src="backgroundVideoUrl" />
     </video>
     <div class="login-backdrop" aria-hidden="true"></div>
     <div class="cinematic-login__texture" aria-hidden="true"></div>

@@ -807,6 +807,7 @@ async def apply_script_version_command(
     active_workflow = await db.scalar(
         select(DirectorWorkflowRun).where(
             DirectorWorkflowRun.chapter_id == chapter.id,
+            DirectorWorkflowRun.user_id == user.id,
             DirectorWorkflowRun.status.in_(
                 {DirectorWorkflowStatus.RUNNING, DirectorWorkflowStatus.WAITING_USER}
             ),
@@ -1010,7 +1011,10 @@ async def _storyboard_ready_assets(
             await db.scalars(
                 select(Asset)
                 .join(AssetExtractionItem, AssetExtractionItem.asset_id == Asset.id)
-                .where(AssetExtractionItem.extraction_id == extraction.id)
+                .where(
+                    AssetExtractionItem.extraction_id == extraction.id,
+                    Asset.user_id == extraction.user_id,
+                )
                 .order_by(Asset.asset_type, Asset.name)
             )
         ).all()
@@ -1061,12 +1065,13 @@ async def apply_storyboard_version_command(
     if not chapter.active_script_version_id:
         return rejected_file_change("publish_storyboard_version", source_name, "生成分镜前必须先选择生效剧本")
     script = await db.get(ScriptVersion, chapter.active_script_version_id)
-    if script is None or script.chapter_id != chapter.id:
+    if script is None or script.chapter_id != chapter.id or script.user_id != user.id:
         return rejected_file_change("publish_storyboard_version", source_name, "章节生效剧本不可用")
     extraction = await db.scalar(
         select(AssetExtraction).where(
             AssetExtraction.chapter_id == chapter.id,
             AssetExtraction.script_version_id == script.id,
+            AssetExtraction.user_id == user.id,
             AssetExtraction.is_active.is_(True),
         )
     )
@@ -1801,6 +1806,7 @@ async def send_message(
             chapter is None
             or chapter.project_id != project_id
             or chapter.tenant_id != user.tenant_id
+            or chapter.user_id != user.id
         ):
             raise HTTPException(status_code=404, detail="当前导演台章节不存在")
     agent = await resolve_scene_agent(db, tenant_id=user.tenant_id, scene=scene)

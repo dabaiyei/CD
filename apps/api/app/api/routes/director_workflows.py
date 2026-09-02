@@ -218,7 +218,12 @@ async def decide_workflow_review(
     if workflow is None:
         raise HTTPException(status_code=404, detail="导演流程不存在")
     decision = await session.get(DirectorDecisionRequest, decision_id)
-    if decision is None or decision.workflow_id != workflow.id or decision.tenant_id != user.tenant_id:
+    if (
+        decision is None
+        or decision.workflow_id != workflow.id
+        or decision.tenant_id != user.tenant_id
+        or decision.user_id != user.id
+    ):
         raise HTTPException(status_code=404, detail="审核选择不存在")
     try:
         await submit_decision(

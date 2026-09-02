@@ -20,7 +20,6 @@ from app.db.models import (
     Project,
     TaskStatus,
     User,
-    UserRole,
 )
 from app.db.session import get_session
 from app.domain.schemas import (
@@ -60,10 +59,12 @@ REQUIRED_PROJECT_RELATIONS = {
 
 async def project_for_user(session: AsyncSession, project_id: str, user: User) -> Project:
     project = await session.get(Project, project_id)
-    if project is None or project.tenant_id != user.tenant_id:
+    if (
+        project is None
+        or project.tenant_id != user.tenant_id
+        or project.owner_id != user.id
+    ):
         raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="项目不存在")
-    if user.role != UserRole.ADMIN and project.owner_id != user.id:
-        raise HTTPException(status_code=status.HTTP_403_FORBIDDEN, detail="无权访问此项目")
     return project
 
 
@@ -101,9 +102,10 @@ async def list_projects(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> list[Project]:
-    query = select(Project).where(Project.tenant_id == user.tenant_id)
-    if user.role != UserRole.ADMIN:
-        query = query.where(Project.owner_id == user.id)
+    query = select(Project).where(
+        Project.tenant_id == user.tenant_id,
+        Project.owner_id == user.id,
+    )
     return list((await session.scalars(query.order_by(Project.updated_at.desc()))).all())
 
 
@@ -209,7 +211,10 @@ async def delete_project(
     runtime_session_ids = list(
         (
             await session.scalars(
-                select(AgentChatSession.id).where(AgentChatSession.project_id == project.id)
+                select(AgentChatSession.id).where(
+                    AgentChatSession.project_id == project.id,
+                    AgentChatSession.user_id == user.id,
+                )
             )
         ).all()
     )

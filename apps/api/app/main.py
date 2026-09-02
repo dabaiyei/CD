@@ -13,6 +13,7 @@ from app.api.routes import (
     agent_chat,
     assets,
     auth,
+    branding,
     director,
     director_workflows,
     dubbing,
@@ -75,6 +76,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(auth.router, prefix=settings.api_prefix)
+app.include_router(branding.router, prefix=settings.api_prefix)
 app.include_router(invitations.router, prefix=settings.api_prefix)
 app.include_router(marketplace.router, prefix=settings.api_prefix)
 app.include_router(projects.router, prefix=settings.api_prefix)

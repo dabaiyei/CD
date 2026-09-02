@@ -72,6 +72,12 @@ export interface InvitationSettings {
   url_prefix: string
 }
 
+export interface PlatformBranding {
+  login_background_video_url: string
+  login_background_video_source: 'default' | 'url' | 'upload'
+  updated_at: string | null
+}
+
 export interface Invitation {
   id: string
   code: string

@@ -221,6 +221,17 @@ class Tenant(Base, TimestampMixin):
     users: Mapped[list[User]] = relationship(back_populates="tenant")
 
 
+class PlatformBranding(Base, TimestampMixin):
+    __tablename__ = "platform_branding"
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default="default")
+    login_background_video_source: Mapped[str] = mapped_column(String(16), default="default")
+    login_background_video_url: Mapped[str | None] = mapped_column(String(2000), nullable=True)
+    login_background_video_storage_path: Mapped[str | None] = mapped_column(
+        String(1000), nullable=True
+    )
+
+
 class User(Base, TimestampMixin):
     __tablename__ = "users"
     __table_args__ = (UniqueConstraint("tenant_id", "email", name="uq_user_tenant_email"),)

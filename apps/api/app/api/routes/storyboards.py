@@ -63,12 +63,13 @@ async def active_script_and_extraction(
     if not chapter.active_script_version_id:
         raise HTTPException(status_code=409, detail="生成分镜前必须先选择生效剧本")
     script = await session.get(ScriptVersion, chapter.active_script_version_id)
-    if script is None or script.chapter_id != chapter.id:
+    if script is None or script.chapter_id != chapter.id or script.user_id != chapter.user_id:
         raise HTTPException(status_code=409, detail="章节生效剧本不可用")
     extraction = await session.scalar(
         select(AssetExtraction).where(
             AssetExtraction.chapter_id == chapter.id,
             AssetExtraction.script_version_id == script.id,
+            AssetExtraction.user_id == chapter.user_id,
             AssetExtraction.is_active.is_(True),
         )
     )
@@ -79,7 +80,10 @@ async def active_script_and_extraction(
             await session.scalars(
                 select(Asset)
                 .join(AssetExtractionItem, AssetExtractionItem.asset_id == Asset.id)
-                .where(AssetExtractionItem.extraction_id == extraction.id)
+                .where(
+                    AssetExtractionItem.extraction_id == extraction.id,
+                    Asset.user_id == chapter.user_id,
+                )
                 .order_by(Asset.asset_type, Asset.name)
             )
         ).all()
@@ -123,6 +127,7 @@ async def validate_shot_assets(
     asset_ids: list[str],
     project_id: str,
     tenant_id: str,
+    user_id: str,
 ) -> None:
     if not asset_ids:
         return
@@ -131,6 +136,7 @@ async def validate_shot_assets(
             Asset.id.in_(asset_ids),
             Asset.project_id == project_id,
             Asset.tenant_id == tenant_id,
+            Asset.user_id == user_id,
         )
     )
     if count != len(asset_ids):
@@ -233,6 +239,7 @@ async def create_storyboard(
             asset_ids=payload.asset_ids,
             project_id=chapter.project_id,
             tenant_id=user.tenant_id,
+            user_id=user.id,
         )
         shot = StoryboardShot(
             tenant_id=user.tenant_id,
@@ -260,7 +267,12 @@ async def storyboard_for_user(
 ) -> tuple[Chapter, StoryboardVersion]:
     chapter = await chapter_for_user(session, project_id, chapter_id, user)
     storyboard = await session.get(StoryboardVersion, storyboard_id)
-    if storyboard is None or storyboard.chapter_id != chapter.id or storyboard.tenant_id != user.tenant_id:
+    if (
+        storyboard is None
+        or storyboard.chapter_id != chapter.id
+        or storyboard.tenant_id != user.tenant_id
+        or storyboard.user_id != user.id
+    ):
         raise HTTPException(status_code=404, detail="分镜版本不存在")
     return chapter, storyboard
 
@@ -273,7 +285,10 @@ async def storyboard_shots_for_selection(
 ) -> list[StoryboardShot]:
     query = (
         select(StoryboardShot)
-        .where(StoryboardShot.storyboard_version_id == storyboard.id)
+        .where(
+            StoryboardShot.storyboard_version_id == storyboard.id,
+            StoryboardShot.user_id == storyboard.user_id,
+        )
         .order_by(StoryboardShot.order_index)
     )
     if selection.shot_ids:
@@ -424,7 +439,10 @@ async def list_storyboards(
         (
             await session.scalars(
                 select(StoryboardVersion)
-                .where(StoryboardVersion.chapter_id == chapter_id)
+                .where(
+                    StoryboardVersion.chapter_id == chapter_id,
+                    StoryboardVersion.user_id == user.id,
+                )
                 .order_by(StoryboardVersion.version.desc())
             )
         ).all()
@@ -453,7 +471,10 @@ async def get_storyboard(
         (
             await session.scalars(
                 select(StoryboardShot)
-                .where(StoryboardShot.storyboard_version_id == storyboard.id)
+                .where(
+                    StoryboardShot.storyboard_version_id == storyboard.id,
+                    StoryboardShot.user_id == user.id,
+                )
                 .order_by(StoryboardShot.order_index)
             )
         ).all()
@@ -462,7 +483,10 @@ async def get_storyboard(
         (
             await session.scalars(
                 select(VideoClip)
-                .where(VideoClip.storyboard_version_id == storyboard.id)
+                .where(
+                    VideoClip.storyboard_version_id == storyboard.id,
+                    VideoClip.user_id == user.id,
+                )
                 .order_by(VideoClip.shot_id, VideoClip.version.desc())
             )
         ).all()
@@ -623,7 +647,11 @@ async def update_storyboard_shot(
     if not storyboard.is_active:
         raise HTTPException(status_code=409, detail="只能编辑当前生效分镜")
     shot = await session.get(StoryboardShot, shot_id)
-    if shot is None or shot.storyboard_version_id != storyboard.id:
+    if (
+        shot is None
+        or shot.storyboard_version_id != storyboard.id
+        or shot.user_id != user.id
+    ):
         raise HTTPException(status_code=404, detail="镜头不存在")
     values = payload.model_dump(exclude_unset=True)
     if "asset_ids" in values:
@@ -632,6 +660,7 @@ async def update_storyboard_shot(
             asset_ids=values["asset_ids"],
             project_id=project_id,
             tenant_id=user.tenant_id,
+            user_id=user.id,
         )
     if "duration_seconds" in values:
         model = await project_video_model(session, project_id=project_id, tenant_id=user.tenant_id)
@@ -858,7 +887,11 @@ async def generate_shot_video(
     if not storyboard.is_active or storyboard.script_version_id != chapter.active_script_version_id:
         raise HTTPException(status_code=409, detail="只能为当前生效分镜生成视频")
     shot = await session.get(StoryboardShot, shot_id)
-    if shot is None or shot.storyboard_version_id != storyboard.id:
+    if (
+        shot is None
+        or shot.storyboard_version_id != storyboard.id
+        or shot.user_id != user.id
+    ):
         raise HTTPException(status_code=404, detail="镜头不存在")
     model = await video_model_for_project(session, project=project, user=user)
     task, event = await queue_shot_video_task(

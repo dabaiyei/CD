@@ -74,6 +74,7 @@ async def composition_for_user(
         or composition.project_id != project_id
         or composition.chapter_id != chapter_id
         or composition.tenant_id != user.tenant_id
+        or composition.user_id != user.id
     ):
         raise HTTPException(status_code=404, detail="成片版本不存在")
     return composition
@@ -93,6 +94,7 @@ async def finishing_options(
                 .where(
                     ProjectFile.project_id == project_id,
                     ProjectFile.tenant_id == user.tenant_id,
+                    ProjectFile.user_id == user.id,
                     ProjectFile.kind == ProjectFileKind.AUDIO,
                 )
                 .order_by(ProjectFile.updated_at.desc())
@@ -176,7 +178,10 @@ async def list_compositions(
         (
             await session.scalars(
                 select(CompositionVersion)
-                .where(CompositionVersion.chapter_id == chapter_id)
+                .where(
+                    CompositionVersion.chapter_id == chapter_id,
+                    CompositionVersion.user_id == user.id,
+                )
                 .order_by(CompositionVersion.version.desc())
             )
         ).all()
@@ -220,6 +225,7 @@ async def prepare_composition(
     storyboard = await session.scalar(
         select(StoryboardVersion).where(
             StoryboardVersion.chapter_id == chapter.id,
+            StoryboardVersion.user_id == user.id,
             StoryboardVersion.is_active.is_(True),
         )
     )
@@ -229,7 +235,10 @@ async def prepare_composition(
         (
             await session.scalars(
                 select(StoryboardShot)
-                .where(StoryboardShot.storyboard_version_id == storyboard.id)
+                .where(
+                    StoryboardShot.storyboard_version_id == storyboard.id,
+                    StoryboardShot.user_id == user.id,
+                )
                 .order_by(StoryboardShot.order_index)
             )
         ).all()
@@ -239,6 +248,7 @@ async def prepare_composition(
             await session.scalars(
                 select(VideoClip).where(
                     VideoClip.storyboard_version_id == storyboard.id,
+                    VideoClip.user_id == user.id,
                     VideoClip.status == VideoClipStatus.READY,
                     VideoClip.is_active.is_(True),
                 )
@@ -253,6 +263,7 @@ async def prepare_composition(
     dialogue = await session.scalar(
         select(DialogueVersion).where(
             DialogueVersion.chapter_id == chapter.id,
+            DialogueVersion.user_id == user.id,
             DialogueVersion.is_active.is_(True),
         )
     )
@@ -261,7 +272,10 @@ async def prepare_composition(
             (
                 await session.scalars(
                     select(DialogueLine)
-                    .where(DialogueLine.dialogue_version_id == dialogue.id)
+                    .where(
+                        DialogueLine.dialogue_version_id == dialogue.id,
+                        DialogueLine.user_id == user.id,
+                    )
                     .order_by(DialogueLine.order_index)
                 )
             ).all()
@@ -275,6 +289,7 @@ async def prepare_composition(
                 await session.scalars(
                     select(AudioClip).where(
                         AudioClip.dialogue_version_id == dialogue.id,
+                        AudioClip.user_id == user.id,
                         AudioClip.status == AudioClipStatus.READY,
                         AudioClip.is_active.is_(True),
                     )
@@ -291,6 +306,7 @@ async def prepare_composition(
                 select(ProjectFile).where(
                     ProjectFile.project_id == project_id,
                     ProjectFile.tenant_id == user.tenant_id,
+                    ProjectFile.user_id == user.id,
                 )
             )
         ).all()

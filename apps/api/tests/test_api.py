@@ -688,6 +688,78 @@ def test_health_and_login(client: TestClient, creator_headers: dict[str, str]) -
     assert Decimal(response.json()["credit_balance"]) == Decimal("1280.00")
 
 
+def test_platform_login_background_can_be_configured_by_admin(
+    client: TestClient,
+    creator_headers: dict[str, str],
+    admin_headers: dict[str, str],
+) -> None:
+    default_branding = client.get("/api/v1/public/branding")
+    assert default_branding.status_code == 200
+    assert default_branding.json()["login_background_video_source"] == "default"
+    assert default_branding.json()["login_background_video_url"] == "/videos/login-background.mp4"
+
+    forbidden = client.put(
+        "/api/v1/admin/branding/login-background/url",
+        headers=creator_headers,
+        json={"url": "https://media.example.com/login.mp4"},
+    )
+    assert forbidden.status_code == 403
+
+    external_url = "https://media.example.com/path/login%20background.mp4?version=2"
+    configured = client.put(
+        "/api/v1/admin/branding/login-background/url",
+        headers=admin_headers,
+        json={"url": external_url},
+    )
+    assert configured.status_code == 200
+    assert configured.json()["login_background_video_source"] == "url"
+    assert configured.json()["login_background_video_url"] == external_url
+    assert client.get("/api/v1/public/branding").json()["login_background_video_url"] == external_url
+
+    invalid_url = client.put(
+        "/api/v1/admin/branding/login-background/url",
+        headers=admin_headers,
+        json={"url": "file:///private/login.mp4"},
+    )
+    assert invalid_url.status_code == 422
+
+    invalid_video = client.post(
+        "/api/v1/admin/branding/login-background/upload",
+        headers=admin_headers,
+        files={"file": ("fake.mp4", b"not-a-video", "video/mp4")},
+    )
+    assert invalid_video.status_code == 422
+
+    first_upload = client.post(
+        "/api/v1/admin/branding/login-background/upload",
+        headers=admin_headers,
+        files={"file": ("login.mp4", b"\x00\x00\x00\x18ftypisomtest-video", "video/mp4")},
+    )
+    assert first_upload.status_code == 201
+    assert first_upload.json()["login_background_video_source"] == "upload"
+    first_media_url = first_upload.json()["login_background_video_url"]
+    assert client.get(first_media_url).status_code == 200
+
+    second_upload = client.post(
+        "/api/v1/admin/branding/login-background/upload",
+        headers=admin_headers,
+        files={"file": ("login.webm", b"\x1aE\xdf\xa3test-video", "video/webm")},
+    )
+    assert second_upload.status_code == 201
+    second_media_url = second_upload.json()["login_background_video_url"]
+    assert second_media_url.endswith(".webm")
+    assert client.get(first_media_url).status_code == 404
+    assert client.get(second_media_url).status_code == 200
+
+    reset = client.delete(
+        "/api/v1/admin/branding/login-background",
+        headers=admin_headers,
+    )
+    assert reset.status_code == 200
+    assert reset.json()["login_background_video_source"] == "default"
+    assert client.get(second_media_url).status_code == 404
+
+
 def test_user_avatar_upload_replace_and_delete(
     client: TestClient,
     creator_headers: dict[str, str],
@@ -1082,9 +1154,10 @@ def test_project_delete_requires_active_tasks_to_stop(
 
 def test_handbook_publish_state_protects_project_bindings(
     client: TestClient,
+    creator_headers: dict[str, str],
     admin_headers: dict[str, str],
 ) -> None:
-    projects = client.get("/api/v1/projects", headers=admin_headers).json()
+    projects = client.get("/api/v1/projects", headers=creator_headers).json()
     referenced_id = next(
         project["visual_handbook_id"] for project in projects if project["visual_handbook_id"] is not None
     )
@@ -3307,15 +3380,21 @@ def test_task_access_is_scoped_to_task_owner(
     admin_headers: dict[str, str],
 ) -> None:
     project_id = client.get("/api/v1/projects", headers=creator_headers).json()[0]["id"]
-    task = client.post(
+    denied_project = client.post(
         f"/api/v1/projects/{project_id}/cover/generate",
         headers=admin_headers,
         json={},
     )
+    assert denied_project.status_code == 404
+    task = client.post(
+        f"/api/v1/projects/{project_id}/cover/generate",
+        headers=creator_headers,
+        json={},
+    )
     assert task.status_code == 202
-    denied = client.get(f"/api/v1/tasks/{task.json()['id']}", headers=creator_headers)
+    denied = client.get(f"/api/v1/tasks/{task.json()['id']}", headers=admin_headers)
     assert denied.status_code == 404
-    cancelled = client.post(f"/api/v1/tasks/{task.json()['id']}/cancel", headers=admin_headers)
+    cancelled = client.post(f"/api/v1/tasks/{task.json()['id']}/cancel", headers=creator_headers)
     assert cancelled.status_code == 200
 
 
@@ -5472,46 +5551,18 @@ def test_agent_chat_applies_project_file_changes_with_audit_manifest(
     assert any(item["name"] == "故事骨架.md" for item in files)
 
 
-def test_admin_can_use_director_agent_for_another_users_project(
+def test_admin_cannot_use_director_agent_for_another_users_project(
     client: TestClient,
     creator_headers: dict[str, str],
     admin_headers: dict[str, str],
 ) -> None:
     project_id = client.get("/api/v1/projects", headers=creator_headers).json()[0]["id"]
-    imported = client.post(
-        f"/api/v1/projects/{project_id}/sources/import",
-        headers=creator_headers,
-        data={
-            "mode": "novel",
-            "source_name": "管理员导演 Agent 权限测试",
-            "pasted_text": "第一章 跨用户项目\n管理员需要在租户项目中继续创作。",
-        },
-    )
-    assert imported.status_code == 201
-    chapter_id = imported.json()["chapters"][0]["id"]
-    provider_id = client.get("/api/v1/admin/providers", headers=admin_headers).json()[0]["id"]
-    assert client.patch(
-        f"/api/v1/admin/providers/{provider_id}",
-        headers=admin_headers,
-        json={"api_key": "test-admin-director-agent-key"},
-    ).status_code == 200
     session = client.post(
         f"/api/v1/projects/{project_id}/agent/sessions",
         headers=admin_headers,
         json={"scene": "director"},
     )
-    assert session.status_code == 201
-
-    sent = client.post(
-        f"/api/v1/projects/{project_id}/agent/sessions/{session.json()['id']}/messages",
-        headers=admin_headers,
-        json={"content": "分析当前章节", "chapter_id": chapter_id},
-    )
-
-    assert sent.status_code == 202
-    assert sent.json()["task"]["request_payload"]["chapter_id"] == chapter_id
-    task_id = sent.json()["task"]["id"]
-    assert client.post(f"/api/v1/tasks/{task_id}/cancel", headers=admin_headers).status_code == 200
+    assert session.status_code == 404
 
 
 def test_director_agent_publishes_formal_script_version_for_bound_chapter(
@@ -6613,3 +6664,134 @@ def test_personal_agent_video_mode_uses_uploaded_reference_and_normalizes_durati
     assert media["duration_seconds"] == 5
     assert media["generation_mode"] == "first_frame"
     assert client.get(media["media_url"]).status_code == 200
+
+
+def test_same_tenant_accounts_cannot_access_each_others_creation_data(
+    client: TestClient,
+    creator_headers: dict[str, str],
+    admin_headers: dict[str, str],
+) -> None:
+    accounts: list[tuple[str, dict[str, str]]] = [
+        ("admin-a", admin_headers),
+        ("user-a", creator_headers),
+    ]
+    for key, role in (("admin-b", "admin"), ("user-b", "user")):
+        email = f"isolation-{key}@cineforge.local"
+        password = "Isolation123!"
+        created = client.post(
+            "/api/v1/admin/users",
+            headers=admin_headers,
+            json={
+                "email": email,
+                "display_name": f"隔离测试 {key}",
+                "password": password,
+                "role": role,
+                "initial_credits": "100.00",
+            },
+        )
+        assert created.status_code == 201
+        login = client.post(
+            "/api/v1/auth/login",
+            json={"tenant": "demo", "email": email, "password": password},
+        )
+        assert login.status_code == 200
+        accounts.append(
+            (key, {"Authorization": f"Bearer {login.json()['access_token']}"})
+        )
+
+    projects: dict[str, dict] = {}
+    account_ids: dict[str, str] = {}
+    for key, headers in accounts:
+        account_ids[key] = client.get("/api/v1/auth/me", headers=headers).json()["user"]["id"]
+        options = client.get("/api/v1/projects/options", headers=headers)
+        assert options.status_code == 200
+        payload = options.json()
+        created = client.post(
+            "/api/v1/projects",
+            headers=headers,
+            json={
+                "name": f"账号隔离项目 {key}",
+                "video_model_id": payload["video_models"][0]["id"],
+                "visual_handbook_id": payload["visual_handbooks"][0]["id"],
+                "director_handbook_id": payload["director_handbooks"][0]["id"],
+            },
+        )
+        assert created.status_code == 201
+        projects[key] = created.json()
+
+    for key, headers in accounts:
+        visible = client.get("/api/v1/projects", headers=headers)
+        assert visible.status_code == 200
+        assert projects[key]["id"] in {item["id"] for item in visible.json()}
+        assert all(item["owner_id"] == account_ids[key] for item in visible.json())
+
+        for foreign_key, foreign_project in projects.items():
+            if foreign_key == key:
+                continue
+            project_path = f"/api/v1/projects/{foreign_project['id']}"
+            assert client.get(project_path, headers=headers).status_code == 404
+            assert (
+                client.patch(project_path, headers=headers, json={"name": "越权修改"}).status_code
+                == 404
+            )
+            assert client.delete(project_path, headers=headers).status_code == 404
+            for suffix in (
+                "/files",
+                "/chapters",
+                "/assets",
+                "/agent/sessions",
+                "/agent-memories",
+            ):
+                assert client.get(f"{project_path}{suffix}", headers=headers).status_code == 404
+
+    global_asset = client.post(
+        "/api/v1/assets",
+        headers=admin_headers,
+        json={
+            "asset_type": "character",
+            "name": "管理员 A 私有角色",
+            "description": "只能由创建账号访问",
+        },
+    )
+    assert global_asset.status_code == 201
+    asset_id = global_asset.json()["id"]
+    for key, headers in accounts:
+        listed_ids = {
+            item["id"] for item in client.get("/api/v1/assets", headers=headers).json()
+        }
+        if key == "admin-a":
+            assert asset_id in listed_ids
+            continue
+        assert asset_id not in listed_ids
+        assert (
+            client.patch(
+                f"/api/v1/assets/{asset_id}",
+                headers=headers,
+                json={"name": "越权资产修改"},
+            ).status_code
+            == 404
+        )
+        assert (
+            client.get(f"/api/v1/assets/{asset_id}/revisions", headers=headers).status_code
+            == 404
+        )
+        assert client.delete(f"/api/v1/assets/{asset_id}", headers=headers).status_code == 404
+        assert (
+            client.post(
+                "/api/v1/assets",
+                headers=headers,
+                json={
+                    "asset_type": "character",
+                    "parent_asset_id": asset_id,
+                    "name": "越权衍生角色",
+                },
+            ).status_code
+            == 422
+        )
+        assert (
+            client.post(
+                f"/api/v1/projects/{projects[key]['id']}/assets/import/{asset_id}",
+                headers=headers,
+            ).status_code
+            == 404
+        )

@@ -29,6 +29,7 @@ import {
   LoaderCircle,
   LogIn,
   Minus,
+  MonitorPlay,
   Network,
   Pencil,
   Plus,
@@ -47,6 +48,7 @@ import {
 
 import AdminUsersPanel from '@/components/AdminUsersPanel.vue'
 import AdminInvitationsPanel from '@/components/AdminInvitationsPanel.vue'
+import AdminBrandingPanel from '@/components/AdminBrandingPanel.vue'
 import BaseDialog from '@/components/BaseDialog.vue'
 import SkillTree from '@/components/SkillTree.vue'
 import UiSelect from '@/components/UiSelect.vue'
@@ -134,7 +136,7 @@ const handbookCoverInput = ref<HTMLInputElement | null>(null)
 const pendingHandbookCover = ref<File | null>(null)
 const pendingHandbookCoverPreview = ref<string | null>(null)
 
-const validSections = ['overview', 'users', 'invitations', 'models', 'pricing', 'agents', 'prompts', 'handbooks', 'skills', 'security'] as const
+const validSections = ['overview', 'users', 'invitations', 'branding', 'models', 'pricing', 'agents', 'prompts', 'handbooks', 'skills', 'security'] as const
 const section = computed(() => {
   const value = String(route.params.section || 'overview')
   return validSections.includes(value as (typeof validSections)[number]) ? value : 'overview'
@@ -144,6 +146,7 @@ const tabs = [
   { id: 'overview', label: '总览', icon: Gauge },
   { id: 'users', label: '用户与积分', icon: UsersRound },
   { id: 'invitations', label: '邀请注册', icon: MailPlus },
+  { id: 'branding', label: '登录视觉', icon: MonitorPlay },
   { id: 'models', label: '模型平台', icon: ServerCog },
   { id: 'pricing', label: '计费规则', icon: Coins },
   { id: 'agents', label: 'Agent', icon: Bot },
@@ -1293,6 +1296,8 @@ async function saveSkill(): Promise<void> {
       <AdminUsersPanel v-else-if="section === 'users'" />
 
       <AdminInvitationsPanel v-else-if="section === 'invitations'" />
+
+      <AdminBrandingPanel v-else-if="section === 'branding'" />
 
       <section v-else-if="section === 'models'" class="admin-section model-services-section">
         <header class="section-heading">

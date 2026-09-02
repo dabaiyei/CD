@@ -117,13 +117,19 @@ async def task_for_user(
 
 async def restore_chapter_status(session: AsyncSession, task: AITask) -> None:
     chapter = await session.get(Chapter, str(task.request_payload.get("chapter_id") or ""))
-    if chapter is None:
+    if chapter is None or chapter.user_id != task.user_id:
         return
     script_count = await session.scalar(
-        select(func.count(ScriptVersion.id)).where(ScriptVersion.chapter_id == chapter.id)
+        select(func.count(ScriptVersion.id)).where(
+            ScriptVersion.chapter_id == chapter.id,
+            ScriptVersion.user_id == task.user_id,
+        )
     )
     analysis_count = await session.scalar(
-        select(func.count(ChapterAnalysis.id)).where(ChapterAnalysis.chapter_id == chapter.id)
+        select(func.count(ChapterAnalysis.id)).where(
+            ChapterAnalysis.chapter_id == chapter.id,
+            ChapterAnalysis.user_id == task.user_id,
+        )
     )
     if script_count:
         chapter.status = ChapterStatus.REVIEWING
@@ -242,11 +248,19 @@ async def cancel_task(
     task.error_message = "用户取消任务"
     if task.task_type == "asset_image_generation":
         asset = await session.get(Asset, str(task.request_payload.get("asset_id") or ""))
-        if asset is not None and asset.status == AssetStatus.GENERATING:
+        if (
+            asset is not None
+            and asset.user_id == task.user_id
+            and asset.status == AssetStatus.GENERATING
+        ):
             asset.status = AssetStatus.READY if asset.media_url else AssetStatus.PROMPT_READY
     elif task.task_type == "shot_video_generation":
         clip = await session.get(VideoClip, str(task.request_payload.get("video_clip_id") or ""))
-        if clip is not None and clip.status == VideoClipStatus.QUEUED:
+        if (
+            clip is not None
+            and clip.user_id == task.user_id
+            and clip.status == VideoClipStatus.QUEUED
+        ):
             clip.status = VideoClipStatus.CANCELLED
             clip.error_message = "用户取消任务"
     elif task.task_type == "dialogue_tts_generation":
@@ -254,7 +268,11 @@ async def cancel_task(
             AudioClip,
             str(task.request_payload.get("audio_clip_id") or ""),
         )
-        if audio_clip is not None and audio_clip.status == AudioClipStatus.QUEUED:
+        if (
+            audio_clip is not None
+            and audio_clip.user_id == task.user_id
+            and audio_clip.status == AudioClipStatus.QUEUED
+        ):
             audio_clip.status = AudioClipStatus.CANCELLED
             audio_clip.error_message = "用户取消任务"
     elif task.task_type == "chapter_composition_render":
@@ -294,7 +312,7 @@ async def retry_task(
     clip: VideoClip | None = None
     if task.task_type in {"chapter_analysis_generation", "chapter_script_generation"}:
         chapter = await session.get(Chapter, str(task.request_payload.get("chapter_id") or ""))
-        if chapter is None:
+        if chapter is None or chapter.user_id != task.user_id:
             raise HTTPException(status_code=409, detail="章节已不存在，不能重试")
         source_hash = hashlib.sha256(chapter.original_content.encode("utf-8")).hexdigest()
         if source_hash != task.request_payload.get("source_hash"):
@@ -304,9 +322,17 @@ async def retry_task(
             base_script_id = str(task.request_payload.get("base_script_version_id") or "")
             analysis = await session.get(ChapterAnalysis, analysis_id) if analysis_id else None
             base_script = await session.get(ScriptVersion, base_script_id) if base_script_id else None
-            if analysis_id and (analysis is None or analysis.chapter_id != chapter.id):
+            if analysis_id and (
+                analysis is None
+                or analysis.chapter_id != chapter.id
+                or analysis.user_id != task.user_id
+            ):
                 raise HTTPException(status_code=409, detail="章节分析版本已失效，不能重试")
-            if base_script_id and (base_script is None or base_script.chapter_id != chapter.id):
+            if base_script_id and (
+                base_script is None
+                or base_script.chapter_id != chapter.id
+                or base_script.user_id != task.user_id
+            ):
                 raise HTTPException(status_code=409, detail="参考剧本版本已失效，不能重试")
     elif task.task_type == "agent_chat_run":
         chat_session = await session.get(
@@ -354,8 +380,10 @@ async def retry_task(
         )
         if (
             chapter is None
+            or chapter.user_id != task.user_id
             or chapter.active_script_version_id != task.request_payload.get("script_version_id")
             or extraction is None
+            or extraction.user_id != task.user_id
             or not extraction.is_active
             or extraction.script_version_id != chapter.active_script_version_id
         ):
@@ -367,7 +395,15 @@ async def retry_task(
             StoryboardVersion,
             str(task.request_payload.get("storyboard_version_id") or ""),
         )
-        if clip is None or shot is None or storyboard is None or not storyboard.is_active:
+        if (
+            clip is None
+            or clip.user_id != task.user_id
+            or shot is None
+            or shot.user_id != task.user_id
+            or storyboard is None
+            or storyboard.user_id != task.user_id
+            or not storyboard.is_active
+        ):
             raise HTTPException(status_code=409, detail="镜头或分镜已失效，不能重试视频任务")
         if shot.storyboard_version_id != storyboard.id:
             raise HTTPException(status_code=409, detail="镜头不再属于当前分镜，不能重试")
@@ -381,13 +417,23 @@ async def retry_task(
         )
         storyboard_id = str(task.request_payload.get("storyboard_version_id") or "")
         storyboard = await session.get(StoryboardVersion, storyboard_id) if storyboard_id else None
-        if chapter is None or script is None or chapter.active_script_version_id != script.id:
+        if (
+            chapter is None
+            or chapter.user_id != task.user_id
+            or script is None
+            or script.user_id != task.user_id
+            or chapter.active_script_version_id != script.id
+        ):
             raise HTTPException(status_code=409, detail="生效剧本已切换，不能重试旧台词提取任务")
         if hashlib.sha256(script.content.encode("utf-8")).hexdigest() != task.request_payload.get(
             "script_hash"
         ):
             raise HTTPException(status_code=409, detail="剧本内容已更新，不能重试旧台词提取任务")
-        if storyboard_id and (storyboard is None or not storyboard.is_active):
+        if storyboard_id and (
+            storyboard is None
+            or storyboard.user_id != task.user_id
+            or not storyboard.is_active
+        ):
             raise HTTPException(status_code=409, detail="生效分镜已切换，不能重试旧台词提取任务")
     elif task.task_type == "dialogue_tts_generation":
         audio_clip = await session.get(
@@ -408,10 +454,14 @@ async def retry_task(
         )
         if (
             audio_clip is None
+            or audio_clip.user_id != task.user_id
             or dialogue is None
+            or dialogue.user_id != task.user_id
             or not dialogue.is_active
             or line is None
+            or line.user_id != task.user_id
             or binding is None
+            or binding.user_id != task.user_id
             or not binding.enabled
         ):
             raise HTTPException(status_code=409, detail="台词版本或音色绑定已失效，不能重试配音")
@@ -429,8 +479,10 @@ async def retry_task(
         )
         if (
             composition is None
+            or composition.user_id != task.user_id
             or composition.status not in {CompositionStatus.DRAFT, CompositionStatus.FAILED}
             or storyboard is None
+            or storyboard.user_id != task.user_id
             or not storyboard.is_active
         ):
             raise HTTPException(status_code=409, detail="成片清单或生效分镜已失效，不能重试")
@@ -459,7 +511,11 @@ async def retry_task(
         chapter.status = ChapterStatus.SCRIPTING
     elif task.task_type == "asset_image_generation":
         asset = await session.get(Asset, str(task.request_payload.get("asset_id") or ""))
-        if asset is None or not asset.generation_prompt.strip():
+        if (
+            asset is None
+            or asset.user_id != task.user_id
+            or not asset.generation_prompt.strip()
+        ):
             raise HTTPException(status_code=409, detail="资产已不存在或提示词已失效")
         task.request_payload = {**task.request_payload, "asset_version": asset.version}
         asset.status = AssetStatus.GENERATING

@@ -84,6 +84,7 @@ async def project_assets_by_ids(
                 select(Asset).where(
                     Asset.id.in_(asset_ids),
                     Asset.tenant_id == user.tenant_id,
+                    Asset.user_id == user.id,
                     Asset.project_id == project_id,
                     Asset.scope == AssetScope.PROJECT,
                 )
@@ -125,6 +126,7 @@ async def project_assets_for_generation(
                     select(Asset)
                     .where(
                         Asset.tenant_id == user.tenant_id,
+                        Asset.user_id == user.id,
                         Asset.project_id == project.id,
                         Asset.scope == AssetScope.PROJECT,
                         Asset.name.in_(asset_names),
@@ -160,7 +162,10 @@ async def project_assets_for_generation(
                 await session.scalars(
                     select(Asset)
                     .join(AssetExtractionItem, AssetExtractionItem.asset_id == Asset.id)
-                    .where(AssetExtractionItem.extraction_id == extraction.id)
+                    .where(
+                        AssetExtractionItem.extraction_id == extraction.id,
+                        Asset.user_id == user.id,
+                    )
                     .order_by(Asset.asset_type, Asset.name)
                 )
             ).all()

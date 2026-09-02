@@ -26,7 +26,6 @@ from app.db.models import (
     MarketplaceResourceType,
     ScriptVersion,
     User,
-    UserRole,
 )
 from app.db.session import get_session
 from app.domain.schemas import (
@@ -62,16 +61,11 @@ router = APIRouter(tags=["assets"])
 DERIVABLE_ASSET_TYPES = {AssetType.CHARACTER, AssetType.SCENE, AssetType.PROP}
 
 
-async def asset_for_tenant(session: AsyncSession, asset_id: str, user: User) -> Asset:
+async def asset_for_user(session: AsyncSession, asset_id: str, user: User) -> Asset:
     asset = await session.get(Asset, asset_id)
-    if asset is None or asset.tenant_id != user.tenant_id:
+    if asset is None or asset.tenant_id != user.tenant_id or asset.user_id != user.id:
         raise HTTPException(status_code=404, detail="资产不存在")
     return asset
-
-
-def require_asset_editor(asset: Asset, user: User) -> None:
-    if asset.scope == AssetScope.GLOBAL and asset.user_id != user.id and user.role != UserRole.ADMIN:
-        raise HTTPException(status_code=403, detail="只能修改自己创建的全局资产")
 
 
 async def validate_parent(
@@ -81,6 +75,7 @@ async def validate_parent(
     scope: AssetScope,
     project_id: str | None,
     tenant_id: str,
+    user_id: str,
     asset_type: AssetType,
     child_id: str | None = None,
 ) -> Asset | None:
@@ -91,6 +86,7 @@ async def validate_parent(
         parent is None
         or parent.id == child_id
         or parent.tenant_id != tenant_id
+        or parent.user_id != user_id
         or parent.scope != scope
         or parent.project_id != project_id
         or parent.parent_asset_id is not None
@@ -142,6 +138,7 @@ async def copy_asset_between_libraries(
             scope=source.scope,
             project_id=source.project_id,
             tenant_id=source.tenant_id,
+            user_id=user.id,
             asset_type=source.asset_type,
             child_id=source.id,
         )
@@ -150,6 +147,7 @@ async def copy_asset_between_libraries(
             select(Asset)
             .where(
                 Asset.tenant_id == user.tenant_id,
+                Asset.user_id == user.id,
                 Asset.scope == scope,
                 Asset.project_id == project_id,
                 Asset.parent_asset_id.is_(None),
@@ -224,12 +222,17 @@ async def generate_asset_extraction(
 ) -> AITask:
     await project_for_user(session, project_id, user)
     chapter = await session.get(Chapter, chapter_id)
-    if chapter is None or chapter.project_id != project_id or chapter.tenant_id != user.tenant_id:
+    if (
+        chapter is None
+        or chapter.project_id != project_id
+        or chapter.tenant_id != user.tenant_id
+        or chapter.user_id != user.id
+    ):
         raise HTTPException(status_code=404, detail="章节不存在")
     if not chapter.active_script_version_id:
         raise HTTPException(status_code=409, detail="提取资产前必须先选择生效剧本")
     script = await session.get(ScriptVersion, chapter.active_script_version_id)
-    if script is None or script.chapter_id != chapter.id:
+    if script is None or script.chapter_id != chapter.id or script.user_id != user.id:
         raise HTTPException(status_code=409, detail="章节生效剧本不可用")
 
     for pending in await active_tasks(
@@ -342,7 +345,11 @@ async def list_global_assets(
         (
             await session.scalars(
                 select(Asset)
-                .where(Asset.tenant_id == user.tenant_id, Asset.scope == AssetScope.GLOBAL)
+                .where(
+                    Asset.tenant_id == user.tenant_id,
+                    Asset.user_id == user.id,
+                    Asset.scope == AssetScope.GLOBAL,
+                )
                 .order_by(Asset.asset_type, Asset.name)
             )
         ).all()
@@ -361,6 +368,7 @@ async def create_global_asset(
         scope=AssetScope.GLOBAL,
         project_id=None,
         tenant_id=user.tenant_id,
+        user_id=user.id,
         asset_type=payload.asset_type,
     )
     asset = new_asset(payload, user=user, scope=AssetScope.GLOBAL, project_id=None)
@@ -385,6 +393,7 @@ async def list_project_assets(
                 select(Asset)
                 .where(
                     Asset.tenant_id == user.tenant_id,
+                    Asset.user_id == user.id,
                     Asset.project_id == project_id,
                     Asset.scope == AssetScope.PROJECT,
                 )
@@ -412,6 +421,7 @@ async def create_project_asset(
         scope=AssetScope.PROJECT,
         project_id=project_id,
         tenant_id=user.tenant_id,
+        user_id=user.id,
         asset_type=payload.asset_type,
     )
     asset = new_asset(payload, user=user, scope=AssetScope.PROJECT, project_id=project_id)
@@ -430,8 +440,7 @@ async def update_asset(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> Asset:
-    asset = await asset_for_tenant(session, asset_id, user)
-    require_asset_editor(asset, user)
+    asset = await asset_for_user(session, asset_id, user)
     if asset.scope == AssetScope.PROJECT and asset.project_id:
         await project_for_user(session, asset.project_id, user)
     values = payload.model_dump(exclude_unset=True)
@@ -447,6 +456,7 @@ async def update_asset(
             scope=asset.scope,
             project_id=asset.project_id,
             tenant_id=user.tenant_id,
+            user_id=user.id,
             asset_type=asset.asset_type,
             child_id=asset.id,
         )
@@ -477,8 +487,7 @@ async def upload_asset_image(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> Asset:
-    asset = await asset_for_tenant(session, asset_id, user)
-    require_asset_editor(asset, user)
+    asset = await asset_for_user(session, asset_id, user)
     if asset.asset_type == AssetType.AUDIO:
         raise HTTPException(status_code=409, detail="音频资产不能上传图片")
     if asset.scope == AssetScope.PROJECT and asset.project_id:
@@ -536,7 +545,7 @@ async def list_asset_revisions(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> list[AssetRevision]:
-    asset = await asset_for_tenant(session, asset_id, user)
+    asset = await asset_for_user(session, asset_id, user)
     if asset.scope == AssetScope.PROJECT and asset.project_id:
         await project_for_user(session, asset.project_id, user)
     return list(
@@ -563,8 +572,7 @@ async def restore_asset_revision(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> Asset:
-    asset = await asset_for_tenant(session, asset_id, user)
-    require_asset_editor(asset, user)
+    asset = await asset_for_user(session, asset_id, user)
     if asset.scope == AssetScope.PROJECT and asset.project_id:
         await project_for_user(session, asset.project_id, user)
     revision = await session.get(AssetRevision, revision_id)
@@ -580,6 +588,7 @@ async def restore_asset_revision(
         scope=asset.scope,
         project_id=asset.project_id,
         tenant_id=user.tenant_id,
+        user_id=user.id,
         asset_type=asset.asset_type,
         child_id=asset.id,
     )
@@ -608,8 +617,7 @@ async def delete_asset(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> None:
-    asset = await asset_for_tenant(session, asset_id, user)
-    require_asset_editor(asset, user)
+    asset = await asset_for_user(session, asset_id, user)
     if asset.scope == AssetScope.PROJECT and asset.project_id:
         await project_for_user(session, asset.project_id, user)
     if await session.scalar(select(Asset.id).where(Asset.parent_asset_id == asset.id).limit(1)):
@@ -636,7 +644,7 @@ async def export_asset_to_global(
     session: AsyncSession = Depends(get_session),
 ) -> Asset:
     await project_for_user(session, project_id, user)
-    source = await asset_for_tenant(session, asset_id, user)
+    source = await asset_for_user(session, asset_id, user)
     if source.scope != AssetScope.PROJECT or source.project_id != project_id:
         raise HTTPException(status_code=422, detail="只能导出当前项目的塑造资产")
     copied = await copy_asset_between_libraries(
@@ -659,7 +667,7 @@ async def import_global_asset(
     session: AsyncSession = Depends(get_session),
 ) -> Asset:
     await project_for_user(session, project_id, user)
-    source = await asset_for_tenant(session, asset_id, user)
+    source = await asset_for_user(session, asset_id, user)
     if source.scope != AssetScope.GLOBAL:
         raise HTTPException(status_code=422, detail="只能从全局资产库导入")
     copied = await copy_asset_between_libraries(
@@ -688,12 +696,17 @@ async def save_asset_extraction(
 ) -> AssetExtractionResult:
     await project_for_user(session, project_id, user)
     chapter = await session.get(Chapter, chapter_id)
-    if chapter is None or chapter.project_id != project_id or chapter.tenant_id != user.tenant_id:
+    if (
+        chapter is None
+        or chapter.project_id != project_id
+        or chapter.tenant_id != user.tenant_id
+        or chapter.user_id != user.id
+    ):
         raise HTTPException(status_code=404, detail="章节不存在")
     if not chapter.active_script_version_id:
         raise HTTPException(status_code=409, detail="提取资产前必须先选择生效剧本")
     script = await session.get(ScriptVersion, chapter.active_script_version_id)
-    if script is None or script.chapter_id != chapter.id:
+    if script is None or script.chapter_id != chapter.id or script.user_id != user.id:
         raise HTTPException(status_code=409, detail="章节生效剧本不可用")
     latest = await session.scalar(
         select(func.max(AssetExtraction.version)).where(AssetExtraction.chapter_id == chapter.id)
@@ -723,6 +736,7 @@ async def save_asset_extraction(
                 scope=AssetScope.PROJECT,
                 project_id=project_id,
                 tenant_id=user.tenant_id,
+                user_id=user.id,
                 asset_type=item.asset_type,
             )
         asset = new_asset(item, user=user, scope=AssetScope.PROJECT, project_id=project_id)
@@ -754,13 +768,21 @@ async def list_asset_extractions(
 ) -> list[AssetExtraction]:
     await project_for_user(session, project_id, user)
     chapter = await session.get(Chapter, chapter_id)
-    if chapter is None or chapter.project_id != project_id or chapter.tenant_id != user.tenant_id:
+    if (
+        chapter is None
+        or chapter.project_id != project_id
+        or chapter.tenant_id != user.tenant_id
+        or chapter.user_id != user.id
+    ):
         raise HTTPException(status_code=404, detail="章节不存在")
     return list(
         (
             await session.scalars(
                 select(AssetExtraction)
-                .where(AssetExtraction.chapter_id == chapter.id)
+                .where(
+                    AssetExtraction.chapter_id == chapter.id,
+                    AssetExtraction.user_id == user.id,
+                )
                 .order_by(AssetExtraction.version.desc())
             )
         ).all()

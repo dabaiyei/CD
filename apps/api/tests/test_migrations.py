@@ -125,6 +125,7 @@ def test_initial_migration_round_trip_and_revision_guard(tmp_path: Path) -> None
             "user_templates",
             "marketplace_listings",
             "marketplace_acquisitions",
+            "platform_branding",
             } <= tables
     assert {
         "worker_id",
@@ -172,7 +173,7 @@ def test_initial_migration_round_trip_and_revision_guard(tmp_path: Path) -> None
     assert {"avatar_url", "avatar_storage_path"} <= user_columns
     assert "invite_url_prefix" in tenant_columns
     assert "ix_image_resolution_routes_tenant_model" in image_route_indexes
-    assert revision == ("1e7c4a9b2d60",)
+    assert revision == ("5c8d1f7a4b20",)
 
     checked = run_alembic(database, "check")
     assert "No new upgrade operations detected" in checked.stdout + checked.stderr
@@ -186,7 +187,7 @@ def test_initial_migration_round_trip_and_revision_guard(tmp_path: Path) -> None
     assert stale_guard.returncode != 0
     assert "数据库版本不匹配" in stale_guard.stderr
     with sqlite3.connect(database) as connection:
-        connection.execute("UPDATE alembic_version SET version_num = '1e7c4a9b2d60'")
+        connection.execute("UPDATE alembic_version SET version_num = '5c8d1f7a4b20'")
 
     run_alembic(database, "downgrade", "base")
     with sqlite3.connect(database) as connection:

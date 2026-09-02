@@ -21,7 +21,7 @@ import {
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import { api, setToken } from '@/lib/api'
 import { useAuthStore } from '@/stores/auth'
-import type { InvitationRegistrationInfo } from '@/types'
+import type { InvitationRegistrationInfo, PlatformBranding } from '@/types'
 
 const route = useRoute()
 const router = useRouter()
@@ -41,6 +41,9 @@ const showPassword = ref(false)
 const avatar = ref<File | null>(null)
 const avatarPreview = ref('')
 const avatarInput = ref<HTMLInputElement | null>(null)
+const defaultBackgroundVideoUrl = '/videos/login-background.mp4'
+const backgroundVideoUrl = ref(defaultBackgroundVideoUrl)
+const backgroundFallbackUsed = ref(false)
 let redirectTimer: ReturnType<typeof setTimeout> | null = null
 
 function formatCredits(value: string): string {
@@ -84,6 +87,21 @@ async function loadInvitation(): Promise<void> {
   }
 }
 
+async function loadBranding(): Promise<void> {
+  try {
+    const branding = await api<PlatformBranding>('/public/branding')
+    if (branding.login_background_video_url) backgroundVideoUrl.value = branding.login_background_video_url
+  } catch {
+    backgroundVideoUrl.value = defaultBackgroundVideoUrl
+  }
+}
+
+function handleBackgroundVideoError(): void {
+  if (backgroundFallbackUsed.value || backgroundVideoUrl.value === defaultBackgroundVideoUrl) return
+  backgroundFallbackUsed.value = true
+  backgroundVideoUrl.value = defaultBackgroundVideoUrl
+}
+
 async function submit(): Promise<void> {
   formError.value = ''
   submitting.value = true
@@ -105,7 +123,10 @@ async function submit(): Promise<void> {
   }
 }
 
-onMounted(() => void loadInvitation())
+onMounted(() => {
+  void loadInvitation()
+  void loadBranding()
+})
 onBeforeUnmount(() => {
   if (redirectTimer) clearTimeout(redirectTimer)
   if (avatarPreview.value) URL.revokeObjectURL(avatarPreview.value)
@@ -114,8 +135,8 @@ onBeforeUnmount(() => {
 
 <template>
   <main class="invite-register-page">
-    <video class="invite-register-page__video" autoplay muted loop playsinline preload="metadata" poster="/covers/login-studio-v2.webp" aria-hidden="true">
-      <source src="/videos/login-background.mp4" type="video/mp4" />
+    <video :key="backgroundVideoUrl" class="invite-register-page__video" autoplay muted loop playsinline preload="metadata" poster="/covers/login-studio-v2.webp" aria-hidden="true" @error="handleBackgroundVideoError">
+      <source :src="backgroundVideoUrl" />
     </video>
     <div class="invite-register-page__veil" aria-hidden="true"></div>
     <div class="invite-register-page__grain" aria-hidden="true"></div>

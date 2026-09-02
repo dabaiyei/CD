@@ -110,7 +110,10 @@ async def workflow_detail_rows(
         (
             await session.scalars(
                 select(DirectorChildRun)
-                .where(DirectorChildRun.workflow_id == workflow.id)
+                .where(
+                    DirectorChildRun.workflow_id == workflow.id,
+                    DirectorChildRun.user_id == workflow.user_id,
+                )
                 .order_by(DirectorChildRun.created_at)
             )
         ).all()
@@ -119,6 +122,7 @@ async def workflow_detail_rows(
         select(DirectorDecisionRequest)
         .where(
             DirectorDecisionRequest.workflow_id == workflow.id,
+            DirectorDecisionRequest.user_id == workflow.user_id,
             DirectorDecisionRequest.resolved.is_(False),
         )
         .order_by(DirectorDecisionRequest.created_at.desc())
