@@ -21,6 +21,7 @@ import {
   Fingerprint,
   Gauge,
   ImagePlus,
+  MailPlus,
   KeyRound,
   Layers3,
   ListFilter,
@@ -45,6 +46,7 @@ import {
 } from 'lucide-vue-next'
 
 import AdminUsersPanel from '@/components/AdminUsersPanel.vue'
+import AdminInvitationsPanel from '@/components/AdminInvitationsPanel.vue'
 import BaseDialog from '@/components/BaseDialog.vue'
 import SkillTree from '@/components/SkillTree.vue'
 import UiSelect from '@/components/UiSelect.vue'
@@ -61,6 +63,8 @@ import type {
   HandbookPackage,
   HandbookSkillFile,
   HandbookType,
+  ImageResolution,
+  ImageResolutionModelRoute,
   ModelType,
   Project,
   PricingRule,
@@ -88,6 +92,7 @@ const testingProviderId = ref<string | null>(null)
 const testingModelId = ref<string | null>(null)
 const installingAutoDlPreset = ref(false)
 const settingDefaultType = ref<ModelType | null>(null)
+const settingImageResolution = ref<ImageResolution | null>(null)
 const dialog = ref<DialogKind>(null)
 const discoveryProvider = ref<Provider | null>(null)
 const discoveryRows = ref<DiscoveryRow[]>([])
@@ -111,6 +116,7 @@ const readiness = ref<Readiness | null>(null)
 const providers = ref<Provider[]>([])
 const activeProviderId = ref('')
 const models = ref<AIModel[]>([])
+const imageResolutionRoutes = ref<ImageResolutionModelRoute[]>([])
 const agents = ref<AgentProfile[]>([])
 const prompts = ref<PromptTemplate[]>([])
 const handbooks = ref<Handbook[]>([])
@@ -128,7 +134,7 @@ const handbookCoverInput = ref<HTMLInputElement | null>(null)
 const pendingHandbookCover = ref<File | null>(null)
 const pendingHandbookCoverPreview = ref<string | null>(null)
 
-const validSections = ['overview', 'users', 'models', 'pricing', 'agents', 'prompts', 'handbooks', 'skills', 'security'] as const
+const validSections = ['overview', 'users', 'invitations', 'models', 'pricing', 'agents', 'prompts', 'handbooks', 'skills', 'security'] as const
 const section = computed(() => {
   const value = String(route.params.section || 'overview')
   return validSections.includes(value as (typeof validSections)[number]) ? value : 'overview'
@@ -137,6 +143,7 @@ const section = computed(() => {
 const tabs = [
   { id: 'overview', label: '总览', icon: Gauge },
   { id: 'users', label: '用户与积分', icon: UsersRound },
+  { id: 'invitations', label: '邀请注册', icon: MailPlus },
   { id: 'models', label: '模型平台', icon: ServerCog },
   { id: 'pricing', label: '计费规则', icon: Coins },
   { id: 'agents', label: 'Agent', icon: Bot },
@@ -288,7 +295,7 @@ const editingHandbookUsedByProjects = computed(() => Boolean(
 ))
 
 const modelTypeLabel: Record<ModelType, string> = { text: '文本', image: '图片', video: '视频', tts: 'TTS' }
-const requiredModelTypes = new Set<ModelType>(['text', 'image', 'video'])
+const requiredModelTypes = new Set<ModelType>(['text', 'video'])
 const modelTypeIcon = { text: Cpu, image: Sparkles, video: Activity, tts: Volume2 }
 const modelTypeOptions = (Object.keys(modelTypeLabel) as ModelType[]).map((value) => ({
   value,
@@ -336,6 +343,17 @@ function providerForModel(model: AIModel | undefined): Provider | undefined {
 
 function defaultModelFor(modelType: ModelType): AIModel | undefined {
   return models.value.find((model) => model.model_type === modelType && model.is_default)
+}
+
+const imageResolutions: ImageResolution[] = ['1K', '2K', '4K']
+
+function imageResolutionRouteFor(resolution: ImageResolution): ImageResolutionModelRoute | undefined {
+  return imageResolutionRoutes.value.find((route) => route.resolution === resolution)
+}
+
+function imageResolutionModelFor(resolution: ImageResolution): AIModel | undefined {
+  const route = imageResolutionRouteFor(resolution)
+  return route ? models.value.find((model) => model.id === route.model_id) : undefined
 }
 
 function defaultModelOptions(modelType: ModelType) {
@@ -563,6 +581,7 @@ async function loadAll(): Promise<void> {
       readyRows,
       providerRows,
       modelRows,
+      imageResolutionRows,
       pricingRows,
       agentRows,
       promptRows,
@@ -574,6 +593,7 @@ async function loadAll(): Promise<void> {
       api<Readiness>('/admin/readiness'),
       api<Provider[]>('/admin/providers'),
       api<AIModel[]>('/admin/models'),
+      api<ImageResolutionModelRoute[]>('/admin/image-resolution-models'),
       api<PricingRule[]>('/admin/pricing-rules'),
       api<AgentProfile[]>('/admin/agents'),
       api<PromptTemplate[]>('/admin/prompts'),
@@ -585,6 +605,7 @@ async function loadAll(): Promise<void> {
     readiness.value = readyRows
     providers.value = providerRows.map(normalizeProviderRow)
     models.value = modelRows.map(normalizeModelRow)
+    imageResolutionRoutes.value = imageResolutionRows
     pricingRules.value = pricingRows
     agents.value = agentRows
     prompts.value = promptRows
@@ -722,6 +743,37 @@ async function setDefaultModel(modelType: ModelType, modelId: string): Promise<v
     })
   } finally {
     settingDefaultType.value = null
+  }
+}
+
+async function setImageResolutionModel(
+  resolution: ImageResolution,
+  modelId: string,
+): Promise<void> {
+  const model = models.value.find((item) => item.id === modelId && item.model_type === 'image')
+  if (!model || imageResolutionModelFor(resolution)?.id === model.id || settingImageResolution.value) return
+  settingImageResolution.value = resolution
+  try {
+    const route = await api<ImageResolutionModelRoute>(`/admin/image-resolution-models/${resolution}`, {
+      method: 'PUT',
+      body: JSON.stringify({ model_id: model.id }),
+    })
+    const readyState = await api<Readiness>('/admin/readiness')
+    const index = imageResolutionRoutes.value.findIndex((item) => item.resolution === resolution)
+    if (index >= 0) imageResolutionRoutes.value[index] = route
+    else imageResolutionRoutes.value.push(route)
+    readiness.value = readyState
+    toast.show(`${resolution} 图片模型已切换`, {
+      message: `${providerForModel(model)?.name ?? '未知平台'} · ${model.name}`,
+      tone: 'success',
+    })
+  } catch (error) {
+    toast.show(`${resolution} 图片模型切换失败`, {
+      message: error instanceof Error ? error.message : undefined,
+      tone: 'error',
+    })
+  } finally {
+    settingImageResolution.value = null
   }
 }
 
@@ -1223,7 +1275,7 @@ async function saveSkill(): Promise<void> {
                 <Check v-if="readiness?.required_defaults[type]" :size="15" />
                 <CircleAlert v-else :size="15" />
               </span>
-              <span>默认{{ modelTypeLabel[type] }}模型</span>
+              <span>{{ type === 'image' ? '1K / 2K / 4K 图片模型' : `默认${modelTypeLabel[type]}模型` }}</span>
               <strong>{{ readiness?.required_defaults[type] ? '已配置' : '待配置' }}</strong>
             </div>
             <div>
@@ -1239,6 +1291,8 @@ async function saveSkill(): Promise<void> {
       </section>
 
       <AdminUsersPanel v-else-if="section === 'users'" />
+
+      <AdminInvitationsPanel v-else-if="section === 'invitations'" />
 
       <section v-else-if="section === 'models'" class="admin-section model-services-section">
         <header class="section-heading">
@@ -1263,7 +1317,7 @@ async function saveSkill(): Promise<void> {
           </header>
           <div class="global-defaults__grid">
             <article
-              v-for="(type, index) in (['text', 'image', 'video', 'tts'] as ModelType[])"
+              v-for="(type, index) in (['text', 'video', 'tts'] as ModelType[])"
               :key="type"
               v-motion="{ preset: 'card', index }"
               class="default-model-slot"
@@ -1299,6 +1353,46 @@ async function saveSkill(): Promise<void> {
                 @click="openModel(undefined, activeProvider?.id, type)"
               ><Plus :size="16" /><span>添加可用{{ modelTypeLabel[type] }}模型</span></button>
               <span v-if="settingDefaultType === type" class="default-model-slot__saving"><LoaderCircle class="spin" :size="14" />正在切换</span>
+            </article>
+            <article
+              v-motion="{ preset: 'card', index: 3 }"
+              class="default-model-slot default-model-slot--image-routes"
+              :data-configured="readiness?.required_defaults.image"
+            >
+              <header>
+                <span><ImagePlus :size="19" /></span>
+                <div><strong>图片分辨率模型路由</strong><small>每档清晰度独立指定 API 平台与模型</small></div>
+                <i><Check v-if="readiness?.required_defaults.image" :size="13" /><CircleAlert v-else :size="13" />{{ readiness?.required_defaults.image ? '全部已配置' : '配置不完整' }}</i>
+              </header>
+              <div class="image-resolution-routes">
+                <section v-for="resolution in imageResolutions" :key="resolution" class="image-resolution-route">
+                  <div class="image-resolution-route__identity">
+                    <strong class="tabular-nums">{{ resolution }}</strong>
+                    <span v-if="imageResolutionModelFor(resolution)">
+                      <b>{{ imageResolutionModelFor(resolution)?.name }}</b>
+                      <small>{{ providerForModel(imageResolutionModelFor(resolution))?.name }} · {{ imageResolutionModelFor(resolution)?.model_id }}</small>
+                    </span>
+                    <span v-else><b>尚未配置</b><small>该分辨率的生图功能暂不可用</small></span>
+                  </div>
+                  <UiSelect
+                    v-if="defaultModelOptions('image').length"
+                    :model-value="imageResolutionModelFor(resolution)?.id ?? ''"
+                    :options="defaultModelOptions('image')"
+                    :placeholder="`选择 ${resolution} 图片模型`"
+                    :disabled="Boolean(settingImageResolution)"
+                    variant="compact"
+                    @update:model-value="setImageResolutionModel(resolution, $event)"
+                  />
+                  <button
+                    v-else
+                    class="default-model-slot__add"
+                    type="button"
+                    :disabled="!activeProvider"
+                    @click="openModel(undefined, activeProvider?.id, 'image')"
+                  ><Plus :size="16" /><span>添加图片模型</span></button>
+                  <span v-if="settingImageResolution === resolution" class="image-resolution-route__saving"><LoaderCircle class="spin" :size="14" />正在切换</span>
+                </section>
+              </div>
             </article>
           </div>
         </section>

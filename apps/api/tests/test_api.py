@@ -14,22 +14,33 @@ import pytest
 from ebooklib import epub
 from fastapi.testclient import TestClient
 from PIL import Image
-from sqlalchemy import delete, select, update
+from sqlalchemy import delete, func, select, update
 
 from app.api.routes import admin as admin_routes
 from app.api.routes import auth as auth_routes
 from app.core.config import get_settings
-from app.core.security import decode_access_token, decode_refresh_token, hash_password, verify_password
+from app.core.security import (
+    create_access_token,
+    decode_access_token,
+    decode_refresh_token,
+    hash_password,
+    verify_password,
+)
 from app.db.models import (
     AIModel,
     AITask,
     Asset,
+    AssetRevision,
     AssetStatus,
     AuthLoginGuard,
     Chapter,
     CreditAccount,
     CreditLedger,
     DirectorWorkflowRun,
+    InvitationCode,
+    InvitationRedemption,
+    MarketplaceAcquisition,
+    MarketplaceListing,
     ModelType,
     Notification,
     Project,
@@ -40,6 +51,8 @@ from app.db.models import (
     TaskStatus,
     Tenant,
     User,
+    UserSkill,
+    UserTemplate,
 )
 from app.db.session import SessionLocal
 from app.services import task_worker
@@ -51,6 +64,7 @@ from app.services.agent_runtime import (
 )
 from app.services.auth_security import login_identity_hash
 from app.services.director_orchestration import recover_orphaned_agent_script_reviews
+from app.services.image_model_routing import resolve_image_model
 from app.services.media_gateway import (
     ImageGenerationRequest,
     SpeechGenerationRequest,
@@ -967,13 +981,25 @@ def test_project_requires_complete_production_configuration(
         json={
             "name": "完整生产配置项目",
             "video_model_id": options["video_models"][0]["id"],
-            "image_model_id": options["image_models"][0]["id"],
             "visual_handbook_id": options["visual_handbooks"][0]["id"],
             "director_handbook_id": options["director_handbooks"][0]["id"],
         },
     )
     assert created.status_code == 201
+    assert created.json()["image_model_id"] is None
     assert created.json()["visual_handbook_id"] == options["visual_handbooks"][0]["id"]
+
+    legacy_image_model_id = next(
+        item["image_model_id"]
+        for item in client.get("/api/v1/projects", headers=creator_headers).json()
+        if item["image_model_id"]
+    )
+    override = client.patch(
+        f"/api/v1/projects/{created.json()['id']}",
+        headers=creator_headers,
+        json={"image_model_id": legacy_image_model_id},
+    )
+    assert override.status_code == 422
 
     unset = client.patch(
         f"/api/v1/projects/{created.json()['id']}",
@@ -982,6 +1008,12 @@ def test_project_requires_complete_production_configuration(
     )
     assert unset.status_code == 422
     assert unset.json()["detail"] == "director_handbook_id 是项目必填配置"
+    assert (
+        client.delete(
+            f"/api/v1/projects/{created.json()['id']}", headers=creator_headers
+        ).status_code
+        == 204
+    )
 
 
 def test_creator_can_delete_project_and_its_media(
@@ -995,7 +1027,6 @@ def test_creator_can_delete_project_and_its_media(
         json={
             "name": "待删除项目",
             "video_model_id": options["video_models"][0]["id"],
-            "image_model_id": options["image_models"][0]["id"],
             "visual_handbook_id": options["visual_handbooks"][0]["id"],
             "director_handbook_id": options["director_handbooks"][0]["id"],
         },
@@ -1032,7 +1063,6 @@ def test_project_delete_requires_active_tasks_to_stop(
         json={
             "name": "活动任务删除保护",
             "video_model_id": options["video_models"][0]["id"],
-            "image_model_id": options["image_models"][0]["id"],
             "visual_handbook_id": options["visual_handbooks"][0]["id"],
             "director_handbook_id": options["director_handbooks"][0]["id"],
         },
@@ -1216,6 +1246,7 @@ def test_user_cannot_open_admin_api(client: TestClient, creator_headers: dict[st
         "/api/v1/admin/models",
         "/api/v1/admin/readiness",
         "/api/v1/admin/users",
+        "/api/v1/admin/invitations",
     ):
         response = client.get(path, headers=creator_headers)
         assert response.status_code == 403
@@ -1371,11 +1402,375 @@ def test_admin_can_manage_users_and_credit_ledger(
         asyncio.run(cleanup())
 
 
+def test_resource_marketplaces_publish_copy_sync_and_unpublish(
+    client: TestClient,
+    creator_headers: dict[str, str],
+) -> None:
+    source_skill_id = ""
+    source_template_id = ""
+    source_asset_id = ""
+    listing_ids: list[str] = []
+    target_ids: list[str] = []
+    consumer_tenant_id = ""
+    consumer_user_id = ""
+
+    async def create_cross_tenant_consumer() -> tuple[str, str]:
+        async with SessionLocal() as session:
+            tenant = Tenant(name="广场消费测试租户", slug="marketplace-consumer")
+            session.add(tenant)
+            await session.flush()
+            user = User(
+                tenant_id=tenant.id,
+                email="marketplace-consumer@cineforge.local",
+                display_name="跨租户广场用户",
+                password_hash=hash_password("Marketplace123!"),
+            )
+            session.add(user)
+            await session.commit()
+            return tenant.id, user.id
+
+    async def cleanup() -> None:
+        async with SessionLocal() as session:
+            all_asset_ids = [source_asset_id, *target_ids]
+            existing_asset_ids = list(
+                (
+                    await session.scalars(
+                        select(Asset.id).where(Asset.id.in_([item for item in all_asset_ids if item]))
+                    )
+                ).all()
+            )
+            if existing_asset_ids:
+                await session.execute(
+                    delete(AssetRevision).where(AssetRevision.asset_id.in_(existing_asset_ids))
+                )
+                await session.execute(delete(Asset).where(Asset.id.in_(existing_asset_ids)))
+            if listing_ids:
+                await session.execute(
+                    delete(MarketplaceAcquisition).where(
+                        MarketplaceAcquisition.listing_id.in_(listing_ids)
+                    )
+                )
+                await session.execute(
+                    delete(MarketplaceListing).where(MarketplaceListing.id.in_(listing_ids))
+                )
+            skill_ids = [source_skill_id, *target_ids]
+            await session.execute(
+                delete(UserSkill).where(UserSkill.id.in_([item for item in skill_ids if item]))
+            )
+            template_ids = [source_template_id, *target_ids]
+            await session.execute(
+                delete(UserTemplate).where(
+                    UserTemplate.id.in_([item for item in template_ids if item])
+                )
+            )
+            if consumer_user_id:
+                await session.execute(delete(User).where(User.id == consumer_user_id))
+            if consumer_tenant_id:
+                await session.execute(delete(Tenant).where(Tenant.id == consumer_tenant_id))
+            await session.commit()
+
+    consumer_tenant_id, consumer_user_id = asyncio.run(create_cross_tenant_consumer())
+    consumer_token = create_access_token(
+        user_id=consumer_user_id,
+        tenant_id=consumer_tenant_id,
+        role="user",
+    )
+    consumer_headers = {
+        "Authorization": f"Bearer {consumer_token}"
+    }
+
+    try:
+        source_skill = client.post(
+            "/api/v1/user-skills",
+            headers=creator_headers,
+            json={
+                "name": "动作分镜节奏",
+                "description": "近身动作先建立空间轴线，再按动作落点切换景别。",
+                "trigger_stages": ["storyboard_generation", "video_generation"],
+                "enabled": True,
+            },
+        )
+        assert source_skill.status_code == 201
+        source_skill_id = source_skill.json()["id"]
+        published_skill = client.post(
+            f"/api/v1/marketplace/skills/{source_skill_id}/publish",
+            headers=creator_headers,
+            json={"category": "动作设计", "tags": ["打斗", "分镜"]},
+        )
+        assert published_skill.status_code == 200
+        skill_listing_id = published_skill.json()["id"]
+        listing_ids.append(skill_listing_id)
+
+        skill_feed = client.get(
+            "/api/v1/marketplace/skill",
+            headers=consumer_headers,
+            params={"search": "动作分镜"},
+        )
+        assert skill_feed.status_code == 200
+        skill_card = next(item for item in skill_feed.json()["items"] if item["id"] == skill_listing_id)
+        assert skill_card["publisher_name"]
+        assert skill_card["acquired"] is False
+        assert skill_card["payload"]["trigger_stages"] == [
+            "storyboard_generation",
+            "video_generation",
+        ]
+
+        copied_skill = client.post(
+            f"/api/v1/marketplace/listings/{skill_listing_id}/acquire",
+            headers=consumer_headers,
+        )
+        assert copied_skill.status_code == 200
+        copied_skill_id = copied_skill.json()["target_id"]
+        target_ids.append(copied_skill_id)
+        admin_skills = client.get("/api/v1/user-skills", headers=consumer_headers).json()
+        copied_skill_row = next(item for item in admin_skills if item["id"] == copied_skill_id)
+        assert "空间轴线" in copied_skill_row["description"]
+
+        assert client.patch(
+            f"/api/v1/user-skills/{source_skill_id}",
+            headers=creator_headers,
+            json={"description": "新版：先校验轴线，再生成动作拆解和镜头落点。"},
+        ).status_code == 200
+        republished_skill = client.post(
+            f"/api/v1/marketplace/skills/{source_skill_id}/publish",
+            headers=creator_headers,
+            json={"category": "动作设计", "tags": ["打斗", "轴线"]},
+        )
+        assert republished_skill.status_code == 200
+        updated_feed = client.get(
+            "/api/v1/marketplace/skill",
+            headers=consumer_headers,
+            params={"search": "动作分镜"},
+        ).json()
+        assert next(item for item in updated_feed["items"] if item["id"] == skill_listing_id)[
+            "has_update"
+        ] is True
+        synced_skill = client.post(
+            f"/api/v1/marketplace/listings/{skill_listing_id}/acquire",
+            headers=consumer_headers,
+        )
+        assert synced_skill.status_code == 200
+        assert synced_skill.json()["target_id"] == copied_skill_id
+        synced_admin_skill = next(
+            item
+            for item in client.get("/api/v1/user-skills", headers=consumer_headers).json()
+            if item["id"] == copied_skill_id
+        )
+        assert synced_admin_skill["description"].startswith("新版")
+
+        source_template = client.post(
+            "/api/v1/user-templates",
+            headers=creator_headers,
+            json={
+                "name": "悬疑开场结构",
+                "description": "用结果前置与信息差快速建立钩子。",
+                "category": "剧本结构",
+                "content": "第一拍展示异常结果；第二拍回到事件发生前；第三拍埋入误导线索。",
+            },
+        )
+        assert source_template.status_code == 201
+        source_template_id = source_template.json()["id"]
+        published_template = client.post(
+            f"/api/v1/marketplace/templates/{source_template_id}/publish",
+            headers=creator_headers,
+            json={"category": "剧本结构", "tags": ["悬疑", "开场"]},
+        )
+        assert published_template.status_code == 200
+        template_listing_id = published_template.json()["id"]
+        listing_ids.append(template_listing_id)
+        copied_template = client.post(
+            f"/api/v1/marketplace/listings/{template_listing_id}/acquire",
+            headers=consumer_headers,
+        )
+        assert copied_template.status_code == 200
+        target_ids.append(copied_template.json()["target_id"])
+        admin_templates = client.get("/api/v1/user-templates", headers=consumer_headers).json()
+        assert any("异常结果" in item["content"] for item in admin_templates)
+
+        source_asset = client.post(
+            "/api/v1/assets",
+            headers=creator_headers,
+            json={
+                "asset_type": "character",
+                "name": "雨夜侦探",
+                "description": "深灰风衣，克制且警觉。",
+                "generation_prompt": "雨夜街灯下的东亚青年侦探，深灰风衣。",
+            },
+        )
+        assert source_asset.status_code == 201
+        source_asset_id = source_asset.json()["id"]
+        published_material = client.post(
+            f"/api/v1/marketplace/materials/{source_asset_id}/publish",
+            headers=creator_headers,
+            json={"category": "人物", "tags": ["侦探", "现代"]},
+        )
+        assert published_material.status_code == 200
+        material_listing_id = published_material.json()["id"]
+        listing_ids.append(material_listing_id)
+        copied_material = client.post(
+            f"/api/v1/marketplace/listings/{material_listing_id}/acquire",
+            headers=consumer_headers,
+        )
+        assert copied_material.status_code == 200
+        copied_asset_id = copied_material.json()["target_id"]
+        target_ids.append(copied_asset_id)
+        copied_asset = next(
+            item
+            for item in client.get("/api/v1/assets", headers=consumer_headers).json()
+            if item["id"] == copied_asset_id
+        )
+        assert copied_asset["scope"] == "global"
+        assert copied_asset["asset_metadata"]["marketplace_listing_id"] == material_listing_id
+
+        unpublish = client.delete(
+            f"/api/v1/marketplace/listings/{skill_listing_id}", headers=creator_headers
+        )
+        assert unpublish.status_code == 204
+        hidden_feed = client.get(
+            "/api/v1/marketplace/skill",
+            headers=consumer_headers,
+            params={"search": "动作分镜"},
+        )
+        assert hidden_feed.status_code == 200
+        assert all(item["id"] != skill_listing_id for item in hidden_feed.json()["items"])
+    finally:
+        asyncio.run(cleanup())
+
+
 def test_required_default_models_are_ready(client: TestClient, admin_headers: dict[str, str]) -> None:
     response = client.get("/api/v1/admin/readiness", headers=admin_headers)
     assert response.status_code == 200
     assert response.json()["ready"] is True
     assert response.json()["missing"] == []
+    assert response.json()["image_resolution_models"] == {"1K": True, "2K": True, "4K": True}
+
+
+def test_image_resolutions_route_to_models_across_providers(
+    client: TestClient,
+    admin_headers: dict[str, str],
+    creator_headers: dict[str, str],
+) -> None:
+    assert (
+        client.get("/api/v1/admin/image-resolution-models", headers=creator_headers).status_code
+        == 403
+    )
+    original_routes = client.get(
+        "/api/v1/admin/image-resolution-models", headers=admin_headers
+    ).json()
+    assert {item["resolution"] for item in original_routes} == {"1K", "2K", "4K"}
+
+    primary_provider_id = client.get(
+        "/api/v1/admin/providers", headers=admin_headers
+    ).json()[0]["id"]
+    secondary_provider = client.post(
+        "/api/v1/admin/providers",
+        headers=admin_headers,
+        json={
+            "code": "resolution-route-secondary",
+            "name": "Resolution Route Secondary",
+            "provider_type": "openai_compatible",
+            "base_url": "https://resolution-route.invalid/v1",
+        },
+    )
+    assert secondary_provider.status_code == 201
+    secondary_provider_id = secondary_provider.json()["id"]
+
+    primary_model = client.post(
+        "/api/v1/admin/models",
+        headers=admin_headers,
+        json={
+            "provider_id": primary_provider_id,
+            "model_id": "resolution-route-primary-image",
+            "name": "Resolution Route Primary Image",
+            "model_type": "image",
+        },
+    ).json()
+    secondary_model = client.post(
+        "/api/v1/admin/models",
+        headers=admin_headers,
+        json={
+            "provider_id": secondary_provider_id,
+            "model_id": "resolution-route-secondary-image",
+            "name": "Resolution Route Secondary Image",
+            "model_type": "image",
+        },
+    ).json()
+
+    try:
+        expected = {
+            "1K": primary_model["id"],
+            "2K": secondary_model["id"],
+            "4K": primary_model["id"],
+        }
+        for resolution, model_id in expected.items():
+            response = client.put(
+                f"/api/v1/admin/image-resolution-models/{resolution}",
+                headers=admin_headers,
+                json={"model_id": model_id},
+            )
+            assert response.status_code == 200
+            assert response.json()["model_id"] == model_id
+
+        routes = client.get(
+            "/api/v1/admin/image-resolution-models", headers=admin_headers
+        ).json()
+        assert {item["resolution"]: item["model_id"] for item in routes} == expected
+        assert client.get("/api/v1/admin/readiness", headers=admin_headers).json()["ready"] is True
+
+        tenant_id = client.get("/api/v1/auth/me", headers=admin_headers).json()["user"]["tenant_id"]
+
+        async def resolved_route_models() -> dict[str, str | None]:
+            async with SessionLocal() as session:
+                resolved: dict[str, str | None] = {}
+                for resolution in ("1K", "2K", "4K"):
+                    model = await resolve_image_model(
+                        session,
+                        tenant_id=tenant_id,
+                        resolution=resolution,
+                    )
+                    resolved[resolution] = model.id if model else None
+                return resolved
+
+        assert asyncio.run(resolved_route_models()) == expected
+
+        blocked = client.patch(
+            f"/api/v1/admin/models/{primary_model['id']}",
+            headers=admin_headers,
+            json={"enabled": False},
+        )
+        assert blocked.status_code == 409
+        assert "图片分辨率路由" in blocked.json()["detail"]
+        deleted = client.delete(
+            f"/api/v1/admin/models/{secondary_model['id']}", headers=admin_headers
+        )
+        assert deleted.status_code == 409
+        assert "图片分辨率路由" in deleted.json()["detail"]
+    finally:
+        for route in original_routes:
+            restored = client.put(
+                f"/api/v1/admin/image-resolution-models/{route['resolution']}",
+                headers=admin_headers,
+                json={"model_id": route["model_id"]},
+            )
+            assert restored.status_code == 200
+        assert (
+            client.delete(
+                f"/api/v1/admin/models/{primary_model['id']}", headers=admin_headers
+            ).status_code
+            == 204
+        )
+        assert (
+            client.delete(
+                f"/api/v1/admin/models/{secondary_model['id']}", headers=admin_headers
+            ).status_code
+            == 204
+        )
+        assert (
+            client.delete(
+                f"/api/v1/admin/providers/{secondary_provider_id}", headers=admin_headers
+            ).status_code
+            == 204
+        )
 
 
 def test_missing_required_default_blocks_projects_and_tasks_without_charging(
@@ -1420,7 +1815,6 @@ def test_missing_required_default_blocks_projects_and_tasks_without_charging(
             json={
                 "name": "不应创建的未就绪项目",
                 "video_model_id": options["video_models"][0]["id"],
-                "image_model_id": options["image_models"][0]["id"],
                 "visual_handbook_id": options["visual_handbooks"][0]["id"],
                 "director_handbook_id": options["director_handbooks"][0]["id"],
             },
@@ -2266,6 +2660,237 @@ def test_activity_records_can_be_deleted_without_cross_user_access(
         }
         assert second_succeeded_id not in remaining_ids
         assert queued_id in remaining_ids
+    finally:
+        asyncio.run(cleanup())
+
+
+def test_admin_invitation_registration_flow(
+    client: TestClient,
+    admin_headers: dict[str, str],
+    creator_headers: dict[str, str],
+) -> None:
+    invitation_id = ""
+    registered_user_ids: list[str] = []
+    original_prefix = client.get(
+        "/api/v1/admin/invitations/settings", headers=admin_headers
+    ).json()["url_prefix"]
+
+    async def cleanup() -> None:
+        async with SessionLocal() as session:
+            if registered_user_ids:
+                users = list(
+                    (
+                        await session.scalars(
+                            select(User).where(User.id.in_(registered_user_ids))
+                        )
+                    ).all()
+                )
+                await session.execute(
+                    delete(InvitationRedemption).where(
+                        InvitationRedemption.user_id.in_(registered_user_ids)
+                    )
+                )
+                await session.execute(
+                    delete(RefreshSession).where(RefreshSession.user_id.in_(registered_user_ids))
+                )
+                await session.execute(
+                    delete(CreditLedger).where(CreditLedger.user_id.in_(registered_user_ids))
+                )
+                await session.execute(
+                    delete(CreditAccount).where(CreditAccount.user_id.in_(registered_user_ids))
+                )
+                await session.execute(
+                    delete(SecurityEvent).where(SecurityEvent.user_id.in_(registered_user_ids))
+                )
+                await session.execute(delete(User).where(User.id.in_(registered_user_ids)))
+                for user in users:
+                    if user.avatar_storage_path:
+                        (get_settings().uploads_root / user.avatar_storage_path).unlink(missing_ok=True)
+            if invitation_id:
+                subject_hash = hashlib.sha256(
+                    f"invitation:{invitation_id}".encode()
+                ).hexdigest()
+                await session.execute(
+                    delete(SecurityEvent).where(SecurityEvent.subject_hash == subject_hash)
+                )
+                await session.execute(
+                    delete(InvitationRedemption).where(
+                        InvitationRedemption.invitation_id == invitation_id
+                    )
+                )
+                await session.execute(
+                    delete(InvitationCode).where(InvitationCode.id == invitation_id)
+                )
+            tenant = await session.scalar(select(Tenant).where(Tenant.slug == "demo"))
+            assert tenant is not None
+            tenant.invite_url_prefix = original_prefix or None
+            await session.commit()
+
+    try:
+        assert (
+            client.get("/api/v1/admin/invitations", headers=creator_headers).status_code
+            == 403
+        )
+        invalid_prefix = client.put(
+            "/api/v1/admin/invitations/settings",
+            headers=admin_headers,
+            json={"url_prefix": "studio.example.com"},
+        )
+        assert invalid_prefix.status_code == 422
+
+        settings = client.put(
+            "/api/v1/admin/invitations/settings",
+            headers=admin_headers,
+            json={"url_prefix": "https://studio.example.com/create/"},
+        )
+        assert settings.status_code == 200
+        assert settings.json()["url_prefix"] == "https://studio.example.com/create"
+
+        created = client.post(
+            "/api/v1/admin/invitations",
+            headers=admin_headers,
+            json={
+                "name": "首批创作者",
+                "max_registrations": 2,
+                "initial_credits": "36.50",
+                "enabled": True,
+            },
+        )
+        assert created.status_code == 201
+        invitation = created.json()
+        invitation_id = invitation["id"]
+        code = invitation["code"]
+        assert invitation["invite_url"] == f"https://studio.example.com/create/invite/{code}"
+        assert invitation["remaining_registrations"] == 2
+
+        public_info = client.get(f"/api/v1/invitations/{code}")
+        assert public_info.status_code == 200
+        assert public_info.json()["tenant_name"]
+        assert public_info.json()["initial_credits"] == "36.50"
+
+        avatar = BytesIO()
+        Image.new("RGB", (720, 960), "#245953").save(avatar, format="PNG")
+        registered = client.post(
+            f"/api/v1/invitations/{code}/register",
+            data={
+                "email": "invited-one@cineforge.local",
+                "display_name": "受邀创作者一",
+                "password": "Invited123!",
+            },
+            files={"avatar": ("avatar.png", avatar.getvalue(), "image/png")},
+        )
+        assert registered.status_code == 200
+        assert registered.json()["access_token"]
+
+        async def first_registration_state() -> tuple[str, Decimal, int, int, str | None]:
+            async with SessionLocal() as session:
+                user = await session.scalar(
+                    select(User).where(User.email == "invited-one@cineforge.local")
+                )
+                assert user is not None
+                registered_user_ids.append(user.id)
+                account = await session.scalar(
+                    select(CreditAccount).where(CreditAccount.user_id == user.id)
+                )
+                redemption_count = await session.scalar(
+                    select(func.count(InvitationRedemption.id)).where(
+                        InvitationRedemption.user_id == user.id
+                    )
+                )
+                ledger_count = await session.scalar(
+                    select(func.count(CreditLedger.id)).where(
+                        CreditLedger.user_id == user.id,
+                        CreditLedger.reference_type == "invitation",
+                    )
+                )
+                assert account is not None
+                return (
+                    user.id,
+                    account.balance,
+                    redemption_count or 0,
+                    ledger_count or 0,
+                    user.avatar_storage_path,
+                )
+
+        first_user_id, balance, redemptions, ledgers, avatar_storage_path = asyncio.run(
+            first_registration_state()
+        )
+        assert balance == Decimal("36.50")
+        assert redemptions == 1
+        assert ledgers == 1
+        assert avatar_storage_path
+        assert (get_settings().uploads_root / avatar_storage_path).is_file()
+
+        duplicate = client.post(
+            f"/api/v1/invitations/{code}/register",
+            data={
+                "email": "invited-one@cineforge.local",
+                "display_name": "重复账号",
+                "password": "Invited123!",
+            },
+        )
+        assert duplicate.status_code == 409
+        after_duplicate = client.get(
+            "/api/v1/admin/invitations", headers=admin_headers
+        ).json()
+        assert next(item for item in after_duplicate if item["id"] == invitation_id)[
+            "registration_count"
+        ] == 1
+
+        second = client.post(
+            f"/api/v1/invitations/{code}/register",
+            data={
+                "email": "invited-two@cineforge.local",
+                "display_name": "受邀创作者二",
+                "password": "Invited123!",
+            },
+        )
+        assert second.status_code == 200
+
+        async def remember_second_user() -> None:
+            async with SessionLocal() as session:
+                user_id = await session.scalar(
+                    select(User.id).where(User.email == "invited-two@cineforge.local")
+                )
+                assert user_id is not None
+                registered_user_ids.append(user_id)
+
+        asyncio.run(remember_second_user())
+        assert first_user_id in registered_user_ids
+        assert client.get(f"/api/v1/invitations/{code}").status_code == 410
+
+        below_usage = client.patch(
+            f"/api/v1/admin/invitations/{invitation_id}",
+            headers=admin_headers,
+            json={"max_registrations": 1},
+        )
+        assert below_usage.status_code == 409
+        expanded = client.patch(
+            f"/api/v1/admin/invitations/{invitation_id}",
+            headers=admin_headers,
+            json={"max_registrations": 3, "initial_credits": "50.00"},
+        )
+        assert expanded.status_code == 200
+        assert expanded.json()["remaining_registrations"] == 1
+
+        disabled = client.patch(
+            f"/api/v1/admin/invitations/{invitation_id}",
+            headers=admin_headers,
+            json={"enabled": False},
+        )
+        assert disabled.status_code == 200
+        assert client.get(f"/api/v1/invitations/{code}").status_code == 410
+        assert client.patch(
+            f"/api/v1/admin/invitations/{invitation_id}",
+            headers=admin_headers,
+            json={"enabled": True},
+        ).status_code == 200
+
+        deleted = client.delete(
+            f"/api/v1/admin/invitations/{invitation_id}", headers=admin_headers
+        )
+        assert deleted.status_code == 204
+        assert client.get(f"/api/v1/invitations/{code}").status_code == 404
     finally:
         asyncio.run(cleanup())
 

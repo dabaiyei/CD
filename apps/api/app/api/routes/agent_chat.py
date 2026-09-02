@@ -78,6 +78,7 @@ from app.services.asset_tasks import (
     queue_asset_prompt_generation_task,
 )
 from app.services.billing import resolve_task_pricing
+from app.services.image_model_routing import normalize_image_resolution, resolve_image_model
 from app.services.managed_skills import ensure_handbook_package, handbook_manifest
 from app.services.media import ALLOWED_COVER_TYPES, MAX_COVER_BYTES, InvalidCoverImage, save_agent_chat_image
 from app.services.object_storage import (
@@ -2225,21 +2226,37 @@ async def default_personal_media_model(
     *,
     tenant_id: str,
     model_type: ModelType,
+    resolution: str | None = None,
 ) -> tuple[AIModel, Provider]:
-    model = await db.scalar(
-        select(AIModel).where(
-            AIModel.tenant_id == tenant_id,
-            AIModel.model_type == model_type,
-            AIModel.is_default.is_(True),
-            AIModel.enabled.is_(True),
+    if model_type == ModelType.IMAGE:
+        normalized_resolution = normalize_image_resolution(resolution or "1K")
+        if normalized_resolution is None:
+            raise HTTPException(status_code=422, detail="图片分辨率仅支持 1K、2K 或 4K")
+        model = await resolve_image_model(
+            db,
+            tenant_id=tenant_id,
+            resolution=normalized_resolution,
         )
-    )
+    else:
+        model = await db.scalar(
+            select(AIModel).where(
+                AIModel.tenant_id == tenant_id,
+                AIModel.model_type == model_type,
+                AIModel.is_default.is_(True),
+                AIModel.enabled.is_(True),
+            )
+        )
     if model is None:
         label = "图片" if model_type == ModelType.IMAGE else "视频"
+        configuration = (
+            f"{normalized_resolution} 图片模型路由"
+            if model_type == ModelType.IMAGE
+            else "默认视频模型"
+        )
         raise HTTPException(
             status_code=422,
             detail=(
-                f"管理员尚未配置可用的默认{label}模型，请前往管理后台 → 模型平台 → "
+                f"管理员尚未配置可用的{configuration}，请前往管理后台 → 模型平台 → "
                 f"全局默认模型完成配置"
             ),
         )
@@ -2249,7 +2266,7 @@ async def default_personal_media_model(
         raise HTTPException(
             status_code=422,
             detail=(
-                f"默认{label}模型所属平台不可用，请管理员前往管理后台 → 模型平台检查平台状态"
+                f"{label}模型所属平台不可用，请管理员前往管理后台 → 模型平台检查平台状态"
             ),
         )
     return model, provider
@@ -2529,6 +2546,7 @@ async def send_personal_message(
             db,
             tenant_id=user.tenant_id,
             model_type=ModelType.IMAGE,
+            resolution=payload.media_options.resolution or "1K",
         )
         bill_task_type = "asset_image_generation"
         queue_message = "个人图片生成"

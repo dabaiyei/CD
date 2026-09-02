@@ -26,6 +26,7 @@ from app.db.models import (
     CreditLedger,
     Handbook,
     HandbookType,
+    ImageResolutionModelRoute,
     ModelType,
     Notification,
     PricingRule,
@@ -60,6 +61,8 @@ from app.domain.schemas import (
     HandbookPackageUpdate,
     HandbookPublic,
     HandbookUpdate,
+    ImageResolutionModelRoutePublic,
+    ImageResolutionModelRouteUpdate,
     ModelCreate,
     ModelDiscoveryResponse,
     ModelImportRequest,
@@ -78,6 +81,7 @@ from app.domain.schemas import (
     SecurityEventPublic,
 )
 from app.services.auth_security import private_fingerprint
+from app.services.image_model_routing import IMAGE_RESOLUTIONS
 from app.services.managed_skills import (
     SYSTEM_PROMPT_CODES,
     SYSTEM_PROMPTS,
@@ -111,7 +115,7 @@ from app.services.provider_adapters import (
     autodl_minimax_h3_capabilities,
     normalize_video_capabilities,
 )
-from app.services.readiness import default_model_types
+from app.services.readiness import configured_image_resolutions, default_model_types
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 logger = logging.getLogger(__name__)
@@ -121,7 +125,7 @@ MODEL_TYPE_HINTS: tuple[tuple[ModelType, tuple[str, ...]], ...] = (
     (ModelType.VIDEO, ("video", "sora", "kling", "veo", "runway", "wan2", "vidu")),
     (ModelType.IMAGE, ("image", "dall-e", "flux", "midjourney", "sdxl", "stable-diffusion")),
 )
-REQUIRED_DEFAULT_MODEL_TYPES = frozenset({ModelType.TEXT, ModelType.IMAGE, ModelType.VIDEO})
+REQUIRED_DEFAULT_MODEL_TYPES = frozenset({ModelType.TEXT, ModelType.VIDEO})
 
 
 def record_admin_user_event(
@@ -614,6 +618,14 @@ async def active_model_reference_labels(
     tenant_id: str,
 ) -> list[str]:
     references = {
+        "图片分辨率路由": await session.scalar(
+            select(ImageResolutionModelRoute.id)
+            .where(
+                ImageResolutionModelRoute.tenant_id == tenant_id,
+                ImageResolutionModelRoute.model_id == model.id,
+            )
+            .limit(1)
+        ),
         "项目": await session.scalar(
             select(Project.id)
             .where(
@@ -769,11 +781,16 @@ async def readiness(
     session: AsyncSession = Depends(get_session),
 ) -> ReadinessPublic:
     present = await default_model_types(session, admin.tenant_id)
+    configured_resolutions = await configured_image_resolutions(session, admin.tenant_id)
     required = [ModelType.TEXT, ModelType.IMAGE, ModelType.VIDEO]
     return ReadinessPublic(
         ready=all(item in present for item in required),
         required_defaults={item: item in present for item in required},
         optional_defaults={ModelType.TTS: ModelType.TTS in present},
+        image_resolution_models={
+            resolution: resolution in configured_resolutions
+            for resolution in IMAGE_RESOLUTIONS
+        },
         missing=[item for item in required if item not in present],
     )
 
@@ -1135,6 +1152,67 @@ async def list_models(
     )
 
 
+@router.get(
+    "/image-resolution-models",
+    response_model=list[ImageResolutionModelRoutePublic],
+)
+async def list_image_resolution_models(
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> list[ImageResolutionModelRoute]:
+    routes = list(
+        (
+            await session.scalars(
+                select(ImageResolutionModelRoute).where(
+                    ImageResolutionModelRoute.tenant_id == admin.tenant_id
+                )
+            )
+        ).all()
+    )
+    order = {resolution: index for index, resolution in enumerate(IMAGE_RESOLUTIONS)}
+    return sorted(routes, key=lambda item: order.get(item.resolution, len(order)))
+
+
+@router.put(
+    "/image-resolution-models/{resolution}",
+    response_model=ImageResolutionModelRoutePublic,
+)
+async def set_image_resolution_model(
+    resolution: str,
+    payload: ImageResolutionModelRouteUpdate,
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> ImageResolutionModelRoute:
+    normalized_resolution = resolution.strip().upper()
+    if normalized_resolution not in IMAGE_RESOLUTIONS:
+        raise HTTPException(status_code=422, detail="图片分辨率仅支持 1K、2K 或 4K")
+    model = await tenant_record(session, AIModel, payload.model_id, admin.tenant_id)
+    if model.model_type != ModelType.IMAGE or not model.enabled:
+        raise HTTPException(status_code=422, detail="请选择当前租户已启用的图片模型")
+    provider = await tenant_record(session, Provider, model.provider_id, admin.tenant_id)
+    if not provider.enabled:
+        raise HTTPException(status_code=409, detail="图片模型所属平台当前已停用")
+    route = await session.scalar(
+        select(ImageResolutionModelRoute).where(
+            ImageResolutionModelRoute.tenant_id == admin.tenant_id,
+            ImageResolutionModelRoute.resolution == normalized_resolution,
+        )
+    )
+    if route is None:
+        route = ImageResolutionModelRoute(
+            tenant_id=admin.tenant_id,
+            resolution=normalized_resolution,
+            model_id=model.id,
+        )
+        session.add(route)
+    else:
+        route.model_id = model.id
+    session.info.pop(f"default-model-types:{admin.tenant_id}", None)
+    await session.commit()
+    await session.refresh(route)
+    return route
+
+
 @router.post("/models", response_model=ModelPublic, status_code=status.HTTP_201_CREATED)
 async def create_model(
     payload: ModelCreate,
@@ -1307,6 +1385,14 @@ async def delete_model(
     model = await tenant_record(session, AIModel, model_id, admin.tenant_id)
     references = {
         "默认配置": model.id if model.is_default else None,
+        "图片分辨率路由": await session.scalar(
+            select(ImageResolutionModelRoute.id)
+            .where(
+                ImageResolutionModelRoute.tenant_id == admin.tenant_id,
+                ImageResolutionModelRoute.model_id == model.id,
+            )
+            .limit(1)
+        ),
         "项目": await session.scalar(
             select(Project.id)
             .where(

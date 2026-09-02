@@ -35,6 +35,7 @@ from app.domain.schemas import (
 )
 from app.services.agent_runtime import AgentRuntimeClient
 from app.services.billing import resolve_task_pricing
+from app.services.image_model_routing import resolve_image_model
 from app.services.media import (
     ALLOWED_COVER_TYPES,
     MAX_COVER_BYTES,
@@ -52,7 +53,6 @@ settings = get_settings()
 logger = logging.getLogger(__name__)
 REQUIRED_PROJECT_RELATIONS = {
     "video_model_id",
-    "image_model_id",
     "visual_handbook_id",
     "director_handbook_id",
 }
@@ -72,7 +72,6 @@ async def validate_project_relations(
 ) -> None:
     checks = [
         ("video_model_id", AIModel, ModelType.VIDEO),
-        ("image_model_id", AIModel, ModelType.IMAGE),
         ("visual_handbook_id", Handbook, HandbookType.VISUAL),
         ("director_handbook_id", Handbook, HandbookType.DIRECTOR),
     ]
@@ -146,9 +145,6 @@ async def project_options(
     return ProjectOptions(
         video_models=[
             ModelPublic.model_validate(item) for item in models if item.model_type == ModelType.VIDEO
-        ],
-        image_models=[
-            ModelPublic.model_validate(item) for item in models if item.model_type == ModelType.IMAGE
         ],
         visual_handbooks=[
             HandbookPublic.model_validate(item)
@@ -311,23 +307,17 @@ async def generate_project_cover(
         task_type="project_cover_generation",
     ):
         raise HTTPException(status_code=409, detail="当前项目已有封面生成任务正在处理")
-    image_model = await session.get(AIModel, project.image_model_id) if project.image_model_id else None
+    image_model = await resolve_image_model(
+        session,
+        tenant_id=user.tenant_id,
+        resolution=project.image_resolution,
+        fallback_model_id=project.image_model_id,
+    )
     if image_model is None:
-        image_model = await session.scalar(
-            select(AIModel).where(
-                AIModel.tenant_id == user.tenant_id,
-                AIModel.model_type == ModelType.IMAGE,
-                AIModel.is_default.is_(True),
-                AIModel.enabled.is_(True),
-            )
+        raise HTTPException(
+            status_code=409,
+            detail=f"管理员尚未为 {project.image_resolution} 配置可用的图片模型",
         )
-    if (
-        image_model is None
-        or image_model.tenant_id != user.tenant_id
-        or image_model.model_type != ModelType.IMAGE
-        or not image_model.enabled
-    ):
-        raise HTTPException(status_code=409, detail="当前项目没有可用的图片模型")
     handbook = await session.get(Handbook, project.visual_handbook_id) if project.visual_handbook_id else None
     pricing = await resolve_task_pricing(
         session,

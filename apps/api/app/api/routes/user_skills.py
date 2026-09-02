@@ -1,11 +1,17 @@
 from __future__ import annotations
 
 from fastapi import APIRouter, Depends, HTTPException, status
-from sqlalchemy import func, select
+from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.api.deps import get_current_user
-from app.db.models import User, UserSkill, UserSkillStage
+from app.db.models import (
+    MarketplaceListing,
+    MarketplaceResourceType,
+    User,
+    UserSkill,
+    UserSkillStage,
+)
 from app.db.session import get_session
 from app.domain.schemas import UserSkillCreate, UserSkillPublic, UserSkillUpdate
 from app.services.user_skills import USER_SKILL_STAGE_LABELS
@@ -131,5 +137,14 @@ async def delete_user_skill(
     session: AsyncSession = Depends(get_session),
 ) -> None:
     skill = await owned_user_skill(session, skill_id=skill_id, user=user)
+    await session.execute(
+        update(MarketplaceListing)
+        .where(
+            MarketplaceListing.resource_type == MarketplaceResourceType.SKILL,
+            MarketplaceListing.publisher_user_id == user.id,
+            MarketplaceListing.source_id == skill.id,
+        )
+        .values(published=False)
+    )
     await session.delete(skill)
     await session.commit()

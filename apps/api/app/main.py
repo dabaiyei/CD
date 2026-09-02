@@ -17,6 +17,8 @@ from app.api.routes import (
     director_workflows,
     dubbing,
     finishing,
+    invitations,
+    marketplace,
     memories,
     notifications,
     pricing,
@@ -73,6 +75,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 app.include_router(auth.router, prefix=settings.api_prefix)
+app.include_router(invitations.router, prefix=settings.api_prefix)
+app.include_router(marketplace.router, prefix=settings.api_prefix)
 app.include_router(projects.router, prefix=settings.api_prefix)
 app.include_router(director.router, prefix=settings.api_prefix)
 app.include_router(director_workflows.router, prefix=settings.api_prefix)

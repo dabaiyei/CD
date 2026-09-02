@@ -39,6 +39,7 @@ from app.db.models import (
 )
 from app.services.billing import resolve_task_pricing
 from app.services.composition import invalidate_compositions
+from app.services.image_model_routing import resolve_image_model
 from app.services.object_storage import materialize_media_file, object_key_from_media_url
 from app.services.task_events import publish_task_event, record_task_event
 from app.services.task_queue import enqueue_task
@@ -702,18 +703,14 @@ async def _queue_missing_asset_images(
     project = await session.get(Project, workflow.project_id)
     if project is None:
         raise RuntimeError("导演流程项目已不存在")
-    model = await session.get(AIModel, project.image_model_id) if project.image_model_id else None
-    if model is None or model.model_type != ModelType.IMAGE or not model.enabled:
-        model = await session.scalar(
-            select(AIModel).where(
-                AIModel.tenant_id == workflow.tenant_id,
-                AIModel.model_type == ModelType.IMAGE,
-                AIModel.is_default.is_(True),
-                AIModel.enabled.is_(True),
-            )
-        )
+    model = await resolve_image_model(
+        session,
+        tenant_id=workflow.tenant_id,
+        resolution=project.image_resolution,
+        fallback_model_id=project.image_model_id,
+    )
     if model is None:
-        raise RuntimeError("当前项目没有可用的图片模型")
+        raise RuntimeError(f"管理员尚未为 {project.image_resolution} 配置可用的图片模型")
     queued: list[tuple[AITask, TaskEvent]] = []
     for asset in missing:
         task, event, _ = await _queue_child(

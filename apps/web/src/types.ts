@@ -10,6 +10,7 @@ export type UserSkillStage =
   | 'storyboard_generation'
   | 'storyboard_review'
   | 'video_generation'
+export type MarketplaceResourceType = 'skill' | 'template' | 'material'
 
 export interface User {
   id: string
@@ -67,6 +68,32 @@ export interface AdminCreditAdjustmentResult {
   ledger: CreditLedgerEntry
 }
 
+export interface InvitationSettings {
+  url_prefix: string
+}
+
+export interface Invitation {
+  id: string
+  code: string
+  name: string
+  max_registrations: number
+  registration_count: number
+  remaining_registrations: number
+  initial_credits: string
+  enabled: boolean
+  invite_url: string | null
+  created_at: string
+  updated_at: string
+}
+
+export interface InvitationRegistrationInfo {
+  code: string
+  tenant_name: string
+  invitation_name: string
+  initial_credits: string
+  remaining_registrations: number
+}
+
 export interface SecurityEvent {
   id: string
   user_id: string | null
@@ -116,6 +143,16 @@ export interface AIModel {
   last_test_ok: boolean | null
   last_test_message: string | null
   last_test_latency_ms: number | null
+  created_at: string
+  updated_at: string
+}
+
+export type ImageResolution = '1K' | '2K' | '4K'
+
+export interface ImageResolutionModelRoute {
+  id: string
+  resolution: ImageResolution
+  model_id: string
   created_at: string
   updated_at: string
 }
@@ -199,7 +236,6 @@ export interface Handbook {
 
 export interface ProjectOptions {
   video_models: AIModel[]
-  image_models: AIModel[]
   visual_handbooks: Handbook[]
   director_handbooks: Handbook[]
   video_resolutions: string[]
@@ -211,6 +247,7 @@ export interface Readiness {
   ready: boolean
   required_defaults: Record<'text' | 'image' | 'video', boolean>
   optional_defaults: Record<'tts', boolean>
+  image_resolution_models: Record<ImageResolution, boolean>
   missing: ModelType[]
 }
 
@@ -864,6 +901,52 @@ export interface UserSkill {
   version: number
   created_at: string
   updated_at: string
+}
+
+export interface UserTemplate {
+  id: string
+  name: string
+  description: string
+  category: string
+  content: string
+  version: number
+  created_at: string
+  updated_at: string
+}
+
+export interface MarketplaceListing {
+  id: string
+  resource_type: MarketplaceResourceType
+  title: string
+  description: string
+  category: string
+  tags: string[]
+  cover_url: string | null
+  payload: Record<string, unknown>
+  version: number
+  download_count: number
+  publisher_name: string
+  publisher_avatar_url: string | null
+  owned_by_me: boolean
+  acquired: boolean
+  has_update: boolean
+  target_id: string | null
+  published_at: string
+  updated_at: string
+}
+
+export interface MarketplacePage {
+  items: MarketplaceListing[]
+  total: number
+  categories: string[]
+}
+
+export interface MarketplaceAcquisitionResult {
+  listing_id: string
+  target_type: 'user_skill' | 'user_template' | 'global_asset'
+  target_id: string
+  listing_version: number
+  created: boolean
 }
 
 export interface UserSkillStageOption {

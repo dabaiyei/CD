@@ -9,6 +9,8 @@ function applyTheme(theme: Theme): void {
   currentTheme.value = theme
   document.documentElement.dataset.theme = theme
   document.documentElement.style.colorScheme = theme
+  document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')
+    ?.setAttribute('content', theme === 'dark' ? '#0b211b' : '#f5f6f8')
 }
 
 export function initializeTheme(): void {

@@ -12,6 +12,7 @@ from app.db.models import (
     CreditAccount,
     Handbook,
     HandbookType,
+    ImageResolutionModelRoute,
     ModelType,
     Project,
     PromptTemplate,
@@ -149,6 +150,16 @@ async def seed_demo_data() -> None:
         )
         session.add_all([text_model, image_model, video_model, tts_model])
         await session.flush()
+        session.add_all(
+            [
+                ImageResolutionModelRoute(
+                    tenant_id=tenant.id,
+                    resolution=resolution,
+                    model_id=image_model.id,
+                )
+                for resolution in ("1K", "2K", "4K")
+            ]
+        )
 
         noir = Handbook(
             tenant_id=tenant.id,

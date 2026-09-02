@@ -8,9 +8,13 @@ import {
   Coins,
   BrainCircuit,
   Camera,
+  BookOpenText,
+  Images,
   LayoutGrid,
+  Download,
   LogOut,
   ShieldCheck,
+  Sparkles,
 } from 'lucide-vue-next'
 import {
   PopoverContent,
@@ -25,13 +29,16 @@ import { useTheme } from '@/lib/theme'
 import ActivityCenter from '@/components/ActivityCenter.vue'
 import AvatarCropDialog from '@/components/AvatarCropDialog.vue'
 import ThemeToggle from '@/components/ThemeToggle.vue'
+import PwaInstallPrompt from '@/components/PwaInstallPrompt.vue'
 import type { User } from '@/types'
+import { usePwaInstall } from '@/lib/pwa'
 
 const auth = useAuthStore()
 const activity = useActivityStore()
 const route = useRoute()
 const router = useRouter()
 const { theme } = useTheme()
+const pwa = usePwaInstall()
 const accountMenuOpen = ref(false)
 const avatarEditorOpen = ref(false)
 const topbarRef = ref<HTMLElement | null>(null)
@@ -39,6 +46,9 @@ const topbarRef = ref<HTMLElement | null>(null)
 const currentSectionImage = computed(() => {
   const light = theme.value === 'light'
   if (route.name === 'director') return light ? '/covers/studio-hero-light.webp' : '/covers/default-project-city-v2-wide.webp'
+  if (route.path.startsWith('/marketplace/skill')) return light ? '/covers/skills-lab-light.webp' : '/covers/skills-lab-v2.webp'
+  if (route.path.startsWith('/marketplace/template')) return light ? '/covers/studio-hero-light.webp' : '/covers/default-project-campus-v2-wide.webp'
+  if (route.path.startsWith('/marketplace/material')) return light ? '/covers/asset-studio-light.webp' : '/covers/asset-studio-v2.webp'
   if (route.path.startsWith('/skills')) return light ? '/covers/skills-lab-light.webp' : '/covers/skills-lab-v2.webp'
   if (route.path.startsWith('/admin')) return light ? '/covers/admin-console-light.webp' : '/covers/admin-console-v2.webp'
   return light ? '/covers/studio-hero-light.webp' : '/covers/studio-hero-v2.webp'
@@ -46,6 +56,9 @@ const currentSectionImage = computed(() => {
 
 const navItems = computed(() => [
   { label: '创作台', icon: LayoutGrid, to: '/workspace', active: route.path.startsWith('/workspace') || route.name === 'director' },
+  { label: '技能广场', icon: Sparkles, to: '/marketplace/skill', active: route.path === '/marketplace/skill' },
+  { label: '模板广场', icon: BookOpenText, to: '/marketplace/template', active: route.path === '/marketplace/template' },
+  { label: '素材广场', icon: Images, to: '/marketplace/material', active: route.path === '/marketplace/material' },
   { label: '我的 Skills', icon: BrainCircuit, to: '/skills', active: route.path.startsWith('/skills') },
   ...(auth.isAdmin
     ? [{ label: '管理', icon: ShieldCheck, to: '/admin/overview', active: route.path.startsWith('/admin') }]
@@ -100,6 +113,11 @@ function openAvatarEditor(): void {
 
 function handleAvatarUpdated(user: User): void {
   if (auth.session) auth.session.user = user
+}
+
+async function installApp(): Promise<void> {
+  accountMenuOpen.value = false
+  await pwa.requestInstall()
 }
 </script>
 
@@ -198,6 +216,10 @@ function handleAvatarUpdated(user: User): void {
                     <div><Coins :size="15" /><span><small>可用积分</small><strong class="tabular-nums">{{ auth.session?.credit_balance ?? '0' }}</strong></span></div>
                     <div><component :is="auth.isAdmin ? ShieldCheck : Clapperboard" :size="15" /><span><small>当前身份</small><strong>{{ auth.isAdmin ? '管理员' : '创作者' }}</strong></span></div>
                   </div>
+                  <button v-if="pwa.canInstall.value" class="account-popover__install" type="button" @click="installApp">
+                    <Download :size="16" />
+                    <span>安装到桌面</span>
+                  </button>
                   <button class="account-popover__logout" type="button" @click="logout">
                     <LogOut :size="16" />
                     <span>退出登录</span>
@@ -219,6 +241,8 @@ function handleAvatarUpdated(user: User): void {
       :display-name="auth.session.user.display_name"
       @updated="handleAvatarUpdated"
     />
+
+    <PwaInstallPrompt />
 
     <nav class="mobile-nav" aria-label="移动端主导航">
       <RouterLink

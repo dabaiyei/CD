@@ -8,6 +8,8 @@ import { cancelRouteMotion, enterRoute, leaveRoute } from '@/lib/motion'
 
 function routeMotionKey(route: RouteLocationNormalizedLoaded): string {
   if (route.name === 'director') return `director:${String(route.params.id ?? '')}`
+  if (route.name === 'invite-register') return `invite:${String(route.params.code ?? '')}`
+  if (route.name === 'marketplace') return `marketplace:${String(route.params.kind ?? '')}`
   return String(route.name ?? route.path)
 }
 </script>

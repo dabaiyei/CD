@@ -39,7 +39,6 @@ const emptyForm = (): Partial<ProjectPayload> & Pick<ProjectPayload, 'name'> => 
   video_model_id: null,
   video_resolution: '720p',
   aspect_ratio: '16:9',
-  image_model_id: null,
   image_resolution: '1K',
   visual_handbook_id: null,
   director_handbook_id: null,
@@ -50,19 +49,16 @@ const coverPrice = computed(() => Number(
   projectStore.pricing.find((rule) => rule.task_type === 'project_cover_generation')?.unit_cost ?? 20,
 ).toFixed(2))
 const videoModelOptions = computed(() => (projectStore.options?.video_models ?? []).map((item) => ({ value: item.id, label: item.name, description: '视频生成模型', icon: Film })))
-const imageModelOptions = computed(() => (projectStore.options?.image_models ?? []).map((item) => ({ value: item.id, label: item.name, description: '图片生成模型', icon: ImageIcon })))
 const videoResolutionOptions = computed(() => (projectStore.options?.video_resolutions ?? []).map((item) => ({ value: item, label: item, description: '视频输出清晰度', icon: MonitorUp })))
 const aspectRatioOptions = computed(() => (projectStore.options?.aspect_ratios ?? []).map((item) => ({ value: item, label: item, description: '成片画幅比例', icon: Ratio })))
 const imageResolutionOptions = computed(() => (projectStore.options?.image_resolutions ?? []).map((item) => ({ value: item, label: item, description: '图片输出清晰度', icon: ImageIcon })))
 const projectConfigurationReady = computed(() => Boolean(
   form.video_model_id
-  && form.image_model_id
   && form.visual_handbook_id
   && form.director_handbook_id,
 ))
 const missingConfigurationLabels = computed(() => [
   !form.video_model_id ? '视频模型' : '',
-  !form.image_model_id ? '图片模型' : '',
   !form.visual_handbook_id ? '视觉手册' : '',
   !form.director_handbook_id ? '导演手册' : '',
 ].filter(Boolean))
@@ -141,7 +137,6 @@ function resetForm(): void {
   Object.assign(form, emptyForm())
   const options = projectStore.options
   form.video_model_id = options?.video_models[0]?.id ?? null
-  form.image_model_id = options?.image_models[0]?.id ?? null
   form.visual_handbook_id = options?.visual_handbooks[0]?.id ?? null
   form.director_handbook_id = options?.director_handbooks[0]?.id ?? null
 }
@@ -355,10 +350,6 @@ async function generateCover(): Promise<void> {
           <div class="field">
             <span>影片比例</span>
             <UiSelect :model-value="form.aspect_ratio ?? ''" :options="aspectRatioOptions" placeholder="选择影片比例" @update:model-value="form.aspect_ratio = $event" />
-          </div>
-          <div class="field">
-            <span>图片模型</span>
-            <UiSelect :model-value="form.image_model_id ?? ''" :options="imageModelOptions" placeholder="选择图片模型" @update:model-value="form.image_model_id = $event" />
           </div>
           <div class="field">
             <span>图片分辨率</span>

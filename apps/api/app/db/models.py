@@ -73,6 +73,12 @@ class UserSkillStage(enum.StrEnum):
     VIDEO_GENERATION = "video_generation"
 
 
+class MarketplaceResourceType(enum.StrEnum):
+    SKILL = "skill"
+    TEMPLATE = "template"
+    MATERIAL = "material"
+
+
 class AgentKind(enum.StrEnum):
     SCREENPLAY = "screenplay"
     GENERAL = "general"
@@ -210,6 +216,7 @@ class Tenant(Base, TimestampMixin):
     name: Mapped[str] = mapped_column(String(120))
     slug: Mapped[str] = mapped_column(String(80), unique=True, index=True)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    invite_url_prefix: Mapped[str | None] = mapped_column(String(500), nullable=True)
 
     users: Mapped[list[User]] = relationship(back_populates="tenant")
 
@@ -230,6 +237,50 @@ class User(Base, TimestampMixin):
 
     tenant: Mapped[Tenant] = relationship(back_populates="users")
     projects: Mapped[list[Project]] = relationship(back_populates="owner")
+
+
+class InvitationCode(Base, TimestampMixin):
+    __tablename__ = "invitation_codes"
+    __table_args__ = (
+        Index("ix_invitation_codes_tenant_created", "tenant_id", "created_at"),
+        Index("ix_invitation_codes_tenant_active", "tenant_id", "enabled", "deleted_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+    )
+    created_by_id: Mapped[str] = mapped_column(ForeignKey("users.id"), index=True)
+    code: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    name: Mapped[str] = mapped_column(String(80), default="创作者邀请")
+    max_registrations: Mapped[int] = mapped_column(Integer, default=1)
+    registration_count: Mapped[int] = mapped_column(Integer, default=0)
+    initial_credits: Mapped[Decimal] = mapped_column(
+        Numeric(14, 2), default=Decimal("0")
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    deleted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+
+
+class InvitationRedemption(Base):
+    __tablename__ = "invitation_redemptions"
+    __table_args__ = (
+        UniqueConstraint("user_id", name="uq_invitation_redemption_user"),
+        Index("ix_invitation_redemptions_invitation_created", "invitation_id", "created_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    invitation_id: Mapped[str] = mapped_column(ForeignKey("invitation_codes.id"), index=True)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    initial_credits: Mapped[Decimal] = mapped_column(Numeric(14, 2))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
 
 
 class RefreshSession(Base):
@@ -325,6 +376,23 @@ class AIModel(Base, TimestampMixin):
     last_test_latency_ms: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     provider: Mapped[Provider] = relationship(back_populates="models")
+
+
+class ImageResolutionModelRoute(Base, TimestampMixin):
+    __tablename__ = "image_resolution_model_routes"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "resolution", name="uq_image_resolution_route_tenant_resolution"),
+        Index("ix_image_resolution_routes_tenant_model", "tenant_id", "model_id"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+    )
+    resolution: Mapped[str] = mapped_column(String(8))
+    model_id: Mapped[str] = mapped_column(ForeignKey("ai_models.id"), index=True)
+
+    model: Mapped[AIModel] = relationship(foreign_keys=[model_id])
 
 
 class Handbook(Base, TimestampMixin):
@@ -986,6 +1054,82 @@ class UserSkill(Base, TimestampMixin):
     trigger_stages: Mapped[list[str]] = mapped_column(JSON, default=list)
     enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
     version: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class UserTemplate(Base, TimestampMixin):
+    __tablename__ = "user_templates"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "user_id", "name", name="uq_user_template_name"),
+        Index("ix_user_templates_owner_updated", "tenant_id", "user_id", "updated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    name: Mapped[str] = mapped_column(String(120))
+    description: Mapped[str] = mapped_column(Text, default="")
+    category: Mapped[str] = mapped_column(String(80), default="通用", index=True)
+    content: Mapped[str] = mapped_column(Text)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+
+
+class MarketplaceListing(Base, TimestampMixin):
+    __tablename__ = "marketplace_listings"
+    __table_args__ = (
+        UniqueConstraint(
+            "resource_type",
+            "publisher_user_id",
+            "source_id",
+            name="uq_marketplace_listing_source",
+        ),
+        Index(
+            "ix_marketplace_listings_public_feed",
+            "resource_type",
+            "published",
+            "updated_at",
+        ),
+        Index("ix_marketplace_listings_publisher", "publisher_user_id", "published"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    resource_type: Mapped[MarketplaceResourceType] = mapped_column(
+        Enum(MarketplaceResourceType, native_enum=False), index=True
+    )
+    publisher_tenant_id: Mapped[str] = mapped_column(
+        ForeignKey("tenants.id", ondelete="CASCADE"), index=True
+    )
+    publisher_user_id: Mapped[str] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    source_id: Mapped[str] = mapped_column(String(36), index=True)
+    title: Mapped[str] = mapped_column(String(160), index=True)
+    description: Mapped[str] = mapped_column(Text, default="")
+    category: Mapped[str] = mapped_column(String(80), default="通用", index=True)
+    tags: Mapped[list[str]] = mapped_column(JSON, default=list)
+    cover_url: Mapped[str | None] = mapped_column(String(600), nullable=True)
+    payload: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    version: Mapped[int] = mapped_column(Integer, default=1)
+    published: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    download_count: Mapped[int] = mapped_column(Integer, default=0)
+    published_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now)
+
+
+class MarketplaceAcquisition(Base, TimestampMixin):
+    __tablename__ = "marketplace_acquisitions"
+    __table_args__ = (
+        UniqueConstraint("listing_id", "user_id", name="uq_marketplace_acquisition_user"),
+        Index("ix_marketplace_acquisitions_owner", "tenant_id", "user_id", "updated_at"),
+    )
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    listing_id: Mapped[str] = mapped_column(
+        ForeignKey("marketplace_listings.id", ondelete="CASCADE"), index=True
+    )
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    target_type: Mapped[str] = mapped_column(String(40))
+    target_id: Mapped[str] = mapped_column(String(36), index=True)
+    listing_version: Mapped[int] = mapped_column(Integer)
 
 
 class AgentMemory(Base, TimestampMixin):

@@ -53,6 +53,7 @@
 html {
   min-width: 320px;
   background: var(--bg);
+  touch-action: pan-x pan-y;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
 }
@@ -63,6 +64,7 @@ body {
   min-height: 100vh;
   color: var(--ink);
   background: var(--bg);
+  touch-action: pan-x pan-y;
 }
 
 button,
@@ -1562,6 +1564,7 @@ img {
   font-size: 9px;
 }
 
+.account-popover__install,
 .account-popover__logout {
   display: flex;
   width: 100%;
@@ -1572,7 +1575,6 @@ img {
   padding: 0 10px;
   border: 0;
   border-radius: 6px;
-  color: var(--danger);
   background: transparent;
   cursor: pointer;
   font-size: 11px;
@@ -1581,10 +1583,24 @@ img {
   transition-duration: 150ms;
 }
 
+.account-popover__install {
+  color: var(--ink-secondary);
+}
+
+.account-popover__install:hover {
+  color: var(--brand-strong);
+  background: var(--brand-soft);
+}
+
+.account-popover__logout {
+  color: var(--danger);
+}
+
 .account-popover__logout:hover {
   background: var(--danger-soft);
 }
 
+.account-popover__install:active,
 .account-popover__logout:active {
   scale: 0.96;
 }
@@ -13268,6 +13284,101 @@ body.agent-focus-open {
   font-size: 8px;
 }
 
+.default-model-slot--image-routes {
+  min-height: 0;
+  grid-column: 1 / -1;
+  grid-template-rows: auto auto;
+}
+
+.image-resolution-routes {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0;
+  overflow: hidden;
+  border-radius: 6px;
+  background: var(--surface-subtle);
+  box-shadow: inset 0 0 0 1px var(--line);
+}
+
+.image-resolution-route {
+  position: relative;
+  display: grid;
+  min-width: 0;
+  gap: 9px;
+  padding: 11px;
+}
+
+.image-resolution-route + .image-resolution-route {
+  border-left: 1px solid var(--line);
+}
+
+.image-resolution-route__identity {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 38px minmax(0, 1fr);
+  align-items: center;
+  gap: 9px;
+}
+
+.image-resolution-route__identity > strong {
+  display: inline-flex;
+  width: 38px;
+  height: 38px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  color: var(--brand-strong);
+  background: var(--brand-soft);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--brand) 16%, transparent);
+  font-size: 11px;
+}
+
+.image-resolution-route__identity span,
+.image-resolution-route__identity b,
+.image-resolution-route__identity small {
+  display: block;
+  min-width: 0;
+}
+
+.image-resolution-route__identity b,
+.image-resolution-route__identity small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.image-resolution-route__identity b {
+  color: var(--ink);
+  font-size: 10px;
+}
+
+.image-resolution-route__identity small {
+  margin-top: 4px;
+  color: var(--ink-tertiary);
+  font-family: 'Cascadia Code', Consolas, monospace;
+  font-size: 8px;
+}
+
+.image-resolution-route .ui-select,
+.image-resolution-route .default-model-slot__add {
+  min-height: 40px;
+}
+
+.image-resolution-route__saving {
+  position: absolute;
+  right: 17px;
+  top: 22px;
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  padding: 4px 6px;
+  border-radius: 5px;
+  color: var(--success);
+  background: var(--surface-strong);
+  box-shadow: var(--shadow-border);
+  font-size: 8px;
+}
+
 .model-service-workbench {
   display: grid;
   min-height: 610px;
@@ -14724,6 +14835,15 @@ body.agent-focus-open {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
 
+  .image-resolution-routes {
+    grid-template-columns: 1fr;
+  }
+
+  .image-resolution-route + .image-resolution-route {
+    border-top: 1px solid var(--line);
+    border-left: 0;
+  }
+
   .model-service-workbench {
     grid-template-columns: 1fr;
   }
@@ -15654,6 +15774,7 @@ body.agent-focus-open {
   background: var(--surface-subtle);
   box-shadow: inset 0 0 0 1px rgb(255 255 255 / 2%);
   cursor: pointer;
+  touch-action: manipulation;
   transition-property: border-color, box-shadow, background-color, scale;
   transition-duration: 150ms;
 }
@@ -15670,13 +15791,15 @@ body.agent-focus-open {
   box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 13%, transparent);
 }
 
-.ui-select:active:not(:disabled) {
-  scale: 0.96;
-}
-
 .ui-select:disabled {
   cursor: not-allowed;
   opacity: 0.52;
+}
+
+@media (hover: hover) and (pointer: fine) {
+  .ui-select:active:not(:disabled) {
+    scale: 0.96;
+  }
 }
 
 .ui-select--compact,
@@ -15744,8 +15867,9 @@ body.agent-focus-open {
 }
 
 .ui-select-menu {
-  z-index: 180;
+  z-index: 210;
   min-width: var(--reka-select-trigger-width);
+  max-width: calc(100vw - 24px);
   max-height: min(340px, var(--reka-select-content-available-height));
   overflow: hidden;
   border-radius: 8px;
@@ -15765,7 +15889,8 @@ body.agent-focus-open {
 @keyframes select-in {
   from {
     opacity: 0;
-    transform: translateY(-4px) scale(0.98);
+    translate: 0 -4px;
+    scale: 0.98;
     filter: blur(4px);
   }
 }
@@ -15773,7 +15898,8 @@ body.agent-focus-open {
 @keyframes select-out {
   to {
     opacity: 0;
-    transform: translateY(-3px) scale(0.98);
+    translate: 0 -3px;
+    scale: 0.98;
     filter: blur(3px);
   }
 }
@@ -15793,6 +15919,7 @@ body.agent-focus-open {
   border-radius: 6px;
   outline: 0;
   cursor: pointer;
+  touch-action: manipulation;
   user-select: none;
   transition-property: color, background-color;
   transition-duration: 120ms;
@@ -17723,17 +17850,26 @@ body.agent-focus-open {
     display: flex;
     min-height: 60px;
     align-items: flex-start;
-    justify-content: space-around;
-    padding: 7px 16px calc(7px + env(safe-area-inset-bottom));
+    justify-content: flex-start;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 7px 6px calc(7px + env(safe-area-inset-bottom));
     border-top: 1px solid var(--line);
     background: rgb(255 255 255 / 94%);
     backdrop-filter: blur(14px);
+    overscroll-behavior-x: contain;
+    scrollbar-width: none;
+  }
+
+  .mobile-nav::-webkit-scrollbar {
+    display: none;
   }
 
   .mobile-nav__item {
     display: flex;
-    min-width: 72px;
+    min-width: 58px;
     min-height: 46px;
+    flex: 1 0 58px;
     flex-direction: column;
     align-items: center;
     justify-content: center;

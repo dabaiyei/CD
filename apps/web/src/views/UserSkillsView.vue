@@ -11,6 +11,7 @@ import {
   Plus,
   ScanSearch,
   ScrollText,
+  Share2,
   Sparkles,
   Trash2,
   WandSparkles,
@@ -27,6 +28,7 @@ const stageOptions = ref<UserSkillStageOption[]>([])
 const loading = ref(true)
 const saving = ref(false)
 const deleting = ref(false)
+const publishingSkillId = ref<string | null>(null)
 const dialogOpen = ref(false)
 const editingId = ref<string | null>(null)
 const deleteTarget = ref<UserSkill | null>(null)
@@ -165,6 +167,31 @@ async function toggleSkill(skill: UserSkill): Promise<void> {
   }
 }
 
+async function publishSkill(skill: UserSkill): Promise<void> {
+  if (publishingSkillId.value) return
+  publishingSkillId.value = skill.id
+  try {
+    await api(`/marketplace/skills/${skill.id}/publish`, {
+      method: 'POST',
+      body: JSON.stringify({
+        category: '创作技能',
+        tags: skill.trigger_stages.map((stage) => stageVisuals[stage].label),
+      }),
+    })
+    toast.show('已分享到技能广场', {
+      message: '再次分享会发布你修改后的新版本，使用者可主动同步',
+      tone: 'success',
+    })
+  } catch (error) {
+    toast.show('分享失败', {
+      message: error instanceof Error ? error.message : undefined,
+      tone: 'error',
+    })
+  } finally {
+    publishingSkillId.value = null
+  }
+}
+
 async function deleteSkill(): Promise<void> {
   const target = deleteTarget.value
   if (!target || deleting.value) return
@@ -264,6 +291,7 @@ function formatDate(value: string): string {
         <footer>
           <span class="tabular-nums">v{{ skill.version }} · {{ formatDate(skill.updated_at) }}</span>
           <div>
+            <button type="button" title="分享到技能广场" :disabled="Boolean(publishingSkillId)" @click="publishSkill(skill)"><LoaderCircle v-if="publishingSkillId === skill.id" class="spin" :size="15" /><Share2 v-else :size="15" /></button>
             <button type="button" title="编辑 Skill" @click="openEdit(skill)"><Pencil :size="15" /></button>
             <button class="danger" type="button" title="删除 Skill" @click="deleteTarget = skill"><Trash2 :size="15" /></button>
           </div>
@@ -385,6 +413,7 @@ function formatDate(value: string): string {
 .user-skill-card > footer div { display: flex; gap: 2px; }
 .user-skill-card > footer button { display: inline-flex; width: 40px; height: 40px; align-items: center; justify-content: center; border: 0; border-radius: 7px; color: var(--ink-secondary); background: transparent; cursor: pointer; transition-property: color, background-color, scale; transition-duration: 150ms; }
 .user-skill-card > footer button:hover { color: var(--ink); background: var(--surface-strong); }
+.user-skill-card > footer button:disabled { cursor: wait; opacity: .55; }
 .user-skill-card > footer button.danger:hover { color: var(--danger); background: var(--danger-soft); }
 .user-skill-card > footer button:active { scale: .96; }
 .user-skills-empty { display: grid; min-height: 310px; place-items: center; align-content: center; gap: 9px; color: var(--ink-secondary); }

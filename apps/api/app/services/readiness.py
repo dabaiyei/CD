@@ -4,9 +4,27 @@ from fastapi import HTTPException, status
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import AIModel, ModelType
+from app.db.models import AIModel, ImageResolutionModelRoute, ModelType
+from app.services.image_model_routing import IMAGE_RESOLUTIONS
 
 REQUIRED_DEFAULT_MODEL_TYPES = (ModelType.TEXT, ModelType.IMAGE, ModelType.VIDEO)
+
+
+async def configured_image_resolutions(session: AsyncSession, tenant_id: str) -> set[str]:
+    return set(
+        (
+            await session.scalars(
+                select(ImageResolutionModelRoute.resolution)
+                .join(AIModel, AIModel.id == ImageResolutionModelRoute.model_id)
+                .where(
+                    ImageResolutionModelRoute.tenant_id == tenant_id,
+                    AIModel.tenant_id == tenant_id,
+                    AIModel.model_type == ModelType.IMAGE,
+                    AIModel.enabled.is_(True),
+                )
+            )
+        ).all()
+    )
 
 
 async def default_model_types(session: AsyncSession, tenant_id: str) -> set[ModelType]:
@@ -25,6 +43,9 @@ async def default_model_types(session: AsyncSession, tenant_id: str) -> set[Mode
             )
         ).all()
     )
+    present.discard(ModelType.IMAGE)
+    if set(IMAGE_RESOLUTIONS).issubset(await configured_image_resolutions(session, tenant_id)):
+        present.add(ModelType.IMAGE)
     session.info[cache_key] = present
     return present
 

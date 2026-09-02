@@ -89,6 +89,15 @@ def test_initial_migration_round_trip_and_revision_guard(tmp_path: Path) -> None
         user_columns = {
             row[1] for row in connection.execute("PRAGMA table_info('users')")
         }
+        tenant_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info('tenants')")
+        }
+        image_route_indexes = {
+            row[1]
+            for row in connection.execute(
+                "PRAGMA index_list('image_resolution_model_routes')"
+            )
+        }
     assert {
         "tenants",
         "ai_tasks",
@@ -110,6 +119,12 @@ def test_initial_migration_round_trip_and_revision_guard(tmp_path: Path) -> None
             "director_decision_requests",
             "user_skills",
             "personal_agent_attachments",
+            "image_resolution_model_routes",
+            "invitation_codes",
+            "invitation_redemptions",
+            "user_templates",
+            "marketplace_listings",
+            "marketplace_acquisitions",
             } <= tables
     assert {
         "worker_id",
@@ -155,7 +170,9 @@ def test_initial_migration_round_trip_and_revision_guard(tmp_path: Path) -> None
     } <= memory_columns
     assert session_columns["project_id"][3] == 0
     assert {"avatar_url", "avatar_storage_path"} <= user_columns
-    assert revision == ("8d4e1f6a2b90",)
+    assert "invite_url_prefix" in tenant_columns
+    assert "ix_image_resolution_routes_tenant_model" in image_route_indexes
+    assert revision == ("1e7c4a9b2d60",)
 
     checked = run_alembic(database, "check")
     assert "No new upgrade operations detected" in checked.stdout + checked.stderr
@@ -169,7 +186,7 @@ def test_initial_migration_round_trip_and_revision_guard(tmp_path: Path) -> None
     assert stale_guard.returncode != 0
     assert "数据库版本不匹配" in stale_guard.stderr
     with sqlite3.connect(database) as connection:
-        connection.execute("UPDATE alembic_version SET version_num = '8d4e1f6a2b90'")
+        connection.execute("UPDATE alembic_version SET version_num = '1e7c4a9b2d60'")
 
     run_alembic(database, "downgrade", "base")
     with sqlite3.connect(database) as connection:

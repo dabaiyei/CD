@@ -22,6 +22,8 @@ from app.db.models import (
     AssetType,
     Chapter,
     ChapterStatus,
+    MarketplaceListing,
+    MarketplaceResourceType,
     ScriptVersion,
     User,
     UserRole,
@@ -612,6 +614,16 @@ async def delete_asset(
         await project_for_user(session, asset.project_id, user)
     if await session.scalar(select(Asset.id).where(Asset.parent_asset_id == asset.id).limit(1)):
         raise HTTPException(status_code=409, detail="请先删除或调整该基础资产下的衍生资产")
+    if asset.scope == AssetScope.GLOBAL and asset.user_id == user.id:
+        await session.execute(
+            update(MarketplaceListing)
+            .where(
+                MarketplaceListing.resource_type == MarketplaceResourceType.MATERIAL,
+                MarketplaceListing.publisher_user_id == user.id,
+                MarketplaceListing.source_id == asset.id,
+            )
+            .values(published=False)
+        )
     await session.delete(asset)
     await session.commit()
 

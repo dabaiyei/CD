@@ -25,6 +25,7 @@ from app.db.models import (
     User,
 )
 from app.services.billing import resolve_task_pricing
+from app.services.image_model_routing import resolve_image_model
 from app.services.object_storage import materialize_media_file, object_key_from_media_url
 from app.services.task_submission import active_tasks, create_queued_task
 
@@ -268,23 +269,17 @@ async def queue_asset_image_generation_tasks(
     if any(asset.asset_type == AssetType.AUDIO for asset in selected_assets):
         raise HTTPException(status_code=409, detail="音频资产不能执行生图任务")
 
-    image_model = await session.get(AIModel, project.image_model_id) if project.image_model_id else None
+    image_model = await resolve_image_model(
+        session,
+        tenant_id=user.tenant_id,
+        resolution=project.image_resolution,
+        fallback_model_id=project.image_model_id,
+    )
     if image_model is None:
-        image_model = await session.scalar(
-            select(AIModel).where(
-                AIModel.tenant_id == user.tenant_id,
-                AIModel.model_type == ModelType.IMAGE,
-                AIModel.is_default.is_(True),
-                AIModel.enabled.is_(True),
-            )
+        raise HTTPException(
+            status_code=409,
+            detail=f"管理员尚未为 {project.image_resolution} 配置可用的图片模型",
         )
-    if (
-        image_model is None
-        or image_model.tenant_id != user.tenant_id
-        or image_model.model_type != ModelType.IMAGE
-        or not image_model.enabled
-    ):
-        raise HTTPException(status_code=409, detail="当前项目没有可用的图片模型")
 
     selected_ids = {asset.id for asset in selected_assets}
     for pending in await active_tasks(

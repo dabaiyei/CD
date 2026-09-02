@@ -19,6 +19,7 @@ from app.db.models import (
     DirectorWorkflowStage,
     DirectorWorkflowStatus,
     HandbookType,
+    MarketplaceResourceType,
     ModelType,
     ProjectFileKind,
     ProviderType,
@@ -64,6 +65,96 @@ class AdminUserCreate(BaseModel):
     password: str = Field(min_length=8, max_length=128)
     role: UserRole = UserRole.USER
     initial_credits: Decimal = Field(default=Decimal("0"), ge=0, max_digits=14, decimal_places=2)
+
+    @field_validator("email")
+    @classmethod
+    def normalize_email(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if "@" not in normalized or normalized.startswith("@") or normalized.endswith("@"):
+            raise ValueError("请输入有效邮箱")
+        return normalized
+
+    @field_validator("display_name")
+    @classmethod
+    def normalize_display_name(cls, value: str) -> str:
+        return value.strip()
+
+
+class InvitationSettingsPublic(BaseModel):
+    url_prefix: str
+
+
+class InvitationSettingsUpdate(BaseModel):
+    url_prefix: str = Field(min_length=8, max_length=500)
+
+    @field_validator("url_prefix")
+    @classmethod
+    def normalize_url_prefix(cls, value: str) -> str:
+        return value.strip().rstrip("/")
+
+
+class InvitationCreate(BaseModel):
+    name: str = Field(default="创作者邀请", min_length=1, max_length=80)
+    max_registrations: int = Field(default=1, ge=1, le=100_000)
+    initial_credits: Decimal = Field(
+        default=Decimal("0"), ge=0, max_digits=14, decimal_places=2
+    )
+    enabled: bool = True
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("请输入邀请名称")
+        return normalized
+
+
+class InvitationUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=80)
+    max_registrations: int | None = Field(default=None, ge=1, le=100_000)
+    initial_credits: Decimal | None = Field(
+        default=None, ge=0, max_digits=14, decimal_places=2
+    )
+    enabled: bool | None = None
+
+    @field_validator("name")
+    @classmethod
+    def normalize_name(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("请输入邀请名称")
+        return normalized
+
+
+class InvitationPublic(ApiModel):
+    id: str
+    code: str
+    name: str
+    max_registrations: int
+    registration_count: int
+    remaining_registrations: int
+    initial_credits: Decimal
+    enabled: bool
+    invite_url: str | None
+    created_at: datetime
+    updated_at: datetime
+
+
+class InvitationRegistrationInfo(BaseModel):
+    code: str
+    tenant_name: str
+    invitation_name: str
+    initial_credits: Decimal
+    remaining_registrations: int
+
+
+class InvitationRegistrationRequest(BaseModel):
+    email: str = Field(min_length=3, max_length=255)
+    display_name: str = Field(min_length=1, max_length=80)
+    password: str = Field(min_length=8, max_length=128)
 
     @field_validator("email")
     @classmethod
@@ -321,6 +412,18 @@ class ModelPublic(ApiModel):
     updated_at: datetime
 
 
+class ImageResolutionModelRouteUpdate(BaseModel):
+    model_id: str = Field(min_length=1, max_length=36)
+
+
+class ImageResolutionModelRoutePublic(ApiModel):
+    id: str
+    resolution: Literal["1K", "2K", "4K"]
+    model_id: str
+    created_at: datetime
+    updated_at: datetime
+
+
 class HandbookCreate(BaseModel):
     handbook_type: HandbookType
     name: str = Field(min_length=1, max_length=120)
@@ -389,7 +492,7 @@ class ProjectCreate(BaseModel):
     video_model_id: str = Field(min_length=1, max_length=36)
     video_resolution: str = Field(default="720p", max_length=32)
     aspect_ratio: str = Field(default="16:9", max_length=16)
-    image_model_id: str = Field(min_length=1, max_length=36)
+    image_model_id: None = None
     image_resolution: Literal["1K", "2K", "4K"] = "1K"
     visual_handbook_id: str = Field(min_length=1, max_length=36)
     director_handbook_id: str = Field(min_length=1, max_length=36)
@@ -402,7 +505,7 @@ class ProjectUpdate(BaseModel):
     video_model_id: str | None = None
     video_resolution: str | None = Field(default=None, max_length=32)
     aspect_ratio: str | None = Field(default=None, max_length=16)
-    image_model_id: str | None = None
+    image_model_id: None = None
     image_resolution: Literal["1K", "2K", "4K"] | None = None
     visual_handbook_id: str | None = None
     director_handbook_id: str | None = None
@@ -428,7 +531,6 @@ class ProjectPublic(ApiModel):
 
 class ProjectOptions(BaseModel):
     video_models: list[ModelPublic]
-    image_models: list[ModelPublic]
     visual_handbooks: list[HandbookPublic]
     director_handbooks: list[HandbookPublic]
     video_resolutions: list[str] = ["480p", "720p", "1080p"]
@@ -1095,6 +1197,113 @@ class UserSkillPublic(ApiModel):
     updated_at: datetime
 
 
+class UserTemplateCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(default="", max_length=2_000)
+    category: str = Field(default="通用", min_length=1, max_length=80)
+    content: str = Field(min_length=1, max_length=200_000)
+
+    @field_validator("name", "category", "content")
+    @classmethod
+    def normalize_template_required_text(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("字段不能为空")
+        return normalized
+
+    @field_validator("description")
+    @classmethod
+    def normalize_template_description(cls, value: str) -> str:
+        return value.strip()
+
+
+class UserTemplateUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=120)
+    description: str | None = Field(default=None, max_length=2_000)
+    category: str | None = Field(default=None, min_length=1, max_length=80)
+    content: str | None = Field(default=None, min_length=1, max_length=200_000)
+
+    @field_validator("name", "category", "content")
+    @classmethod
+    def normalize_optional_template_required_text(cls, value: str | None) -> str | None:
+        if value is None:
+            return None
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("字段不能为空")
+        return normalized
+
+    @field_validator("description")
+    @classmethod
+    def normalize_optional_template_description(cls, value: str | None) -> str | None:
+        return value.strip() if value is not None else None
+
+
+class UserTemplatePublic(ApiModel):
+    id: str
+    name: str
+    description: str
+    category: str
+    content: str
+    version: int
+    created_at: datetime
+    updated_at: datetime
+
+
+class MarketplacePublishRequest(BaseModel):
+    category: str = Field(default="通用", min_length=1, max_length=80)
+    tags: list[str] = Field(default_factory=list, max_length=8)
+
+    @field_validator("category")
+    @classmethod
+    def normalize_marketplace_category(cls, value: str) -> str:
+        normalized = value.strip()
+        if not normalized:
+            raise ValueError("分类不能为空")
+        return normalized
+
+    @field_validator("tags")
+    @classmethod
+    def normalize_marketplace_tags(cls, value: list[str]) -> list[str]:
+        normalized = [item.strip()[:30] for item in value if item.strip()]
+        return list(dict.fromkeys(normalized))[:8]
+
+
+class MarketplaceListingPublic(ApiModel):
+    id: str
+    resource_type: MarketplaceResourceType
+    title: str
+    description: str
+    category: str
+    tags: list[str]
+    cover_url: str | None
+    payload: dict[str, Any]
+    version: int
+    download_count: int
+    publisher_name: str
+    publisher_avatar_url: str | None
+    owned_by_me: bool
+    acquired: bool
+    has_update: bool
+    target_id: str | None
+    published_at: datetime
+    updated_at: datetime
+
+
+class MarketplacePage(BaseModel):
+    items: list[MarketplaceListingPublic]
+    total: int
+    categories: list[str]
+
+
+class MarketplaceAcquisitionResult(BaseModel):
+    listing_id: str
+    target_type: str
+    target_id: str
+    listing_version: int
+    created: bool
+
+
 class AgentOptionPublic(ApiModel):
     id: str
     kind: AgentKind
@@ -1210,6 +1419,7 @@ class ReadinessPublic(BaseModel):
     ready: bool
     required_defaults: dict[ModelType, bool]
     optional_defaults: dict[ModelType, bool]
+    image_resolution_models: dict[str, bool]
     missing: list[ModelType]
 
 
