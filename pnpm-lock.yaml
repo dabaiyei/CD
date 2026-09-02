@@ -13,6 +13,9 @@ importers:
       '@tanstack/vue-virtual':
         specifier: ^3.13.36
         version: 3.13.36(vue@3.5.42(typescript@5.9.3))
+      cropperjs:
+        specifier: 1.6.2
+        version: 1.6.2
       gsap:
         specifier: ^3.15.0
         version: 3.15.0
@@ -314,6 +317,9 @@ packages:
   copy-anything@4.1.0:
     resolution: {integrity: sha512-ufbM3smX/Jbnpk5wcQjzd1MgBpzmqfNETUAyZNrGwU9foRlyHoGzMMBBCRzEhQLBjZfFDE1W2ufPXX2vdWkV8Q==}
     engines: {node: '>=18'}
+
+  cropperjs@1.6.2:
+    resolution: {integrity: sha512-nhymn9GdnV3CqiEHJVai54TULFAE3VshJTXSqSJKa8yXAKyBKDWdhHarnlIPrshJ0WMFTGuFvG02YjLXfPiuOA==}
 
   csstype@3.2.3:
     resolution: {integrity: sha512-z1HGKcYy2xA8AGQfwrn0PAy+PB7X/GSj3UVJW9qKyn43xWa+gl5nXmU4qqLMRzWVLFC8KusUX8T/0kCiOYpAIQ==}
@@ -860,6 +866,8 @@ snapshots:
   birpc@2.9.0: {}
 
   copy-anything@4.1.0: {}
+
+  cropperjs@1.6.2: {}
 
   csstype@3.2.3: {}
 

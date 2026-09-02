@@ -26,7 +26,7 @@ const emit = defineEmits<{ 'update:open': [value: boolean] }>()
     <DialogPortal>
       <DialogOverlay class="dialog-overlay" />
       <DialogContent
-        class="dialog-content"
+        class="dialog-content t-modal"
         :class="{ 'dialog-content--wide': wide, 'dialog-content--workbench': workbench }"
       >
         <header class="dialog-header">

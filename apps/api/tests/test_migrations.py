@@ -86,6 +86,9 @@ def test_initial_migration_round_trip_and_revision_guard(tmp_path: Path) -> None
         session_columns = {
             row[1]: row for row in connection.execute("PRAGMA table_info('agent_chat_sessions')")
         }
+        user_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info('users')")
+        }
     assert {
         "tenants",
         "ai_tasks",
@@ -151,7 +154,8 @@ def test_initial_migration_round_trip_and_revision_guard(tmp_path: Path) -> None
         "access_count",
     } <= memory_columns
     assert session_columns["project_id"][3] == 0
-    assert revision == ("7c9e4b2a1f60",)
+    assert {"avatar_url", "avatar_storage_path"} <= user_columns
+    assert revision == ("8d4e1f6a2b90",)
 
     checked = run_alembic(database, "check")
     assert "No new upgrade operations detected" in checked.stdout + checked.stderr
@@ -165,7 +169,7 @@ def test_initial_migration_round_trip_and_revision_guard(tmp_path: Path) -> None
     assert stale_guard.returncode != 0
     assert "数据库版本不匹配" in stale_guard.stderr
     with sqlite3.connect(database) as connection:
-        connection.execute("UPDATE alembic_version SET version_num = '7c9e4b2a1f60'")
+        connection.execute("UPDATE alembic_version SET version_num = '8d4e1f6a2b90'")
 
     run_alembic(database, "downgrade", "base")
     with sqlite3.connect(database) as connection:

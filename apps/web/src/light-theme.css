@@ -189,6 +189,10 @@
   background: #b84b38;
 }
 
+:root[data-theme='light'] .avatar__image {
+  outline-color: rgb(0 0 0 / 10%);
+}
+
 :root[data-theme='light'] .account-popover,
 :root[data-theme='light'] .activity-panel,
 :root[data-theme='light'] .select-popover,

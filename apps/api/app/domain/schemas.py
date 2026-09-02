@@ -55,6 +55,7 @@ class UserPublic(ApiModel):
     display_name: str
     role: UserRole
     is_active: bool
+    avatar_url: str | None = None
 
 
 class AdminUserCreate(BaseModel):

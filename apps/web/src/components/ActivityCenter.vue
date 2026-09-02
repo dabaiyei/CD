@@ -30,7 +30,6 @@ const selectedTask = ref<AITask | null>(null)
 const selectedEvents = ref<TaskEvent[]>([])
 const detailLoading = ref(false)
 const animationRoot = ref<HTMLElement | null>(null)
-const triggerIcon = ref<HTMLElement | null>(null)
 const deleteTarget = ref<DeleteTarget | null>(null)
 const deleteLoading = ref(false)
 const reducedMotion = ref(false)
@@ -288,15 +287,6 @@ watch(open, (isOpen) => {
   else motionContext?.revert()
 })
 watch([tab, filter], () => void animateList())
-watch(badgeCount, (count, previous) => {
-  if (count <= previous || reducedMotion.value || !triggerIcon.value) return
-  gsap.fromTo(
-    triggerIcon.value,
-    { scale: 0.25, autoAlpha: 0, filter: 'blur(4px)', rotation: -12 },
-    { scale: 1, autoAlpha: 1, filter: 'blur(0px)', rotation: 0, duration: 0.3, ease: 'power2.out', overwrite: 'auto' },
-  )
-})
-
 onMounted(() => {
   motionMedia = gsap.matchMedia()
   motionMedia.add('(prefers-reduced-motion: reduce)', () => {
@@ -309,18 +299,19 @@ onUnmounted(() => {
   if (animationRoot.value) gsap.killTweensOf(animationRoot.value.querySelectorAll('*'))
   motionContext?.revert()
   motionMedia?.revert()
-  if (triggerIcon.value) gsap.killTweensOf(triggerIcon.value)
 })
 </script>
 
 <template>
   <PopoverRoot v-model:open="open">
     <PopoverTrigger class="icon-button activity-trigger" type="button" title="任务与通知" aria-label="任务与通知">
-      <span ref="triggerIcon" class="activity-trigger__icon"><Bell :size="18" /></span>
-      <span v-if="badgeCount" class="activity-trigger__badge">{{ Math.min(badgeCount, 99) }}</span>
+      <span class="activity-trigger__icon"><Bell :size="18" /></span>
+      <span class="activity-trigger__badge t-badge" :data-open="badgeCount > 0" aria-hidden="true">
+        <span class="t-badge-dot">{{ Math.min(badgeCount, 99) }}</span>
+      </span>
     </PopoverTrigger>
     <PopoverPortal>
-      <PopoverContent class="activity-panel" :side-offset="10" align="end">
+      <PopoverContent class="activity-panel t-dropdown" data-origin="top-right" :side-offset="10" align="end">
         <div ref="animationRoot" class="activity-panel__inner">
         <Transition name="activity-view" mode="out-in">
           <section v-if="selectedTask" :key="`detail-${selectedTask.id}`" class="activity-detail">

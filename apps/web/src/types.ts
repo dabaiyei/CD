@@ -18,6 +18,7 @@ export interface User {
   display_name: string
   role: UserRole
   is_active: boolean
+  avatar_url: string | null
 }
 
 export interface UserSession {

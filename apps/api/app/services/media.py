@@ -9,6 +9,7 @@ from PIL import Image, ImageOps, UnidentifiedImageError
 MAX_COVER_BYTES = 8 * 1024 * 1024
 MAX_COVER_EDGE = 4096
 MIN_COVER_EDGE = 64
+AVATAR_EDGE = 512
 ALLOWED_COVER_TYPES = {"image/jpeg", "image/png", "image/webp"}
 ALLOWED_COVER_FORMATS = {"JPEG", "PNG", "WEBP"}
 
@@ -69,6 +70,54 @@ def save_handbook_cover(
     handbook_id: str,
 ) -> tuple[str, Path]:
     target = _save_normalized_cover(data, uploads_root / tenant_id / "handbooks" / handbook_id)
+    relative = target.relative_to(uploads_root).as_posix()
+    return f"/uploads/{relative}", target
+
+
+def save_user_avatar(
+    data: bytes,
+    *,
+    uploads_root: Path,
+    tenant_id: str,
+    user_id: str,
+) -> tuple[str, Path]:
+    try:
+        with Image.open(BytesIO(data)) as source:
+            source.verify()
+            if source.format not in ALLOWED_COVER_FORMATS:
+                raise InvalidCoverImage("仅支持 JPG、PNG 或 WebP 图片")
+
+        with Image.open(BytesIO(data)) as source:
+            image = ImageOps.exif_transpose(source)
+            if min(image.size) < MIN_COVER_EDGE:
+                raise InvalidCoverImage("头像尺寸过小，宽高均需至少 64 像素")
+            if image.has_transparency_data:
+                rgba = image.convert("RGBA")
+                flattened = Image.new("RGB", rgba.size, "#ffffff")
+                flattened.paste(rgba, mask=rgba.getchannel("A"))
+            else:
+                flattened = image.convert("RGB")
+            normalized = ImageOps.fit(
+                flattened,
+                (AVATAR_EDGE, AVATAR_EDGE),
+                method=Image.Resampling.LANCZOS,
+                centering=(0.5, 0.5),
+            )
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        if isinstance(exc, InvalidCoverImage):
+            raise
+        raise InvalidCoverImage("图片文件无效或已损坏") from exc
+
+    target_dir = uploads_root / tenant_id / "users" / user_id
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / f"avatar-{uuid4()}.webp"
+    temporary = target.with_suffix(".tmp")
+    try:
+        normalized.save(temporary, format="WEBP", quality=90, method=6)
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+
     relative = target.relative_to(uploads_root).as_posix()
     return f"/uploads/{relative}", target
 

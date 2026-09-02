@@ -10,7 +10,7 @@ const toast = useToastStore()
 <template>
   <div class="toast-viewport" aria-live="polite" aria-atomic="false">
     <TransitionGroup :css="false" @enter="enterToast" @leave="leaveToast">
-      <article v-for="item in toast.messages" :key="item.id" class="toast" :data-tone="item.tone">
+      <article v-for="item in toast.messages" :key="item.id" class="toast t-toast" :data-tone="item.tone">
         <CheckCircle2 v-if="item.tone === 'success'" :size="18" aria-hidden="true" />
         <CircleAlert v-else-if="item.tone === 'error'" :size="18" aria-hidden="true" />
         <Info v-else :size="18" aria-hidden="true" />

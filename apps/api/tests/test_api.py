@@ -18,6 +18,7 @@ from sqlalchemy import delete, select, update
 
 from app.api.routes import admin as admin_routes
 from app.api.routes import auth as auth_routes
+from app.core.config import get_settings
 from app.core.security import decode_access_token, decode_refresh_token, hash_password, verify_password
 from app.db.models import (
     AIModel,
@@ -671,6 +672,82 @@ def test_health_and_login(client: TestClient, creator_headers: dict[str, str]) -
     assert response.status_code == 200
     assert response.json()["user"]["role"] == "user"
     assert Decimal(response.json()["credit_balance"]) == Decimal("1280.00")
+
+
+def test_user_avatar_upload_replace_and_delete(
+    client: TestClient,
+    creator_headers: dict[str, str],
+) -> None:
+    first_image = BytesIO()
+    Image.new("RGB", (960, 640), "#176b62").save(first_image, format="PNG")
+    uploaded = client.put(
+        "/api/v1/auth/me/avatar",
+        headers=creator_headers,
+        files={"file": ("portrait.png", first_image.getvalue(), "image/png")},
+    )
+    assert uploaded.status_code == 200
+    assert uploaded.json()["avatar_url"]
+
+    session_user = client.get("/api/v1/auth/me", headers=creator_headers)
+    assert session_user.status_code == 200
+    assert session_user.json()["user"]["avatar_url"] == uploaded.json()["avatar_url"]
+
+    async def avatar_record() -> tuple[str | None, str | None]:
+        async with SessionLocal() as session:
+            user = await session.scalar(select(User).where(User.email == "creator@cineforge.local"))
+            assert user is not None
+            return user.avatar_url, user.avatar_storage_path
+
+    first_url, first_storage_path = asyncio.run(avatar_record())
+    assert first_url == uploaded.json()["avatar_url"]
+    assert first_storage_path
+    first_path = get_settings().uploads_root / first_storage_path
+    assert first_path.is_file()
+    with Image.open(first_path) as stored:
+        assert stored.format == "WEBP"
+        assert stored.size == (512, 512)
+
+    second_image = BytesIO()
+    Image.new("RGB", (700, 1100), "#a94835").save(second_image, format="JPEG")
+    replaced = client.put(
+        "/api/v1/auth/me/avatar",
+        headers=creator_headers,
+        files={"file": ("portrait.jpg", second_image.getvalue(), "image/jpeg")},
+    )
+    assert replaced.status_code == 200
+    assert replaced.json()["avatar_url"] != first_url
+    assert not first_path.exists()
+
+    _, second_storage_path = asyncio.run(avatar_record())
+    assert second_storage_path
+    second_path = get_settings().uploads_root / second_storage_path
+    assert second_path.is_file()
+
+    deleted = client.delete("/api/v1/auth/me/avatar", headers=creator_headers)
+    assert deleted.status_code == 200
+    assert deleted.json()["avatar_url"] is None
+    assert not second_path.exists()
+    assert asyncio.run(avatar_record()) == (None, None)
+
+
+def test_user_avatar_rejects_invalid_images(
+    client: TestClient,
+    creator_headers: dict[str, str],
+) -> None:
+    unsupported = client.put(
+        "/api/v1/auth/me/avatar",
+        headers=creator_headers,
+        files={"file": ("avatar.gif", b"GIF89a", "image/gif")},
+    )
+    assert unsupported.status_code == 415
+
+    damaged = client.put(
+        "/api/v1/auth/me/avatar",
+        headers=creator_headers,
+        files={"file": ("avatar.png", b"not-a-real-png", "image/png")},
+    )
+    assert damaged.status_code == 422
+    assert "无效或已损坏" in damaged.json()["detail"]
 
 
 def test_login_resolves_tenant_from_unique_email(client: TestClient) -> None:

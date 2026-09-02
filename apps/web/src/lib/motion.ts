@@ -12,9 +12,26 @@ export interface MotionOptions {
 const activeTweens = new WeakMap<HTMLElement, gsap.core.Tween>()
 
 const presets: Record<MotionPreset, { y: number; scale: number; duration: number }> = {
-  section: { y: 16, scale: 0.995, duration: 0.48 },
-  card: { y: 18, scale: 0.975, duration: 0.46 },
-  row: { y: 9, scale: 0.99, duration: 0.34 },
+  section: { y: 12, scale: 0.995, duration: 0.5 },
+  card: { y: 12, scale: 0.98, duration: 0.5 },
+  row: { y: 8, scale: 0.99, duration: 0.4 },
+}
+
+function rootToken(name: string, fallback: string): string {
+  if (typeof document === 'undefined') return fallback
+  return getComputedStyle(document.documentElement).getPropertyValue(name).trim() || fallback
+}
+
+function durationToken(name: string, fallbackMs: number): number {
+  const value = rootToken(name, `${fallbackMs}ms`)
+  const amount = Number.parseFloat(value)
+  if (!Number.isFinite(amount)) return fallbackMs / 1000
+  return value.endsWith('ms') ? amount / 1000 : amount
+}
+
+function pixelToken(name: string, fallback: number): number {
+  const value = Number.parseFloat(rootToken(name, `${fallback}px`))
+  return Number.isFinite(value) ? value : fallback
 }
 
 export function prefersReducedMotion(): boolean {
@@ -22,10 +39,11 @@ export function prefersReducedMotion(): boolean {
 }
 
 function clearMotionStyles(target: HTMLElement): void {
-  gsap.set(target, { clearProps: 'transform,opacity,visibility' })
+  gsap.set(target, { clearProps: 'transform,opacity,visibility,filter' })
   target.style.removeProperty('transform')
   target.style.removeProperty('opacity')
   target.style.removeProperty('visibility')
+  target.style.removeProperty('filter')
 }
 
 export function enterRoute(element: Element, done: () => void): void {
@@ -40,11 +58,12 @@ export function enterRoute(element: Element, done: () => void): void {
 
   gsap.fromTo(
     target,
-    { autoAlpha: 0, y: 10 },
+    { autoAlpha: 0, y: pixelToken('--page-slide-distance', 8), filter: `blur(${rootToken('--page-blur', '3px')})` },
     {
       autoAlpha: 1,
       y: 0,
-      duration: 0.34,
+      filter: 'blur(0px)',
+      duration: durationToken('--page-slide-dur', 250),
       ease: 'power3.out',
       onComplete: () => {
         clearMotionStyles(target)
@@ -65,8 +84,9 @@ export function leaveRoute(element: Element, done: () => void): void {
 
   gsap.to(target, {
     autoAlpha: 0,
-    y: -4,
-    duration: 0.14,
+    y: pixelToken('--distance-micro', 4) * -1,
+    filter: `blur(${rootToken('--blur-small', '2px')})`,
+    duration: durationToken('--duration-quick', 150),
     ease: 'power2.in',
     onComplete: done,
   })
@@ -90,13 +110,19 @@ export function enterToast(element: Element, done: () => void): void {
 
   gsap.fromTo(
     target,
-    { autoAlpha: 0, y: 12, scale: 0.97 },
+    {
+      autoAlpha: 0,
+      y: pixelToken('--toast-distance', 16),
+      scale: Number.parseFloat(rootToken('--toast-scale', '0.97')),
+      filter: `blur(${rootToken('--toast-blur', '2px')})`,
+    },
     {
       autoAlpha: 1,
       y: 0,
       scale: 1,
-      duration: 0.3,
-      ease: 'back.out(1.35)',
+      filter: 'blur(0px)',
+      duration: durationToken('--toast-open', 350),
+      ease: 'power3.out',
       onComplete: () => {
         clearMotionStyles(target)
         done()
@@ -116,9 +142,10 @@ export function leaveToast(element: Element, done: () => void): void {
 
   gsap.to(target, {
     autoAlpha: 0,
-    y: -8,
-    scale: 0.985,
-    duration: 0.15,
+    y: pixelToken('--distance-base', 8) * -1,
+    scale: Number.parseFloat(rootToken('--toast-scale', '0.97')),
+    filter: `blur(${rootToken('--toast-blur', '2px')})`,
+    duration: durationToken('--toast-close', 250),
     ease: 'power2.in',
     onComplete: done,
   })

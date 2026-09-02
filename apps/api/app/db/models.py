@@ -225,6 +225,8 @@ class User(Base, TimestampMixin):
     password_hash: Mapped[str] = mapped_column(String(255))
     role: Mapped[UserRole] = mapped_column(Enum(UserRole, native_enum=False), default=UserRole.USER)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
+    avatar_url: Mapped[str | None] = mapped_column(String(600), nullable=True)
+    avatar_storage_path: Mapped[str | None] = mapped_column(String(600), nullable=True)
 
     tenant: Mapped[Tenant] = relationship(back_populates="users")
     projects: Mapped[list[Project]] = relationship(back_populates="owner")

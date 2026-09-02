@@ -1,0 +1,317 @@
+/* transitions.dev motion layer: shared timing and semantic surface transitions. */
+:root {
+  --duration-stagger: 40ms;
+  --duration-micro: 80ms;
+  --duration-quick: 150ms;
+  --duration-fast: 250ms;
+  --duration-medium: 350ms;
+  --duration-slow: 400ms;
+  --duration-very-slow: 500ms;
+  --ease-smooth-out: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-out: ease-in-out;
+  --ease-out: ease-out;
+  --ease-linear: linear;
+  --ease-bounce: cubic-bezier(0.34, 1.36, 0.64, 1);
+  --distance-micro: 4px;
+  --distance-small: 6px;
+  --distance-base: 8px;
+  --distance-medium: 12px;
+  --distance-large: 30px;
+  --scale-large: 0.96;
+  --scale-medium: 0.97;
+  --scale-small: 0.98;
+  --scale-tiny: 0.99;
+  --blur-small: 2px;
+  --blur-medium: 3px;
+  --blur-large: 8px;
+
+  --badge-slide-dur: 260ms;
+  --badge-pop-dur: 500ms;
+  --badge-pop-close-dur: 180ms;
+  --badge-fade-dur: 400ms;
+  --badge-fade-close-dur: 180ms;
+  --badge-blur: 2px;
+  --badge-offset-x: -8.2px;
+  --badge-offset-y: 12.4px;
+  --badge-slide-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --badge-pop-ease: cubic-bezier(0.34, 1.36, 0.64, 1);
+  --badge-close-ease: cubic-bezier(0.4, 0, 0.2, 1);
+  --dropdown-open-dur: 250ms;
+  --dropdown-close-dur: 150ms;
+  --dropdown-pre-scale: 0.97;
+  --dropdown-closing-scale: 0.99;
+  --dropdown-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --modal-open-dur: 250ms;
+  --modal-close-dur: 150ms;
+  --modal-scale: 0.96;
+  --modal-scale-close: 0.96;
+  --modal-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --panel-open-dur: 400ms;
+  --panel-close-dur: 350ms;
+  --panel-blur: 2px;
+  --panel-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --toast-open: 350ms;
+  --toast-close: 250ms;
+  --toast-distance: 16px;
+  --toast-blur: 2px;
+  --toast-scale: 0.97;
+  --toast-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --page-slide-dur: 250ms;
+  --page-fade-dur: 250ms;
+  --page-slide-distance: 8px;
+  --page-blur: 3px;
+  --page-slide-ease: cubic-bezier(0.22, 1, 0.36, 1);
+  --page-fade-ease: cubic-bezier(0.22, 1, 0.36, 1);
+}
+
+@keyframes t-badge-slide-in {
+  from { transform: translate(var(--badge-offset-x), var(--badge-offset-y)); }
+  to { transform: translate(0, 0); }
+}
+
+.t-badge {
+  position: absolute;
+  top: -6px;
+  right: -8px;
+  pointer-events: none;
+  will-change: transform;
+}
+
+.t-badge[data-open='true'] {
+  animation: t-badge-slide-in var(--badge-slide-dur) var(--badge-slide-ease);
+}
+
+.t-badge-dot {
+  display: block;
+  opacity: 1;
+  filter: blur(0);
+  transform: scale(1);
+  transform-origin: center;
+  transition:
+    transform var(--badge-pop-dur) var(--badge-pop-ease),
+    opacity var(--badge-fade-dur) var(--badge-pop-ease),
+    filter var(--badge-pop-dur) var(--badge-pop-ease);
+  will-change: transform, opacity, filter;
+}
+
+.t-badge[data-open='false'] .t-badge-dot {
+  opacity: 0;
+  filter: blur(var(--badge-blur));
+  transform: scale(0);
+  transition:
+    transform var(--badge-pop-close-dur) var(--badge-close-ease),
+    opacity var(--badge-fade-close-dur) var(--badge-close-ease),
+    filter var(--badge-pop-close-dur) var(--badge-close-ease);
+}
+
+.activity-trigger__badge.t-badge {
+  top: 2px;
+  right: 1px;
+  display: block;
+  min-width: 0;
+  height: auto;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.activity-trigger__badge .t-badge-dot {
+  display: inline-flex;
+  min-width: 17px;
+  height: 17px;
+  align-items: center;
+  justify-content: center;
+  padding: 0 4px;
+  border: 2px solid var(--bg);
+  border-radius: 9px;
+  color: #fff;
+  background: var(--danger);
+}
+
+@keyframes t-dropdown-open {
+  from { opacity: 0; transform: scale(var(--dropdown-pre-scale)); }
+  to { opacity: 1; transform: scale(1); }
+}
+
+@keyframes t-dropdown-close {
+  from { opacity: 1; transform: scale(1); }
+  to { opacity: 0; transform: scale(var(--dropdown-closing-scale)); }
+}
+
+.t-dropdown {
+  will-change: transform, opacity;
+}
+
+.t-dropdown[data-origin='top-left'] { transform-origin: top left; }
+.t-dropdown[data-origin='top-center'] { transform-origin: top center; }
+.t-dropdown[data-origin='top-right'] { transform-origin: top right; }
+.t-dropdown[data-side='top'] { transform-origin: bottom center; }
+.t-dropdown[data-state='open'] {
+  animation: t-dropdown-open var(--dropdown-open-dur) var(--dropdown-ease) both;
+}
+.t-dropdown[data-state='closed'] {
+  animation: t-dropdown-close var(--dropdown-close-dur) var(--dropdown-ease) both;
+}
+
+@keyframes t-modal-open {
+  from { opacity: 0; filter: blur(var(--blur-small)); scale: var(--modal-scale); }
+  to { opacity: 1; filter: blur(0); scale: 1; }
+}
+
+@keyframes t-modal-close {
+  from { opacity: 1; filter: blur(0); scale: 1; }
+  to { opacity: 0; filter: blur(var(--blur-small)); scale: var(--modal-scale-close); }
+}
+
+.dialog-content.t-modal[data-state='open'] {
+  animation: t-modal-open var(--modal-open-dur) var(--modal-ease) both;
+  transform-origin: center;
+  will-change: scale, opacity, filter;
+}
+
+.dialog-content.t-modal[data-state='closed'] {
+  animation: t-modal-close var(--modal-close-dur) var(--modal-ease) both;
+  transform-origin: center;
+  will-change: scale, opacity, filter;
+}
+
+.dialog-overlay[data-state='open'] {
+  animation: t-overlay-open var(--modal-open-dur) var(--modal-ease) both;
+}
+
+.dialog-overlay[data-state='closed'] {
+  animation: t-overlay-close var(--modal-close-dur) var(--modal-ease) both;
+}
+
+@keyframes t-overlay-open { from { opacity: 0; } to { opacity: 1; } }
+@keyframes t-overlay-close { from { opacity: 1; } to { opacity: 0; } }
+
+.activity-view-enter-active {
+  transition-property: opacity, transform, filter;
+  transition-duration: var(--page-slide-dur);
+  transition-timing-function: var(--page-slide-ease);
+}
+
+.activity-view-leave-active {
+  transition-property: opacity, transform, filter;
+  transition-duration: var(--duration-quick);
+  transition-timing-function: var(--page-slide-ease);
+}
+
+.activity-view-enter-from {
+  opacity: 0;
+  filter: blur(var(--page-blur));
+  transform: translateX(var(--page-slide-distance));
+}
+
+.activity-view-leave-to {
+  opacity: 0;
+  filter: blur(var(--blur-small));
+  transform: translateX(calc(var(--page-slide-distance) * -1));
+}
+
+.agent-stream-enter-active,
+.agent-command-enter-active,
+.agent-workflow-card-enter-active,
+.agent-skill-chip-enter-active,
+.agent-attachment-enter-active,
+.agent-execution-status-enter-active {
+  transition-duration: var(--duration-fast);
+  transition-timing-function: var(--ease-smooth-out);
+}
+
+.agent-stream-leave-active,
+.agent-command-leave-active,
+.agent-workflow-card-leave-active,
+.agent-skill-chip-leave-active,
+.agent-attachment-leave-active,
+.agent-execution-status-leave-active {
+  transition-duration: var(--duration-quick);
+  transition-timing-function: var(--ease-in-out);
+}
+
+.agent-media-status-enter-active,
+.agent-media-status-leave-active {
+  transition-duration: var(--duration-quick);
+  transition-timing-function: var(--ease-in-out);
+}
+
+.agent-generated-media {
+  animation-duration: var(--duration-slow);
+  animation-timing-function: var(--ease-smooth-out);
+}
+
+.agent-file-sync {
+  animation-duration: var(--duration-medium);
+  animation-timing-function: var(--ease-smooth-out);
+}
+
+.toast-move {
+  transition-property: transform;
+  transition-duration: var(--duration-fast);
+  transition-timing-function: var(--ease-smooth-out);
+}
+
+.t-toast {
+  will-change: transform, opacity, filter;
+}
+
+.ui-select__chevron,
+.account-menu__chevron,
+.agent-generated-media__prompt summary>svg:last-child {
+  transition-duration: var(--duration-fast);
+  transition-timing-function: var(--ease-in-out);
+}
+
+@media (max-width: 760px) {
+  @keyframes t-mobile-surface-open {
+    from { opacity: 0; filter: blur(var(--panel-blur)); translate: 0 var(--distance-medium); }
+    to { opacity: 1; filter: blur(0); translate: 0 0; }
+  }
+
+  @keyframes t-mobile-surface-close {
+    from { opacity: 1; filter: blur(0); translate: 0 0; }
+    to { opacity: 0; filter: blur(var(--panel-blur)); translate: 0 calc(var(--distance-base) * -1); }
+  }
+
+  .activity-panel.t-dropdown[data-state='open'],
+  .dialog-content.t-modal[data-state='open'] {
+    animation: t-mobile-surface-open var(--panel-open-dur) var(--panel-ease) both;
+  }
+
+  .activity-panel.t-dropdown[data-state='closed'],
+  .dialog-content.t-modal[data-state='closed'] {
+    animation: t-mobile-surface-close var(--panel-close-dur) var(--panel-ease) both;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .t-badge,
+  .t-badge-dot,
+  .t-dropdown,
+  .t-modal,
+  .dialog-overlay,
+  .activity-view-enter-active,
+  .activity-view-leave-active,
+  .toast-move,
+  .ui-select__chevron,
+  .account-menu__chevron,
+  .agent-generated-media__prompt summary>svg:last-child,
+  .agent-stream-enter-active,
+  .agent-stream-leave-active,
+  .agent-command-enter-active,
+  .agent-command-leave-active,
+  .agent-workflow-card-enter-active,
+  .agent-workflow-card-leave-active,
+  .agent-skill-chip-enter-active,
+  .agent-skill-chip-leave-active,
+  .agent-attachment-enter-active,
+  .agent-attachment-leave-active,
+  .agent-execution-status-enter-active,
+  .agent-execution-status-leave-active,
+  .agent-media-status-enter-active,
+  .agent-media-status-leave-active {
+    animation: none !important;
+    transition: none !important;
+  }
+}

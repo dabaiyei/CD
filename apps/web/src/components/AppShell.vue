@@ -7,6 +7,7 @@ import {
   Clapperboard,
   Coins,
   BrainCircuit,
+  Camera,
   LayoutGrid,
   LogOut,
   ShieldCheck,
@@ -22,7 +23,9 @@ import { useAuthStore } from '@/stores/auth'
 import { useActivityStore } from '@/stores/activity'
 import { useTheme } from '@/lib/theme'
 import ActivityCenter from '@/components/ActivityCenter.vue'
+import AvatarCropDialog from '@/components/AvatarCropDialog.vue'
 import ThemeToggle from '@/components/ThemeToggle.vue'
+import type { User } from '@/types'
 
 const auth = useAuthStore()
 const activity = useActivityStore()
@@ -30,6 +33,7 @@ const route = useRoute()
 const router = useRouter()
 const { theme } = useTheme()
 const accountMenuOpen = ref(false)
+const avatarEditorOpen = ref(false)
 const topbarRef = ref<HTMLElement | null>(null)
 
 const currentSectionImage = computed(() => {
@@ -88,6 +92,15 @@ async function logout(): Promise<void> {
   await auth.logout()
   await router.push('/login')
 }
+
+function openAvatarEditor(): void {
+  accountMenuOpen.value = false
+  avatarEditorOpen.value = true
+}
+
+function handleAvatarUpdated(user: User): void {
+  if (auth.session) auth.session.user = user
+}
 </script>
 
 <template>
@@ -134,7 +147,15 @@ async function logout(): Promise<void> {
             <PopoverRoot v-model:open="accountMenuOpen">
               <PopoverTrigger as-child>
                 <button class="account-menu__trigger" type="button" aria-label="账户菜单" title="账户菜单">
-                  <span class="avatar">{{ auth.session?.user.display_name.slice(0, 1) }}</span>
+                  <span class="avatar">
+                    <img
+                      v-if="auth.session?.user.avatar_url"
+                      class="avatar__image"
+                      :src="auth.session.user.avatar_url"
+                      :alt="`${auth.session.user.display_name}的头像`"
+                    />
+                    <template v-else>{{ auth.session?.user.display_name.slice(0, 1) }}</template>
+                  </span>
                   <span class="account-menu__copy">
                     <strong class="account-menu__name">{{ auth.session?.user.display_name }}</strong>
                     <small>{{ auth.isAdmin ? '平台管理员' : '创作者' }}</small>
@@ -144,14 +165,28 @@ async function logout(): Promise<void> {
               </PopoverTrigger>
               <PopoverPortal>
                 <PopoverContent
-                  class="account-popover account-popover--scene"
+                  class="account-popover account-popover--scene t-dropdown"
+                  data-origin="top-right"
                   :style="{ '--account-cover': `url(${currentSectionImage})` }"
                   :side-offset="10"
                   align="end"
                 >
                   <div class="account-popover__hero">
                     <div class="account-popover__identity">
-                      <span class="avatar account-popover__avatar">{{ auth.session?.user.display_name.slice(0, 1) }}</span>
+                      <div class="account-popover__avatar-control">
+                        <span class="avatar account-popover__avatar">
+                          <img
+                            v-if="auth.session?.user.avatar_url"
+                            class="avatar__image"
+                            :src="auth.session.user.avatar_url"
+                            :alt="`${auth.session.user.display_name}的头像`"
+                          />
+                          <template v-else>{{ auth.session?.user.display_name.slice(0, 1) }}</template>
+                        </span>
+                        <button type="button" title="编辑头像" aria-label="编辑头像" @click="openAvatarEditor">
+                          <Camera :size="13" />
+                        </button>
+                      </div>
                       <span>
                         <strong>{{ auth.session?.user.display_name }}</strong>
                         <small>{{ auth.isAdmin ? '平台管理员' : '创作者账户' }}</small>
@@ -176,6 +211,14 @@ async function logout(): Promise<void> {
 
       <main class="page-content"><slot /></main>
     </section>
+
+    <AvatarCropDialog
+      v-if="auth.session"
+      v-model:open="avatarEditorOpen"
+      :avatar-url="auth.session.user.avatar_url"
+      :display-name="auth.session.user.display_name"
+      @updated="handleAvatarUpdated"
+    />
 
     <nav class="mobile-nav" aria-label="移动端主导航">
       <RouterLink

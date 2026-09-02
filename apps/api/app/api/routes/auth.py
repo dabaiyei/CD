@@ -1,10 +1,12 @@
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
+from pathlib import Path
 
 import jwt
-from fastapi import APIRouter, Cookie, Depends, HTTPException, Request, Response, status
+from fastapi import APIRouter, Cookie, Depends, File, HTTPException, Request, Response, UploadFile, status
 from sqlalchemy import select, update
 from sqlalchemy.exc import IntegrityError
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -35,8 +37,16 @@ from app.services.auth_security import (
     login_identity_hash,
     private_fingerprint,
 )
+from app.services.media import (
+    ALLOWED_COVER_TYPES,
+    MAX_COVER_BYTES,
+    InvalidCoverImage,
+    save_user_avatar,
+)
+from app.services.object_storage import delete_media_file, persist_media_file
 
 router = APIRouter(prefix="/auth", tags=["auth"])
+logger = logging.getLogger(__name__)
 REFRESH_COOKIE = "cineforge_refresh"
 DUMMY_PASSWORD_HASH = (
     "pbkdf2_sha256$600000$8W77rt8B9-h7tRt-JN8eCg=="
@@ -65,6 +75,18 @@ def as_utc(value: datetime | None) -> datetime | None:
     if value is None or value.tzinfo is not None:
         return value
     return value.replace(tzinfo=UTC)
+
+
+def avatar_cached_path(storage_path: str | None) -> Path | None:
+    if not storage_path:
+        return None
+    root = get_settings().uploads_root.resolve()
+    candidate = (root / storage_path).resolve()
+    try:
+        candidate.relative_to(root)
+    except ValueError:
+        return None
+    return candidate
 
 
 def add_security_event(
@@ -395,6 +417,94 @@ async def logout(
         except (jwt.InvalidTokenError, KeyError, TypeError):
             pass
     response.delete_cookie(REFRESH_COOKIE, path=f"{get_settings().api_prefix}/auth")
+
+
+@router.put("/me/avatar", response_model=UserPublic)
+async def upload_avatar(
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> User:
+    if file.content_type not in ALLOWED_COVER_TYPES:
+        raise HTTPException(status_code=415, detail="仅支持 JPG、PNG 或 WebP 图片")
+
+    data = await file.read(MAX_COVER_BYTES + 1)
+    await file.close()
+    if len(data) > MAX_COVER_BYTES:
+        raise HTTPException(status_code=413, detail="头像图片不能超过 8 MB")
+    if not data:
+        raise HTTPException(status_code=422, detail="上传的图片为空")
+
+    settings = get_settings()
+    try:
+        _local_url, stored_path = await run_in_threadpool(
+            save_user_avatar,
+            data,
+            uploads_root=settings.uploads_root,
+            tenant_id=user.tenant_id,
+            user_id=user.id,
+        )
+    except InvalidCoverImage as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    try:
+        storage_key, avatar_url = await persist_media_file(stored_path, "image/webp")
+    except Exception:
+        await run_in_threadpool(stored_path.unlink, missing_ok=True)
+        raise
+
+    previous_storage_path = user.avatar_storage_path
+    user.avatar_url = avatar_url
+    user.avatar_storage_path = storage_key
+    try:
+        await session.commit()
+    except Exception:
+        await delete_media_file(storage_key, stored_path)
+        await session.rollback()
+        raise
+    await session.refresh(user)
+
+    if previous_storage_path and previous_storage_path != storage_key:
+        try:
+            await delete_media_file(
+                previous_storage_path,
+                avatar_cached_path(previous_storage_path),
+            )
+        except Exception:
+            logger.warning(
+                "Failed to delete replaced avatar %s for user %s",
+                previous_storage_path,
+                user.id,
+                exc_info=True,
+            )
+    return user
+
+
+@router.delete("/me/avatar", response_model=UserPublic)
+async def delete_avatar(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> User:
+    previous_storage_path = user.avatar_storage_path
+    user.avatar_url = None
+    user.avatar_storage_path = None
+    await session.commit()
+    await session.refresh(user)
+
+    if previous_storage_path:
+        try:
+            await delete_media_file(
+                previous_storage_path,
+                avatar_cached_path(previous_storage_path),
+            )
+        except Exception:
+            logger.warning(
+                "Failed to delete avatar %s for user %s",
+                previous_storage_path,
+                user.id,
+                exc_info=True,
+            )
+    return user
 
 
 @router.get("/me", response_model=SessionPublic)
