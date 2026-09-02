@@ -12,9 +12,9 @@ export interface MotionOptions {
 const activeTweens = new WeakMap<HTMLElement, gsap.core.Tween>()
 
 const presets: Record<MotionPreset, { y: number; scale: number; duration: number }> = {
-  section: { y: 12, scale: 1, duration: 0.42 },
-  card: { y: 14, scale: 0.985, duration: 0.4 },
-  row: { y: 8, scale: 0.992, duration: 0.32 },
+  section: { y: 16, scale: 0.995, duration: 0.48 },
+  card: { y: 18, scale: 0.975, duration: 0.46 },
+  row: { y: 9, scale: 0.99, duration: 0.34 },
 }
 
 export function prefersReducedMotion(): boolean {
@@ -143,7 +143,7 @@ function reveal(element: HTMLElement, options: MotionOptions = {}): void {
       scale: 1,
       delay,
       duration: preset.duration,
-      ease: 'power3.out',
+      ease: (options.preset ?? 'row') === 'card' ? 'back.out(1.16)' : 'power3.out',
       onComplete: () => {
         activeTweens.delete(element)
         clearMotionStyles(element)

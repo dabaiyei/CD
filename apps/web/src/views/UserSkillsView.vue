@@ -191,13 +191,13 @@ function formatDate(value: string): string {
 
 <template>
   <div class="user-skills-page page-stack">
-    <header class="page-header">
-      <div>
+    <header class="page-header skills-hero">
+      <div class="skills-hero__content">
         <span class="eyebrow">PERSONAL CAPABILITIES</span>
         <h1>我的 Skills</h1>
-        <p>让你的 AI 在正确的创作阶段，按需调用你积累的专业方法。</p>
+        <p>把你的导演经验、画面技法和生产方法，沉淀为 AI 随时可调用的能力。</p>
       </div>
-      <button class="button button--primary" type="button" @click="openCreate">
+      <button class="button skills-hero__action" type="button" @click="openCreate">
         <Plus :size="18" /><span>添加 Skill</span>
       </button>
     </header>

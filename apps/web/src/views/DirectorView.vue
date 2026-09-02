@@ -1912,7 +1912,10 @@ function fileSize(bytes: number): string {
 <template>
   <div v-if="loading" class="page-loading"><span class="spinner"></span></div>
   <div v-else-if="project" class="director-page director-workspace">
-    <header class="director-header director-header--studio">
+    <header
+      class="director-header director-header--studio director-header--visual"
+      :style="{ '--director-cover': `url(${project.cover_url || '/covers/studio-hero-v2.webp'})` }"
+    >
       <button class="icon-button" type="button" title="返回创作台" @click="router.push('/workspace')"><ArrowLeft :size="19" /></button>
       <div><span class="eyebrow">DIRECTOR WORKSPACE</span><h1>{{ project.name }}</h1></div>
       <div class="director-header__actions"><button class="button button--secondary" type="button" @click="openAssetLibrary()"><Boxes :size="17" />资产库</button><button class="button button--secondary" type="button" @click="fileLibraryOpen = true"><FolderOpen :size="17" />项目文件</button><button class="button button--primary" type="button" @click="importOpen = true"><Upload :size="17" />导入内容</button></div>

@@ -126,6 +126,24 @@
   background: #fff;
 }
 
+:root[data-theme='light'] .brand__name strong,
+:root[data-theme='light'] .topbar__context strong,
+:root[data-theme='light'] .account-menu__name {
+  color: #17201d;
+}
+
+:root[data-theme='light'] .brand__name small {
+  color: #7a8580;
+}
+
+:root[data-theme='light'] .credit-pill,
+:root[data-theme='light'] .account-menu__trigger,
+:root[data-theme='light'] .activity-trigger {
+  color: #53605b;
+  background: #f5f7f6;
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 8%);
+}
+
 :root[data-theme='light'] .sidebar__label,
 :root[data-theme='light'] .studio-status {
   color: var(--ink-tertiary);
@@ -681,7 +699,244 @@
   box-shadow: 0 14px 38px rgb(24 32 36 / 17%);
 }
 
+/* Daylight image system */
+:root[data-theme='light'] .workspace-hero {
+  color: #18211e;
+  background-color: #eef1ef;
+  background-image: url('/covers/studio-hero-light.webp');
+  box-shadow: 0 22px 58px rgb(28 40 35 / 12%);
+}
+
+:root[data-theme='light'] .skills-hero {
+  color: #18211e;
+  background-color: #f3f0e9;
+  background-image: url('/covers/skills-lab-light.webp');
+  box-shadow: 0 22px 58px rgb(28 40 35 / 11%);
+}
+
+:root[data-theme='light'] .workspace-hero::before,
+:root[data-theme='light'] .skills-hero::before {
+  background: linear-gradient(90deg, rgb(248 249 247 / 96%) 0%, rgb(248 249 247 / 82%) 46%, rgb(248 249 247 / 8%) 78%);
+}
+
+:root[data-theme='light'] .workspace-hero::after,
+:root[data-theme='light'] .skills-hero::after {
+  outline-color: rgb(0 0 0 / 10%);
+}
+
+:root[data-theme='light'] .workspace-hero h1,
+:root[data-theme='light'] .skills-hero h1 {
+  color: #17201d;
+  text-shadow: none;
+}
+
+:root[data-theme='light'] .workspace-hero p,
+:root[data-theme='light'] .skills-hero p {
+  color: rgb(23 32 29 / 68%);
+}
+
+:root[data-theme='light'] .workspace-hero .eyebrow,
+:root[data-theme='light'] .skills-hero .eyebrow {
+  color: #a54735;
+}
+
+:root[data-theme='light'] .workspace-hero__metrics span {
+  color: rgb(23 32 29 / 70%);
+  background: rgb(255 255 255 / 72%);
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 9%), 0 7px 20px rgb(22 34 29 / 6%);
+}
+
+:root[data-theme='light'] .workspace-hero__metrics strong {
+  color: #17201d;
+}
+
+:root[data-theme='light'] .workspace-hero__action,
+:root[data-theme='light'] .skills-hero__action {
+  color: #fff;
+  background: #c95640;
+  box-shadow: 0 12px 28px rgb(201 86 64 / 20%);
+}
+
+:root[data-theme='light'] .workspace-hero__action:hover,
+:root[data-theme='light'] .skills-hero__action:hover {
+  color: #fff;
+  background: #b84936;
+}
+
+:root[data-theme='light'] .new-project-tile {
+  color: #17201d;
+  background: #f0ede5 url('/covers/skills-lab-light.webp') center / cover no-repeat;
+}
+
+:root[data-theme='light'] .new-project-tile::before {
+  background: rgb(249 249 247 / 76%);
+}
+
+:root[data-theme='light'] .new-project-tile:hover,
+:root[data-theme='light'] .new-project-tile:hover::before {
+  color: #17201d;
+  background-color: rgb(249 249 247 / 62%);
+}
+
+:root[data-theme='light'] .workspace-page .workspace-agent-column > header {
+  color: #17201d;
+  background-image: url('/covers/skills-lab-light.webp');
+}
+
+:root[data-theme='light'] .workspace-page .workspace-agent-column > header::before {
+  background: linear-gradient(90deg, rgb(250 250 248 / 96%), rgb(250 250 248 / 76%));
+}
+
+:root[data-theme='light'] .workspace-page .workspace-agent-column > header h2,
+:root[data-theme='light'] .workspace-page .workspace-agent-column > header p {
+  color: #17201d;
+}
+
+:root[data-theme='light'] .user-skills-page .user-skills-empty {
+  color: rgb(23 32 29 / 72%);
+  background-image: url('/covers/skills-lab-light.webp');
+}
+
+:root[data-theme='light'] .user-skills-page .user-skills-empty::before {
+  background: linear-gradient(90deg, rgb(250 250 248 / 96%), rgb(250 250 248 / 70%));
+}
+
+:root[data-theme='light'] .user-skills-page .user-skills-empty h2 {
+  color: #17201d;
+}
+
+:root[data-theme='light'] .sidebar-scene::after {
+  outline-color: rgb(0 0 0 / 10%);
+  background: linear-gradient(180deg, transparent 34%, rgb(248 250 249 / 92%) 100%);
+}
+
+:root[data-theme='light'] .sidebar-scene img {
+  outline-color: rgb(0 0 0 / 10%);
+}
+
+:root[data-theme='light'] .sidebar-scene figcaption {
+  color: rgb(23 32 29 / 72%);
+}
+
+:root[data-theme='light'] .login-visual {
+  background-color: #f2f4f2;
+  background-image: url('/covers/login-studio-light.webp');
+  outline-color: rgb(0 0 0 / 10%);
+}
+
+:root[data-theme='light'] .login-visual::after {
+  background: linear-gradient(90deg, rgb(249 250 248 / 90%), rgb(249 250 248 / 16%) 68%), linear-gradient(0deg, rgb(249 250 248 / 74%), transparent 54%);
+}
+
+:root[data-theme='light'] .login-visual__brand,
+:root[data-theme='light'] .login-visual__caption h1 {
+  color: #17201d;
+  text-shadow: none;
+}
+
+:root[data-theme='light'] .login-visual__caption p,
+:root[data-theme='light'] .login-visual__meta {
+  color: rgb(23 32 29 / 68%);
+}
+
+:root[data-theme='light'] .login-visual .eyebrow {
+  color: #a54735;
+}
+
+:root[data-theme='light'] .admin-page__header {
+  color: #17201d;
+  background-color: #eef1ef;
+  background-image: url('/covers/admin-console-light.webp');
+  box-shadow: 0 22px 58px rgb(28 40 35 / 12%);
+}
+
+:root[data-theme='light'] .admin-page__header::before {
+  background: linear-gradient(90deg, rgb(249 250 248 / 96%), rgb(249 250 248 / 76%) 52%, rgb(249 250 248 / 8%) 82%);
+}
+
+:root[data-theme='light'] .admin-page__header::after {
+  outline-color: rgb(0 0 0 / 10%);
+}
+
+:root[data-theme='light'] .admin-page__header h1,
+:root[data-theme='light'] .admin-page__header p {
+  color: #17201d;
+}
+
+:root[data-theme='light'] .admin-page__header .eyebrow {
+  color: #a54735;
+}
+
+:root[data-theme='light'] .admin-page .readiness-badge {
+  color: #245a44;
+  background: rgb(255 255 255 / 76%);
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 9%);
+}
+
+:root[data-theme='light'] .admin-settings-rail::before {
+  background-image: url('/covers/admin-console-light.webp');
+}
+
+:root[data-theme='light'] .activity-panel__header {
+  color: #17201d;
+  background-color: #eef1ef;
+  background-image: url('/covers/activity-center-light.webp');
+}
+
+:root[data-theme='light'] .activity-panel__header::before {
+  background: linear-gradient(90deg, rgb(249 250 248 / 94%), rgb(249 250 248 / 32%));
+}
+
+:root[data-theme='light'] .activity-panel__header strong,
+:root[data-theme='light'] .activity-panel__header span,
+:root[data-theme='light'] .activity-panel__subtitle {
+  color: #17201d;
+}
+
+:root[data-theme='light'] .asset-studio__topbar {
+  background-color: #eef1ef !important;
+  background-image: url('/covers/asset-studio-light.webp') !important;
+}
+
+:root[data-theme='light'] .asset-studio__topbar::before {
+  background: linear-gradient(90deg, rgb(249 250 248 / 92%), rgb(249 250 248 / 28%) 66%, transparent);
+}
+
+:root[data-theme='light'] .asset-studio__topbar::after {
+  outline-color: rgb(0 0 0 / 10%);
+}
+
+:root[data-theme='light'] .asset-studio__topbar .asset-scope-switch {
+  background: rgb(255 255 255 / 70%) !important;
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 9%) !important;
+}
+
+:root[data-theme='light'] .asset-studio__topbar .asset-scope-switch button,
+:root[data-theme='light'] .asset-studio__topbar .asset-scope-switch button strong {
+  color: #43504b !important;
+}
+
+:root[data-theme='light'] .asset-studio__topbar .asset-scope-switch button[aria-selected='true'] {
+  color: #17201d !important;
+  background: #fff !important;
+  box-shadow: inset 0 0 0 1px rgb(0 0 0 / 9%), 0 7px 18px rgb(22 34 29 / 8%) !important;
+}
+
 @media (max-width: 900px) {
+  :root[data-theme='light'] .workspace-hero::before,
+  :root[data-theme='light'] .skills-hero::before,
+  :root[data-theme='light'] .admin-page__header::before {
+    background: linear-gradient(180deg, rgb(249 250 248 / 18%) 0%, rgb(249 250 248 / 86%) 48%, rgb(249 250 248 / 97%) 100%);
+  }
+
+  :root[data-theme='light'] .login-visual::after {
+    background: linear-gradient(180deg, rgb(249 250 248 / 12%) 0%, rgb(249 250 248 / 88%) 64%, rgb(249 250 248 / 98%) 100%);
+  }
+
+  :root[data-theme='light'] .asset-studio__topbar::before {
+    background: linear-gradient(180deg, rgb(249 250 248 / 8%) 0%, rgb(249 250 248 / 88%) 70%, rgb(249 250 248 / 96%) 100%);
+  }
+
   :root[data-theme='light'] .mobile-nav {
     border-top-color: var(--line);
     background: rgb(255 255 255 / 94%);

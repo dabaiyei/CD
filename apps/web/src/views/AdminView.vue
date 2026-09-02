@@ -1185,7 +1185,7 @@ async function saveSkill(): Promise<void> {
 
 <template>
   <div class="admin-page page-stack">
-    <header class="page-header admin-page__header">
+    <header v-motion="{ preset: 'section' }" class="page-header admin-page__header">
       <div>
         <span class="eyebrow">ADMIN CONSOLE</span>
         <h1>管理控制台</h1>

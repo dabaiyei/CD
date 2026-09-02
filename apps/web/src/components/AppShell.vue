@@ -15,6 +15,7 @@ import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from 'reka
 
 import { useAuthStore } from '@/stores/auth'
 import { useActivityStore } from '@/stores/activity'
+import { useTheme } from '@/lib/theme'
 import ActivityCenter from '@/components/ActivityCenter.vue'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 
@@ -22,13 +23,15 @@ const auth = useAuthStore()
 const activity = useActivityStore()
 const route = useRoute()
 const router = useRouter()
+const { theme } = useTheme()
 const accountMenuOpen = ref(false)
 
 const currentSection = computed(() => {
-  if (route.name === 'director') return { eyebrow: 'PRODUCTION', title: '导演制作台' }
-  if (route.path.startsWith('/skills')) return { eyebrow: 'CAPABILITIES', title: '我的 Skills' }
-  if (route.path.startsWith('/admin')) return { eyebrow: 'ADMINISTRATION', title: '系统管理' }
-  return { eyebrow: 'STUDIO', title: '项目创作台' }
+  const light = theme.value === 'light'
+  if (route.name === 'director') return { eyebrow: 'PRODUCTION', title: '导演制作台', image: light ? '/covers/studio-hero-light.webp' : '/covers/default-project-city-v2-wide.webp', caption: 'Director suite' }
+  if (route.path.startsWith('/skills')) return { eyebrow: 'CAPABILITIES', title: '我的 Skills', image: light ? '/covers/skills-lab-light.webp' : '/covers/skills-lab-v2.webp', caption: 'Skill library' }
+  if (route.path.startsWith('/admin')) return { eyebrow: 'ADMINISTRATION', title: '系统管理', image: light ? '/covers/admin-console-light.webp' : '/covers/admin-console-v2.webp', caption: 'Control room' }
+  return { eyebrow: 'STUDIO', title: '项目创作台', image: light ? '/covers/studio-hero-light.webp' : '/covers/studio-hero-v2.webp', caption: 'Production floor' }
 })
 
 const navItems = computed(() => [
@@ -70,6 +73,11 @@ async function logout(): Promise<void> {
           <span>{{ item.label }}</span>
         </RouterLink>
       </nav>
+
+      <figure class="sidebar-scene" aria-hidden="true">
+        <img :src="currentSection.image" alt="" />
+        <figcaption><i></i><span>{{ currentSection.caption }}</span></figcaption>
+      </figure>
 
       <div class="sidebar__footer">
         <RouterLink v-if="auth.isAdmin" class="nav-item" to="/admin/overview">

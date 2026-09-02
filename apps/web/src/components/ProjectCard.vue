@@ -1,12 +1,26 @@
 <script setup lang="ts">
-import { onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { ArrowUpRight, Settings2, Trash2 } from 'lucide-vue-next'
 import gsap from 'gsap'
 
 import type { Project } from '@/types'
 
-defineProps<{ project: Project }>()
+const props = defineProps<{ project: Project }>()
 const emit = defineEmits<{ open: []; settings: []; delete: [] }>()
+
+const fallbackCovers = [
+  '/covers/default-project-city-v2-wide.webp',
+  '/covers/default-project-campus-v2-wide.webp',
+  '/covers/changan-night.jpg',
+]
+const fallbackCover = computed(() => {
+  const projectText = `${props.project.name} ${props.project.description}`
+  if (/雨|都市|城市|夜|悬疑|职场/.test(projectText)) return fallbackCovers[0]
+  if (/校园|青春|学生|女团|成长|少年|热搜|影帝|娱乐圈|复合/.test(projectText)) return fallbackCovers[1]
+  if (!props.project.description.trim()) return fallbackCovers[2]
+  const hash = Array.from(props.project.name).reduce((total, character) => total + character.charCodeAt(0), 0)
+  return fallbackCovers[hash % fallbackCovers.length]
+})
 
 const cardRoot = ref<HTMLElement | null>(null)
 type QuickTo = ReturnType<typeof gsap.quickTo>
@@ -73,7 +87,7 @@ onBeforeUnmount(() => motionMedia?.revert())
   >
     <div class="project-card__media">
       <img
-        :src="project.cover_url || '/covers/login-studio.jpg'"
+        :src="project.cover_url || fallbackCover"
         :alt="`${project.name}项目封面`"
         loading="lazy"
       />

@@ -8,6 +8,7 @@ import { motionDirective } from "@/lib/motion";
 import { initializeTheme } from "@/lib/theme";
 import "@/styles.css";
 import "@/studio-ui.css";
+import "@/visual-upgrade.css";
 import "@/light-theme.css";
 
 initializeTheme();

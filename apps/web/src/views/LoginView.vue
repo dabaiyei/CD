@@ -53,7 +53,7 @@ async function submit(): Promise<void> {
 <template>
   <main class="login-page">
     <ThemeToggle class="login-theme-toggle" />
-    <section class="login-visual" aria-label="影视创作现场">
+    <section v-motion="{ preset: 'section' }" class="login-visual" aria-label="影视创作现场">
       <div class="login-visual__brand">
         <span class="brand__mark"><Clapperboard :size="21" /></span>
         <span>CineForge</span>
@@ -70,7 +70,7 @@ async function submit(): Promise<void> {
     </section>
 
     <section class="login-panel">
-      <form class="login-form" @submit.prevent="submit">
+      <form v-motion="{ preset: 'card', delay: 0.08 }" class="login-form" @submit.prevent="submit">
         <header>
           <span class="login-mobile-brand"
             ><Clapperboard :size="20" /> CineForge</span
