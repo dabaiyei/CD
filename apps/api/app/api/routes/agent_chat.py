@@ -1800,7 +1800,6 @@ async def send_message(
             chapter is None
             or chapter.project_id != project_id
             or chapter.tenant_id != user.tenant_id
-            or chapter.user_id != user.id
         ):
             raise HTTPException(status_code=404, detail="当前导演台章节不存在")
     agent = await resolve_scene_agent(db, tenant_id=user.tenant_id, scene=scene)

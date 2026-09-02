@@ -282,43 +282,53 @@ async function generateCover(): Promise<void> {
       </button>
     </header>
 
-    <AgentChatPanel class="workspace-reveal workspace-reveal--agent" personal :pricing="projectStore.pricing" />
+    <div class="workspace-command-grid">
+      <main class="project-library workspace-reveal workspace-reveal--toolbar">
+        <header class="project-library__header">
+          <div><span>PROJECT LIBRARY</span><h2>制作项目</h2></div>
+          <section class="workspace-toolbar" aria-label="项目筛选">
+            <label class="search-field">
+              <Search :size="17" aria-hidden="true" />
+              <input v-model="query" type="search" placeholder="搜索项目" aria-label="搜索项目" />
+            </label>
+            <span class="result-count tabular-nums">{{ filteredProjects.length }} 个项目</span>
+          </section>
+        </header>
 
-    <section class="workspace-toolbar workspace-reveal workspace-reveal--toolbar" aria-label="项目筛选">
-      <label class="search-field">
-        <Search :size="17" aria-hidden="true" />
-        <input v-model="query" type="search" placeholder="搜索项目" aria-label="搜索项目" />
-      </label>
-      <span class="result-count tabular-nums">{{ filteredProjects.length }} 个项目</span>
-    </section>
+        <section v-if="projectStore.loading" class="project-grid" aria-label="正在加载项目">
+          <div v-for="index in 6" :key="index" class="project-skeleton">
+            <span></span><span></span><span></span>
+          </div>
+        </section>
 
-    <section v-if="projectStore.loading" class="project-grid" aria-label="正在加载项目">
-      <div v-for="index in 6" :key="index" class="project-skeleton">
-        <span></span><span></span><span></span>
-      </div>
-    </section>
+        <section v-else-if="filteredProjects.length" class="project-grid" aria-label="短剧项目">
+          <ProjectCard
+            v-for="(project, index) in filteredProjects"
+            :key="project.id"
+            :project="project"
+            v-motion="{ preset: 'card', index }"
+            @open="router.push(`/projects/${project.id}/director`)"
+            @settings="openSettings(project)"
+            @delete="requestDelete(project)"
+          />
+          <button v-motion="{ preset: 'card', index: filteredProjects.length }" class="new-project-tile" type="button" @click="openCreate">
+            <span><Plus :size="21" /></span>
+            <strong>新建短剧项目</strong>
+          </button>
+        </section>
 
-    <section v-else-if="filteredProjects.length" class="project-grid" aria-label="短剧项目">
-      <ProjectCard
-        v-for="(project, index) in filteredProjects"
-        :key="project.id"
-        :project="project"
-        v-motion="{ preset: 'card', index }"
-        @open="router.push(`/projects/${project.id}/director`)"
-        @settings="openSettings(project)"
-        @delete="requestDelete(project)"
-      />
-      <button v-motion="{ preset: 'card', index: filteredProjects.length }" class="new-project-tile" type="button" @click="openCreate">
-        <span><Plus :size="21" /></span>
-        <strong>新建短剧项目</strong>
-      </button>
-    </section>
+        <section v-else class="empty-state">
+          <span class="empty-state__icon"><Search :size="22" /></span>
+          <h2>没有匹配的项目</h2>
+          <p>调整关键词后重新搜索</p>
+        </section>
+      </main>
 
-    <section v-else class="empty-state">
-      <span class="empty-state__icon"><Search :size="22" /></span>
-      <h2>没有匹配的项目</h2>
-      <p>调整关键词后重新搜索</p>
-    </section>
+      <aside class="workspace-agent-column workspace-reveal workspace-reveal--agent">
+        <header><span>AI DESK</span><h2>创作助手</h2><p>独立会话，不读取项目内容</p></header>
+        <AgentChatPanel personal :pricing="projectStore.pricing" />
+      </aside>
+    </div>
 
     <BaseDialog
       v-model:open="dialogOpen"

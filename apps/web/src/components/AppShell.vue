@@ -23,6 +23,13 @@ const route = useRoute()
 const router = useRouter()
 const accountMenuOpen = ref(false)
 
+const currentSection = computed(() => {
+  if (route.name === 'director') return { eyebrow: 'PRODUCTION', title: '导演制作台' }
+  if (route.path.startsWith('/skills')) return { eyebrow: 'CAPABILITIES', title: '我的 Skills' }
+  if (route.path.startsWith('/admin')) return { eyebrow: 'ADMINISTRATION', title: '系统管理' }
+  return { eyebrow: 'STUDIO', title: '项目创作台' }
+})
+
 const navItems = computed(() => [
   { label: '创作台', icon: LayoutGrid, to: '/workspace', active: route.path.startsWith('/workspace') || route.name === 'director' },
   { label: '我的 Skills', icon: BrainCircuit, to: '/skills', active: route.path.startsWith('/skills') },
@@ -46,9 +53,10 @@ async function logout(): Promise<void> {
     <aside class="sidebar">
       <RouterLink class="brand" to="/workspace" aria-label="CineForge 创作台">
         <span class="brand__mark"><Clapperboard :size="20" /></span>
-        <span class="brand__name">CineForge</span>
+        <span class="brand__name"><strong>CineForge</strong><small>Production OS</small></span>
       </RouterLink>
 
+      <span class="sidebar__label">Workspace</span>
       <nav class="primary-nav" aria-label="主导航">
         <RouterLink
           v-for="item in navItems"
@@ -67,11 +75,16 @@ async function logout(): Promise<void> {
           <Settings2 :size="19" />
           <span>系统设置</span>
         </RouterLink>
+        <div class="studio-status"><i></i><span>Studio online</span></div>
       </div>
     </aside>
 
     <section class="shell-main">
       <header class="topbar">
+        <div class="topbar__context">
+          <span>{{ currentSection.eyebrow }}</span>
+          <strong>{{ currentSection.title }}</strong>
+        </div>
         <div class="topbar__actions">
           <div class="credit-pill" title="当前积分">
             <Coins :size="16" />

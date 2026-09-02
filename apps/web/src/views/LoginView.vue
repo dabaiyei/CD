@@ -1,40 +1,50 @@
 <script setup lang="ts">
-import { ref } from 'vue'
-import { useRoute, useRouter } from 'vue-router'
-import { ArrowRight, Clapperboard, Eye, EyeOff, LoaderCircle } from 'lucide-vue-next'
+import { ref } from "vue";
+import { useRoute, useRouter } from "vue-router";
+import {
+  ArrowRight,
+  Clapperboard,
+  Eye,
+  EyeOff,
+  LoaderCircle,
+} from "lucide-vue-next";
 
-import { ApiError } from '@/lib/api'
-import { useAuthStore } from '@/stores/auth'
+import { ApiError } from "@/lib/api";
+import { useAuthStore } from "@/stores/auth";
 
-const auth = useAuthStore()
-const route = useRoute()
-const router = useRouter()
+const auth = useAuthStore();
+const route = useRoute();
+const router = useRouter();
 
-const tenant = ref('demo')
-const email = ref('creator@cineforge.local')
-const password = ref('Creator123!')
-const showPassword = ref(false)
-const errorMessage = ref('')
+const tenant = ref("demo");
+const email = ref("creator@cineforge.local");
+const password = ref("Creator123!");
+const showPassword = ref(false);
+const errorMessage = ref("");
 
-function useAccount(kind: 'creator' | 'admin'): void {
-  if (kind === 'admin') {
-    email.value = 'admin@cineforge.local'
-    password.value = 'Admin123!'
+function useAccount(kind: "creator" | "admin"): void {
+  if (kind === "admin") {
+    email.value = "admin@cineforge.local";
+    password.value = "Admin123!";
   } else {
-    email.value = 'creator@cineforge.local'
-    password.value = 'Creator123!'
+    email.value = "creator@cineforge.local";
+    password.value = "Creator123!";
   }
-  errorMessage.value = ''
+  errorMessage.value = "";
 }
 
 async function submit(): Promise<void> {
-  errorMessage.value = ''
+  errorMessage.value = "";
   try {
-    await auth.login(tenant.value, email.value, password.value)
-    const redirect = typeof route.query.redirect === 'string' ? route.query.redirect : '/workspace'
-    await router.replace(redirect)
+    await auth.login(tenant.value, email.value, password.value);
+    const redirect =
+      typeof route.query.redirect === "string"
+        ? route.query.redirect
+        : "/workspace";
+    await router.replace(redirect);
   } catch (error) {
-    errorMessage.value = error instanceof ApiError ? error.message : '登录失败，请稍后重试'
+    errorMessage.value =
+      error instanceof ApiError ? error.message : "登录失败，请稍后重试";
   }
 }
 </script>
@@ -47,25 +57,39 @@ async function submit(): Promise<void> {
         <span>CineForge</span>
       </div>
       <div class="login-visual__caption">
-        <span class="eyebrow eyebrow--light">AI SHORT DRAMA STUDIO</span>
-        <h1>让每一帧<br />都服务于故事</h1>
-        <p>从原文到成片的智能创作工作台</p>
+        <span class="eyebrow eyebrow--light">AI SHORT DRAMA PRODUCTION</span>
+        <h1>CineForge</h1>
+        <p>从文字、分镜到最终成片，一处完成整套短剧制作。</p>
+        <div class="login-visual__meta" aria-label="平台能力">
+          <span>Script</span><i></i><span>Storyboard</span><i></i
+          ><span>Final Cut</span>
+        </div>
       </div>
     </section>
 
     <section class="login-panel">
       <form class="login-form" @submit.prevent="submit">
         <header>
-          <span class="login-mobile-brand"><Clapperboard :size="20" /> CineForge</span>
+          <span class="login-mobile-brand"
+            ><Clapperboard :size="20" /> CineForge</span
+          >
           <h2>进入创作台</h2>
           <p>继续你的短剧项目</p>
         </header>
 
         <div class="account-segment" aria-label="选择演示账号">
-          <button type="button" :class="{ active: email.startsWith('creator') }" @click="useAccount('creator')">
+          <button
+            type="button"
+            :class="{ active: email.startsWith('creator') }"
+            @click="useAccount('creator')"
+          >
             创作账号
           </button>
-          <button type="button" :class="{ active: email.startsWith('admin') }" @click="useAccount('admin')">
+          <button
+            type="button"
+            :class="{ active: email.startsWith('admin') }"
+            @click="useAccount('admin')"
+          >
             管理账号
           </button>
         </div>
@@ -76,7 +100,12 @@ async function submit(): Promise<void> {
         </label>
         <label class="field">
           <span>邮箱</span>
-          <input v-model.trim="email" type="email" autocomplete="username" required />
+          <input
+            v-model.trim="email"
+            type="email"
+            autocomplete="username"
+            required
+          />
         </label>
         <label class="field">
           <span>密码</span>
@@ -87,16 +116,27 @@ async function submit(): Promise<void> {
               autocomplete="current-password"
               required
             />
-            <button type="button" class="icon-button icon-button--small" title="显示或隐藏密码" @click="showPassword = !showPassword">
+            <button
+              type="button"
+              class="icon-button icon-button--small"
+              title="显示或隐藏密码"
+              @click="showPassword = !showPassword"
+            >
               <EyeOff v-if="showPassword" :size="17" />
               <Eye v-else :size="17" />
             </button>
           </span>
         </label>
 
-        <p v-if="errorMessage" class="form-error" role="alert">{{ errorMessage }}</p>
+        <p v-if="errorMessage" class="form-error" role="alert">
+          {{ errorMessage }}
+        </p>
 
-        <button class="button button--primary login-submit" type="submit" :disabled="auth.loading">
+        <button
+          class="button button--primary login-submit"
+          type="submit"
+          :disabled="auth.loading"
+        >
           <LoaderCircle v-if="auth.loading" class="spin" :size="18" />
           <template v-else>
             <span>登录</span>
@@ -107,4 +147,3 @@ async function submit(): Promise<void> {
     </section>
   </main>
 </template>
-

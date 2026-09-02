@@ -8,6 +8,7 @@ import {
   BookOpen,
   Check,
   CircleAlert,
+  ChevronRight,
   Code2,
   Coins,
   Cpu,
@@ -1197,16 +1198,22 @@ async function saveSkill(): Promise<void> {
       </span>
     </header>
 
-    <nav ref="adminTabs" class="admin-tabs" aria-label="管理模块">
-      <RouterLink v-for="item in tabs" :key="item.id" :to="`/admin/${item.id}`" :class="{ active: section === item.id }">
-        <component :is="item.icon" :size="17" />
-        <span>{{ item.label }}</span>
-      </RouterLink>
-    </nav>
+    <div class="admin-workspace-layout">
+      <aside class="admin-settings-rail">
+        <span>SETTINGS</span>
+        <nav ref="adminTabs" class="admin-tabs" aria-label="管理模块">
+          <RouterLink v-for="item in tabs" :key="item.id" :to="`/admin/${item.id}`" :class="{ active: section === item.id }">
+            <component :is="item.icon" :size="17" />
+            <span>{{ item.label }}</span>
+            <ChevronRight :size="14" />
+          </RouterLink>
+        </nav>
+      </aside>
 
-    <div v-if="loading" class="page-loading"><span class="spinner"></span></div>
+      <main class="admin-workspace-content">
+        <div v-if="loading" class="page-loading"><span class="spinner"></span></div>
 
-    <template v-else>
+        <template v-else>
       <section v-if="section === 'overview'" class="admin-overview">
         <div class="metric-grid">
           <article class="metric"><span>平台连接</span><strong class="tabular-nums">{{ providers.length }}</strong><Network :size="20" /></article>
@@ -1483,7 +1490,9 @@ async function saveSkill(): Promise<void> {
           <span>新的登录与风控记录会自动出现在这里</span>
         </div>
       </section>
-    </template>
+        </template>
+      </main>
+    </div>
 
     <BaseDialog
       :open="dialog !== null"

@@ -206,29 +206,36 @@ function formatDate(value: string): string {
       <div><strong class="tabular-nums">{{ skills.length }}</strong><span>已学能力</span></div>
       <div><strong class="tabular-nums">{{ enabledCount }}</strong><span>正在生效</span></div>
       <div><strong class="tabular-nums">{{ stageCoverage }}/7</strong><span>覆盖阶段</span></div>
-      <p><BrainCircuit :size="18" />AI 先检索当前阶段的 Skill 说明，再选择一个或多个能力读取正文。</p>
+      <p><BrainCircuit :size="18" />AI 会按当前制作阶段检索这些方法。</p>
     </section>
 
-    <section class="skill-filter-bar" aria-label="按创作阶段筛选">
-      <button :class="{ active: stageFilter === 'all' }" type="button" @click="stageFilter = 'all'">
-        <Sparkles :size="15" />全部
-      </button>
-      <button
-        v-for="stage in stageOptions"
-        :key="stage.value"
-        :class="{ active: stageFilter === stage.value }"
-        type="button"
-        @click="stageFilter = stage.value"
-      >
-        <component :is="stageVisuals[stage.value].icon" :size="15" />{{ stage.label }}
-      </button>
-    </section>
+    <div class="skills-workspace-layout">
+      <aside class="skills-stage-rail">
+        <nav class="skill-filter-bar" aria-label="按创作阶段筛选">
+          <button :class="{ active: stageFilter === 'all' }" type="button" @click="stageFilter = 'all'">
+            <Sparkles :size="15" /><span>全部能力</span><small class="tabular-nums">{{ skills.length }}</small>
+          </button>
+          <button
+            v-for="stage in stageOptions"
+            :key="stage.value"
+            :class="{ active: stageFilter === stage.value }"
+            type="button"
+            @click="stageFilter = stage.value"
+          >
+            <component :is="stageVisuals[stage.value].icon" :size="15" /><span>{{ stage.label }}</span>
+            <small class="tabular-nums">{{ skills.filter((skill) => skill.trigger_stages.includes(stage.value)).length }}</small>
+          </button>
+        </nav>
+      </aside>
 
-    <section v-if="loading" class="user-skill-grid" aria-label="正在加载个人 Skills">
-      <div v-for="index in 6" :key="index" class="user-skill-skeleton"><i></i><i></i><i></i></div>
-    </section>
+      <main class="skills-catalog">
+        <header><div><span>CAPABILITY LIBRARY</span><h2>{{ stageFilter === 'all' ? '全部能力' : stageVisuals[stageFilter].label }}</h2></div><strong class="tabular-nums">{{ visibleSkills.length }}</strong></header>
 
-    <section v-else-if="visibleSkills.length" class="user-skill-grid" aria-label="个人 Skills">
+        <section v-if="loading" class="user-skill-grid" aria-label="正在加载个人 Skills">
+          <div v-for="index in 6" :key="index" class="user-skill-skeleton"><i></i><i></i><i></i></div>
+        </section>
+
+        <section v-else-if="visibleSkills.length" class="user-skill-grid" aria-label="个人 Skills">
       <article
         v-for="(skill, index) in visibleSkills"
         :key="skill.id"
@@ -262,14 +269,16 @@ function formatDate(value: string): string {
           </div>
         </footer>
       </article>
-    </section>
+        </section>
 
-    <section v-else class="user-skills-empty">
-      <span><BrainCircuit :size="24" /></span>
-      <h2>{{ skills.length ? '这个阶段还没有 Skill' : '你的 AI 还没有个人 Skill' }}</h2>
-      <p>{{ skills.length ? '切换创作阶段，或为当前阶段添加一个新能力。' : '添加一套常用规则，后续创作时无需反复粘贴。' }}</p>
-      <button v-if="!skills.length" class="button button--secondary" type="button" @click="openCreate"><Plus :size="16" />添加第一个 Skill</button>
-    </section>
+        <section v-else class="user-skills-empty">
+          <span><BrainCircuit :size="24" /></span>
+          <h2>{{ skills.length ? '这个阶段还没有 Skill' : '你的 AI 还没有个人 Skill' }}</h2>
+          <p>{{ skills.length ? '切换创作阶段，或为当前阶段添加一个新能力。' : '添加一套常用规则，后续创作时无需反复粘贴。' }}</p>
+          <button v-if="!skills.length" class="button button--secondary" type="button" @click="openCreate"><Plus :size="16" />添加第一个 Skill</button>
+        </section>
+      </main>
+    </div>
 
     <BaseDialog
       v-model:open="dialogOpen"

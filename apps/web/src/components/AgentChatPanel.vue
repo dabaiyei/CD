@@ -1404,7 +1404,7 @@ async function sendMessage(): Promise<void> {
             <span><strong>{{ mode.label }}</strong></span>
           </button>
         </nav>
-        <div v-if="hasConversation" class="agent-conversation">
+        <div v-if="messages.length" class="agent-conversation">
           <div ref="thread" class="agent-thread" :class="{ 'is-streaming': sending }" aria-live="off" @scroll.passive="updateScrollIntent">
             <div class="agent-thread__virtual" :style="{ height: `${virtualMessageHeight}px` }">
               <div

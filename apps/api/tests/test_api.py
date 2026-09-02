@@ -4521,6 +4521,48 @@ def test_agent_chat_applies_project_file_changes_with_audit_manifest(
     assert any(item["name"] == "故事骨架.md" for item in files)
 
 
+def test_admin_can_use_director_agent_for_another_users_project(
+    client: TestClient,
+    creator_headers: dict[str, str],
+    admin_headers: dict[str, str],
+) -> None:
+    project_id = client.get("/api/v1/projects", headers=creator_headers).json()[0]["id"]
+    imported = client.post(
+        f"/api/v1/projects/{project_id}/sources/import",
+        headers=creator_headers,
+        data={
+            "mode": "novel",
+            "source_name": "管理员导演 Agent 权限测试",
+            "pasted_text": "第一章 跨用户项目\n管理员需要在租户项目中继续创作。",
+        },
+    )
+    assert imported.status_code == 201
+    chapter_id = imported.json()["chapters"][0]["id"]
+    provider_id = client.get("/api/v1/admin/providers", headers=admin_headers).json()[0]["id"]
+    assert client.patch(
+        f"/api/v1/admin/providers/{provider_id}",
+        headers=admin_headers,
+        json={"api_key": "test-admin-director-agent-key"},
+    ).status_code == 200
+    session = client.post(
+        f"/api/v1/projects/{project_id}/agent/sessions",
+        headers=admin_headers,
+        json={"scene": "director"},
+    )
+    assert session.status_code == 201
+
+    sent = client.post(
+        f"/api/v1/projects/{project_id}/agent/sessions/{session.json()['id']}/messages",
+        headers=admin_headers,
+        json={"content": "分析当前章节", "chapter_id": chapter_id},
+    )
+
+    assert sent.status_code == 202
+    assert sent.json()["task"]["request_payload"]["chapter_id"] == chapter_id
+    task_id = sent.json()["task"]["id"]
+    assert client.post(f"/api/v1/tasks/{task_id}/cancel", headers=admin_headers).status_code == 200
+
+
 def test_director_agent_publishes_formal_script_version_for_bound_chapter(
     client: TestClient,
     creator_headers: dict[str, str],
