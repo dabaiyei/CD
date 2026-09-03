@@ -118,6 +118,25 @@ def listing_public(
     )
 
 
+@router.get("/marketplace/material-sources", response_model=list[AssetPublic])
+async def list_material_sources(
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> list[Asset]:
+    return list(
+        (
+            await session.scalars(
+                select(Asset)
+                .where(
+                    Asset.tenant_id == user.tenant_id,
+                    Asset.user_id == user.id,
+                )
+                .order_by(Asset.scope.desc(), Asset.updated_at.desc(), Asset.id.desc())
+            )
+        ).all()
+    )
+
+
 @router.get("/marketplace/{resource_type}", response_model=MarketplacePage)
 async def list_marketplace(
     resource_type: MarketplaceResourceType,
@@ -302,26 +321,6 @@ async def publish_template(
     return listing_public(listing, user, None, user)
 
 
-@router.get("/marketplace/material-sources", response_model=list[AssetPublic])
-async def list_material_sources(
-    user: User = Depends(get_current_user),
-    session: AsyncSession = Depends(get_session),
-) -> list[Asset]:
-    return list(
-        (
-            await session.scalars(
-                select(Asset)
-                .where(
-                    Asset.tenant_id == user.tenant_id,
-                    Asset.user_id == user.id,
-                    Asset.scope == AssetScope.GLOBAL,
-                )
-                .order_by(Asset.updated_at.desc(), Asset.id.desc())
-            )
-        ).all()
-    )
-
-
 @router.post(
     "/marketplace/materials/{asset_id}/publish",
     response_model=MarketplaceListingPublic,
@@ -337,9 +336,8 @@ async def publish_material(
         asset is None
         or asset.tenant_id != user.tenant_id
         or asset.user_id != user.id
-        or asset.scope != AssetScope.GLOBAL
     ):
-        raise HTTPException(status_code=404, detail="可分享的全局资产不存在")
+        raise HTTPException(status_code=404, detail="可分享的素材不存在")
     listing = await publish_snapshot(
         session,
         resource_type=MarketplaceResourceType.MATERIAL,

@@ -1660,8 +1660,9 @@ def test_resource_marketplaces_publish_copy_sync_and_unpublish(
         admin_templates = client.get("/api/v1/user-templates", headers=consumer_headers).json()
         assert any("异常结果" in item["content"] for item in admin_templates)
 
+        project_id = client.get("/api/v1/projects", headers=creator_headers).json()[0]["id"]
         source_asset = client.post(
-            "/api/v1/assets",
+            f"/api/v1/projects/{project_id}/assets",
             headers=creator_headers,
             json={
                 "asset_type": "character",
@@ -1672,6 +1673,19 @@ def test_resource_marketplaces_publish_copy_sync_and_unpublish(
         )
         assert source_asset.status_code == 201
         source_asset_id = source_asset.json()["id"]
+        assert source_asset.json()["scope"] == "project"
+        material_sources = client.get(
+            "/api/v1/marketplace/material-sources",
+            headers=creator_headers,
+        )
+        assert material_sources.status_code == 200
+        assert any(item["id"] == source_asset_id for item in material_sources.json())
+        forbidden_material_publish = client.post(
+            f"/api/v1/marketplace/materials/{source_asset_id}/publish",
+            headers=consumer_headers,
+            json={"category": "人物", "tags": []},
+        )
+        assert forbidden_material_publish.status_code == 404
         published_material = client.post(
             f"/api/v1/marketplace/materials/{source_asset_id}/publish",
             headers=creator_headers,
