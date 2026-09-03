@@ -23,7 +23,8 @@ for (const eventName of ["gesturestart", "gesturechange", "gestureend"]) {
 window.addEventListener("cineforge:auth-expired", () => {
   const auth = useAuthStore(pinia);
   auth.clearSession();
-  if (router.currentRoute.value.name !== "login") {
+  const currentRoute = router.currentRoute.value;
+  if (!currentRoute.meta.public && currentRoute.name !== "login") {
     void router.replace({ name: "login", query: { reason: "expired" } });
   }
 });

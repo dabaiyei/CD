@@ -24,6 +24,7 @@ import QRCode from 'qrcode'
 
 import BaseDialog from '@/components/BaseDialog.vue'
 import { api } from '@/lib/api'
+import { copyText as copyTextToClipboard } from '@/lib/clipboard'
 import { useToastStore } from '@/stores/toast'
 import type { Invitation, InvitationSettings } from '@/types'
 
@@ -166,11 +167,10 @@ async function copyText(value: string | null, label = '邀请链接'): Promise<v
     toast.show('请先配置邀请链接前缀', { tone: 'info' })
     return
   }
-  try {
-    await navigator.clipboard.writeText(value)
+  if (await copyTextToClipboard(value)) {
     toast.show(`${label}已复制`, { tone: 'success' })
-  } catch {
-    toast.show('复制失败', { message: '浏览器未授予剪贴板权限', tone: 'error' })
+  } else {
+    toast.show('复制失败', { message: `请长按${label}后手动复制`, tone: 'error' })
   }
 }
 

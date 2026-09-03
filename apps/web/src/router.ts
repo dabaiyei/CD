@@ -43,9 +43,9 @@ export const router = createRouter({
 
 router.beforeEach(async (to) => {
   const auth = useAuthStore(pinia)
+  if (to.meta.public && to.meta.allowAuthenticated) return true
   await auth.restore()
   if (to.meta.public) {
-    if (to.meta.allowAuthenticated) return true
     return auth.isAuthenticated ? defaultAuthenticatedRoute(auth.isAdmin) : true
   }
   if (!auth.isAuthenticated) return { name: 'login', query: { redirect: to.fullPath } }
