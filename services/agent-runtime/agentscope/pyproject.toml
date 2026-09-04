@@ -9,6 +9,7 @@ description = "Versioned AgentScope runtime for CineForge"
 requires-python = ">=3.11"
 dependencies = [
   "agentscope==2.0.7.post1",
+  "xai-sdk>=1.0,<2",
   "fastapi>=0.116,<1",
   "pydantic-settings>=2.10,<3",
   "uvicorn[standard]>=0.35,<1",

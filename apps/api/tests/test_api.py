@@ -304,6 +304,28 @@ class FakePersonalMediaRuntime:
         )
 
 
+class FakePersonalChatMediaActionRuntime:
+    def __init__(self, *, response: str) -> None:
+        self.response = response
+        self.requests: list[AgentRuntimeRequest] = []
+
+    async def run(self, request: AgentRuntimeRequest) -> AgentRuntimeResponse:
+        self.requests.append(request)
+        return AgentRuntimeResponse(
+            session_id=request.session_id,
+            final_response=self.response,
+            finish_reason="stop",
+            events=[{"type": "assistant/message"}],
+            manifest={
+                "runtime_type": "agentscope",
+                "runtime_version": "test",
+                "contract_version": request.contract_version,
+                "provider": request.model_binding["provider"],
+                "model": request.model_binding["model"],
+            },
+        )
+
+
 class FakeStreamingAgentRuntime(FakeAgentRuntime):
     def __init__(self) -> None:
         super().__init__()
@@ -902,6 +924,8 @@ def test_login_rejects_ambiguous_cross_tenant_email(client: TestClient) -> None:
             "/api/v1/auth/login",
             json={"email": email, "password": "SharedLogin123!"},
         )
+
+
         assert ambiguous.status_code == 409
         assert ambiguous.json()["detail"] == "该邮箱关联了多个租户，请联系管理员处理账号归属"
 
@@ -6608,6 +6632,197 @@ def test_personal_agent_image_mode_binds_selected_skill_and_persists_media(
     )
     assert rejected.status_code == 422
     assert "已禁用" in rejected.json()["detail"]
+
+
+def test_personal_chat_can_upgrade_to_real_image_generation(
+    client: TestClient,
+    creator_headers: dict[str, str],
+    admin_headers: dict[str, str],
+) -> None:
+    provider_id = client.get("/api/v1/admin/providers", headers=admin_headers).json()[0]["id"]
+    client.patch(
+        f"/api/v1/admin/providers/{provider_id}",
+        headers=admin_headers,
+        json={"api_key": "personal-chat-image-key"},
+    )
+    session_id = client.post(
+        "/api/v1/agent/sessions",
+        headers=creator_headers,
+        json={"scene": "workspace"},
+    ).json()["id"]
+    action = {
+        "type": "image",
+        "generation_mode": "text_to_image",
+        "prompt": "电影质感的未来城市雨夜，霓虹倒影，宽银幕构图，高细节",
+        "resolution": "2K",
+        "aspect_ratio": "16:9",
+        "reference_attachment_ids": [],
+    }
+    runtime = FakePersonalChatMediaActionRuntime(
+        response=(
+            "我会沿用当前对话里的电影感设定生成一张宽银幕图片。\n"
+            f"<CINEFORGE_MEDIA>{json.dumps(action, ensure_ascii=False)}</CINEFORGE_MEDIA>"
+        )
+    )
+    gateway = FakeAssetImageGateway()
+    sent = client.post(
+        f"/api/v1/agent/sessions/{session_id}/messages",
+        headers=creator_headers,
+        json={"content": "生成一张未来城市雨夜的图片，16:9，2K"},
+    )
+    assert sent.status_code == 202
+    task_id = sent.json()["task"]["id"]
+    assert sent.json()["task"]["request_payload"]["mode"] == "chat"
+    assert asyncio.run(
+        process_task(
+            task_id,
+            runtime_factory=lambda: runtime,
+            gateway_factory=lambda _provider: gateway,
+        )
+    ) is True
+
+    assert "平台当前可调用的媒体模型目录" in runtime.requests[0].system_prompt
+    assert len(gateway.requests) == 1
+    assert gateway.requests[0].resolution == "2K"
+    assert gateway.requests[0].aspect_ratio == "16:9"
+    detail = client.get(
+        f"/api/v1/agent/sessions/{session_id}",
+        headers=creator_headers,
+    ).json()
+    assistant = detail["messages"][-1]
+    assert "CINEFORGE_MEDIA" not in assistant["content"]
+    assert assistant["runtime_manifest"]["requested_mode"] == "chat"
+    assert assistant["runtime_manifest"]["mode"] == "image"
+    assert assistant["runtime_manifest"]["generated_media"][0]["resolution"] == "2K"
+
+    async def load_task_pair() -> tuple[AITask, AITask]:
+        async with SessionLocal() as db:
+            source = await db.get(AITask, task_id)
+            memory_id = assistant["runtime_manifest"]["memory"]["maintenance_task_id"]
+            memory = await db.get(AITask, memory_id)
+            assert source is not None and memory is not None
+            return source, memory
+
+    source_task, memory_task = asyncio.run(load_task_pair())
+    assert source_task.request_payload["original_mode"] == "chat"
+    assert memory_task.model_id == source_task.request_payload["text_model_id"]
+
+
+def test_personal_chat_reuses_historical_image_when_model_omits_action_marker(
+    client: TestClient,
+    creator_headers: dict[str, str],
+    admin_headers: dict[str, str],
+) -> None:
+    provider_id = client.get("/api/v1/admin/providers", headers=admin_headers).json()[0]["id"]
+    client.patch(
+        f"/api/v1/admin/providers/{provider_id}",
+        headers=admin_headers,
+        json={"api_key": "personal-chat-reference-key"},
+    )
+    session_id = client.post(
+        "/api/v1/agent/sessions",
+        headers=creator_headers,
+        json={"scene": "workspace"},
+    ).json()["id"]
+    image = BytesIO()
+    Image.new("RGB", (192, 108), "#243b53").save(image, format="PNG")
+    attachment = client.post(
+        "/api/v1/agent/attachments",
+        headers=creator_headers,
+        files={"file": ("historical-reference.png", image.getvalue(), "image/png")},
+    ).json()
+    first = client.post(
+        f"/api/v1/agent/sessions/{session_id}/messages",
+        headers=creator_headers,
+        json={
+            "content": "你能看到这张图片吗？先说说画面内容。",
+            "attachment_ids": [attachment["id"]],
+        },
+    )
+    assert first.status_code == 202
+    assert asyncio.run(
+        process_task(first.json()["task"]["id"], runtime_factory=FakeAgentRuntime)
+    ) is True
+
+    fallback_runtime = FakePersonalChatMediaActionRuntime(
+        response="可以，我会保留刚才图片的主体、光线和构图，再做一张同类画面。"
+    )
+    gateway = FakeAssetImageGateway()
+    second = client.post(
+        f"/api/v1/agent/sessions/{session_id}/messages",
+        headers=creator_headers,
+        json={"content": "基于刚才那张图生成一张类似风格的图片，16:9，2K"},
+    )
+    assert second.status_code == 202
+    assert asyncio.run(
+        process_task(
+            second.json()["task"]["id"],
+            runtime_factory=lambda: fallback_runtime,
+            gateway_factory=lambda _provider: gateway,
+        )
+    ) is True
+
+    request = fallback_runtime.requests[0]
+    assert [item.id for item in request.attachments] == [attachment["id"]]
+    assert gateway.requests[0].generation_mode == "image_to_image"
+    assert gateway.requests[0].reference_image_url
+    assert gateway.requests[0].reference_image_url.startswith("data:image/")
+    detail = client.get(
+        f"/api/v1/agent/sessions/{session_id}",
+        headers=creator_headers,
+    ).json()
+    generated = detail["messages"][-1]["runtime_manifest"]["generated_media"][0]
+    assert generated["generation_mode"] == "image_to_image"
+
+
+def test_personal_chat_can_upgrade_to_video_with_requested_duration(
+    client: TestClient,
+    creator_headers: dict[str, str],
+    admin_headers: dict[str, str],
+) -> None:
+    provider_id = client.get("/api/v1/admin/providers", headers=admin_headers).json()[0]["id"]
+    client.patch(
+        f"/api/v1/admin/providers/{provider_id}",
+        headers=admin_headers,
+        json={"api_key": "personal-chat-video-key"},
+    )
+    session_id = client.post(
+        "/api/v1/agent/sessions",
+        headers=creator_headers,
+        json={"scene": "workspace"},
+    ).json()["id"]
+    action = {
+        "type": "video",
+        "generation_mode": "text_to_video",
+        "prompt": "日出时分的云海，镜头缓慢向前推进，光线逐渐照亮山脊",
+        "aspect_ratio": "16:9",
+        "duration_seconds": 8,
+        "reference_attachment_ids": [],
+    }
+    runtime = FakePersonalChatMediaActionRuntime(
+        response=(
+            "我会按宽银幕构图生成一段云海日出视频。\n"
+            f"<CINEFORGE_MEDIA>{json.dumps(action, ensure_ascii=False)}</CINEFORGE_MEDIA>"
+        )
+    )
+    gateway = FakeVideoGateway()
+    sent = client.post(
+        f"/api/v1/agent/sessions/{session_id}/messages",
+        headers=creator_headers,
+        json={"content": "帮我生成一个云海日出的视频，16:9，8秒"},
+    )
+    assert sent.status_code == 202
+    assert asyncio.run(
+        process_task(
+            sent.json()["task"]["id"],
+            runtime_factory=lambda: runtime,
+            gateway_factory=lambda _provider: gateway,
+        )
+    ) is True
+    assert gateway.submit_calls == 1
+    assert gateway.requests[0].aspect_ratio == "16:9"
+    assert gateway.requests[0].duration_seconds == 10
+    assert gateway.requests[0].generation_mode == "text_to_video"
 
 
 def test_personal_agent_video_mode_uses_uploaded_reference_and_normalizes_duration(

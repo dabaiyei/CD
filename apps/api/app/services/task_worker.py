@@ -88,9 +88,10 @@ from app.services.agent_runtime import (
     AgentRuntimeRequestError,
 )
 from app.services.asset_revisions import snapshot_asset_revision
-from app.services.billing import refund_task_cost
+from app.services.billing import debit_additional_task_cost, refund_task_cost, resolve_task_pricing
 from app.services.composition import invalidate_compositions
 from app.services.composition_renderer import FFmpegCompositionRenderer
+from app.services.image_model_routing import normalize_image_resolution, resolve_image_model
 from app.services.managed_skills import handbook_usage_instructions
 from app.services.media import (
     save_agent_chat_image,
@@ -164,6 +165,7 @@ AGENT_HISTORY_MESSAGE_LIMIT = 10
 AGENT_HISTORY_CHARACTER_LIMIT = 10_000
 AGENT_HISTORY_MESSAGE_CHARACTER_LIMIT = 2_400
 AGENT_ARTIFACT_POINTER_THRESHOLD = 1_200
+MAX_CHAT_ATTACHMENTS = 4
 
 
 class ProviderJobTerminalError(RuntimeError):
@@ -225,12 +227,24 @@ async def run_with_idle_timeout(
 
 
 class AgentStreamRelay:
-    def __init__(self, task: AITask, session_id: str, *, publish_text: bool = True) -> None:
+    MEDIA_ACTION_MARKER = "<CINEFORGE_MEDIA>"
+
+    def __init__(
+        self,
+        task: AITask,
+        session_id: str,
+        *,
+        publish_text: bool = True,
+        hide_media_actions: bool = False,
+    ) -> None:
         self.user_id = str(task.user_id)
         self.task_id = str(task.id)
         self.project_id = str(task.project_id) if task.project_id else None
         self.session_id = session_id
         self.publish_text = publish_text
+        self.hide_media_actions = hide_media_actions
+        self.pending_visible_text = ""
+        self.media_action_started = False
         self.text_buffer: list[str] = []
         self.full_text: list[str] = []
         self.buffer_size = 0
@@ -281,6 +295,10 @@ class AgentStreamRelay:
             delta = str(event.get("delta") or "")
             if not delta:
                 return
+            if self.hide_media_actions:
+                delta = self._visible_text_delta(delta)
+                if not delta:
+                    return
             self.text_buffer.append(delta)
             self.full_text.append(delta)
             if not self.publish_text:
@@ -352,6 +370,35 @@ class AgentStreamRelay:
         if delivered is False:
             self.fallback_needed = True
             await self.persist_snapshot()
+
+    def _visible_text_delta(self, delta: str) -> str:
+        if self.media_action_started:
+            return ""
+        pending = self.pending_visible_text + delta
+        marker_index = pending.find(self.MEDIA_ACTION_MARKER)
+        if marker_index >= 0:
+            self.pending_visible_text = ""
+            self.media_action_started = True
+            return pending[:marker_index]
+        reserve = 0
+        upper_bound = min(len(pending), len(self.MEDIA_ACTION_MARKER) - 1)
+        for size in range(upper_bound, 0, -1):
+            if pending.endswith(self.MEDIA_ACTION_MARKER[:size]):
+                reserve = size
+                break
+        if reserve:
+            visible = pending[:-reserve]
+            self.pending_visible_text = pending[-reserve:]
+            return visible
+        self.pending_visible_text = ""
+        return pending
+
+    async def finish(self) -> None:
+        if self.pending_visible_text and not self.media_action_started:
+            self.text_buffer.append(self.pending_visible_text)
+            self.full_text.append(self.pending_visible_text)
+        self.pending_visible_text = ""
+        await self.flush()
 
     async def flush(self) -> None:
         if not self.text_buffer:
@@ -543,6 +590,307 @@ class ConversationMaintenancePayload(BaseModel):
 class PersonalMediaPromptPayload(BaseModel):
     message: str = Field(default="", max_length=10_000)
     prompt: str = Field(min_length=1, max_length=50_000)
+
+
+class PersonalMediaAction(BaseModel):
+    type: Literal["image", "video"]
+    generation_mode: Literal[
+        "text_to_image",
+        "image_to_image",
+        "text_to_video",
+        "image_to_video",
+    ]
+    prompt: str = Field(min_length=1, max_length=50_000)
+    model_id: str | None = Field(default=None, max_length=200)
+    resolution: str | None = Field(default=None, max_length=40)
+    aspect_ratio: str | None = Field(default=None, max_length=20)
+    duration_seconds: float | None = Field(default=None, ge=1, le=300)
+    reference_attachment_ids: list[str] = Field(default_factory=list, max_length=4)
+
+
+class PersonalChatResponsePayload(BaseModel):
+    message: str = Field(default="", max_length=20_000)
+    media: PersonalMediaAction | None = None
+
+
+_MEDIA_CAPABILITY_QUESTION = re.compile(
+    r"(?:能不能|能否|可以不可以|可不可以|会不会|是否(?:可以|能够)?|支持不支持|支不支持)"
+    r".{0,12}(?:生成|制作|创建|画|做).{0,8}(?:图片|图像|视频|动画)"
+)
+_IMAGE_GENERATION_REQUEST = re.compile(
+    r"(?:生成|制作|创建|画|绘制|出|做|来|重做|重新生成).{0,20}"
+    r"(?:图片|图像|插画|海报|封面|照片|壁纸|立绘|头像|图)"
+    r"|(?:图片|图像|插画|海报|封面|照片|壁纸|立绘|头像|图).{0,16}"
+    r"(?:生成|制作|创建|画|绘制|出|做|来|重做|重新生成)"
+)
+_VIDEO_GENERATION_REQUEST = re.compile(
+    r"(?:生成|制作|创建|做|来|重做|重新生成).{0,20}(?:视频|动画|短片|片段)"
+    r"|(?:视频|动画|短片|片段).{0,16}(?:生成|制作|创建|做|来|重做|重新生成)"
+    r"|(?:让|把).{0,20}(?:图片|图|画面).{0,10}(?:动起来|做成视频|变成视频)"
+)
+_REFERENCE_REQUEST = re.compile(
+    r"(?:基于|参考|按照|仿照|沿用|保持|类似|像|根据).{0,16}"
+    r"(?:这张|上张|上一张|刚才|上传|参考|原图|图片|图像|画面)"
+    r"|(?:这张|上张|上一张|刚才|上传|参考|原图).{0,16}"
+    r"(?:生成|制作|做|改|变|动起来)"
+)
+
+
+def infer_explicit_media_action(
+    content: str,
+    *,
+    available_attachments: list[AgentRuntimeAttachment],
+    available_models: list[AIModel],
+) -> PersonalMediaAction | None:
+    """Conservative fallback for models that ignore the media action contract.
+
+    It only handles explicit generation commands. Questions about capabilities or
+    ordinary image analysis stay as chat, which avoids charging users for an
+    accidental media task.
+    """
+    text = content.strip()
+    if (
+        not text
+        or _MEDIA_CAPABILITY_QUESTION.search(text)
+        or re.search(r"(?:如何|怎么|怎样|为什么|介绍|解释).{0,12}(?:生成|制作).{0,8}(?:图片|视频)", text)
+        or re.search(r"(?:图片|视频).{0,6}提示词|提示词.{0,6}(?:图片|视频)", text)
+    ):
+        return None
+    media_type: Literal["image", "video"] | None = None
+    if _VIDEO_GENERATION_REQUEST.search(text):
+        media_type = "video"
+    elif _IMAGE_GENERATION_REQUEST.search(text):
+        media_type = "image"
+    elif available_attachments and re.search(r"(?:让|把)?它.{0,4}(?:动起来|做成视频|变成视频)", text):
+        media_type = "video"
+    elif available_attachments and re.search(
+        r"(?:照着|基于|参考|按照|仿照).{0,16}(?:再)?(?:做|生成|画|来|出).{0,4}(?:一张|一幅|一个)"
+        r"|(?:再|重新)(?:做|生成|画|来|出)?一张",
+        text,
+    ):
+        media_type = "image"
+    if media_type is None:
+        return None
+
+    image_attachments = [
+        item for item in available_attachments if item.mime_type.startswith("image/")
+    ]
+    use_reference = bool(image_attachments) and bool(_REFERENCE_REQUEST.search(text))
+    if media_type == "video" and image_attachments and re.search(r"(?:动起来|图生视频)", text):
+        use_reference = True
+    generation_mode = (
+        "image_to_image"
+        if media_type == "image" and use_reference
+        else "image_to_video"
+        if media_type == "video" and use_reference
+        else "text_to_image"
+        if media_type == "image"
+        else "text_to_video"
+    )
+
+    ratio_match = re.search(r"(?<!\d)(1:1|2:3|3:2|3:4|4:3|4:5|5:4|9:16|16:9|21:9)(?!\d)", text)
+    image_resolution = re.search(r"(?i)(?<!\w)(1|2|4)\s*k(?!\w)", text)
+    video_resolution = re.search(r"(?i)(?<!\w)(480|540|720|1080|1440|2160)\s*p(?!\w)", text)
+    duration = re.search(r"(?<!\d)(\d+(?:\.\d+)?)\s*(?:秒|s(?:ec(?:ond)?s?)?)(?!\w)", text, re.I)
+    requested_model = next(
+        (
+            model.id
+            for model in sorted(available_models, key=lambda item: len(item.name), reverse=True)
+            if model.model_type.value == media_type
+            and (model.name.lower() in text.lower() or model.model_id.lower() in text.lower())
+        ),
+        None,
+    )
+    return PersonalMediaAction(
+        type=media_type,
+        generation_mode=generation_mode,
+        prompt=text,
+        model_id=requested_model,
+        resolution=(
+            f"{image_resolution.group(1)}K"
+            if media_type == "image" and image_resolution
+            else f"{video_resolution.group(1)}p"
+            if media_type == "video" and video_resolution
+            else None
+        ),
+        aspect_ratio=ratio_match.group(1) if ratio_match else None,
+        duration_seconds=float(duration.group(1)) if media_type == "video" and duration else None,
+        reference_attachment_ids=[item.id for item in image_attachments] if use_reference else [],
+    )
+
+
+def media_action_from_response(content: str) -> PersonalChatResponsePayload | None:
+    """Parse the small response envelope used by ordinary personal chat.
+
+    Older/third-party text models may still return plain text. Returning None
+    keeps those conversations compatible while models that follow the contract
+    can trigger a real media task below.
+    """
+    marker = re.search(
+        r"<CINEFORGE_MEDIA>\s*(\{.*?\})\s*</CINEFORGE_MEDIA>",
+        content,
+        re.S,
+    )
+    if marker is None:
+        return None
+    try:
+        action = PersonalMediaAction.model_validate(json.loads(marker.group(1)))
+    except (json.JSONDecodeError, ValidationError):
+        raise RuntimeError("AI 返回的媒体动作结构不符合要求") from None
+    return PersonalChatResponsePayload(
+        message=content[: marker.start()].rstrip(),
+        media=action,
+    )
+
+
+def validate_personal_media_action(action: PersonalMediaAction) -> PersonalMediaAction:
+    if action.type == "image" and action.generation_mode not in {"text_to_image", "image_to_image"}:
+        raise RuntimeError("图片媒体动作的 generation_mode 无效")
+    if action.type == "video" and action.generation_mode not in {"text_to_video", "image_to_video"}:
+        raise RuntimeError("视频媒体动作的 generation_mode 无效")
+    if action.generation_mode.startswith("text_to_") and action.reference_attachment_ids:
+        # The user can still attach an image for visual context without forcing
+        # a reference-generation mode. The Agent's explicit mode remains
+        # authoritative, so do not silently change it here.
+        action.reference_attachment_ids = []
+    return action
+
+
+def default_image_options(capabilities: dict[str, object]) -> tuple[str, str]:
+    raw_resolution = capabilities.get("default_resolution")
+    resolution = normalize_image_resolution(str(raw_resolution or ""))
+    if resolution is None:
+        resolutions = capabilities.get("resolutions")
+        if isinstance(resolutions, list):
+            resolution = next(
+                (
+                    item
+                    for item in (normalize_image_resolution(str(value)) for value in resolutions)
+                    if item is not None
+                ),
+                None,
+            )
+    if resolution is None:
+        size_map = capabilities.get("size_map")
+        if isinstance(size_map, dict):
+            resolution = next(
+                (
+                    item
+                    for item in (normalize_image_resolution(str(value)) for value in size_map)
+                    if item is not None
+                ),
+                None,
+            )
+    aspect_ratios = capabilities.get("aspect_ratios")
+    aspect_ratio = (
+        str(aspect_ratios[0])
+        if isinstance(aspect_ratios, list) and aspect_ratios and str(aspect_ratios[0])
+        else "1:1"
+    )
+    return resolution or "1K", aspect_ratio
+
+
+def default_video_options(capabilities: dict[str, object]) -> tuple[str, str, float]:
+    mappings = capabilities.get("duration_resolution_map")
+    first_mapping = mappings[0] if isinstance(mappings, list) and mappings else {}
+    if not isinstance(first_mapping, dict):
+        first_mapping = {}
+    resolutions = first_mapping.get("resolutions")
+    durations = first_mapping.get("durations")
+    resolution = (
+        str(resolutions[0])
+        if isinstance(resolutions, list) and resolutions and str(resolutions[0])
+        else "720p"
+    )
+    aspect_ratios = capabilities.get("aspect_ratios")
+    aspect_ratio = (
+        str(aspect_ratios[0])
+        if isinstance(aspect_ratios, list) and aspect_ratios and str(aspect_ratios[0])
+        else "16:9"
+    )
+    duration = (
+        float(durations[0])
+        if isinstance(durations, list) and durations and float(durations[0]) >= 1
+        else 5.0
+    )
+    return resolution, aspect_ratio, duration
+
+
+def personal_media_model_catalog(models: list[AIModel]) -> str:
+    rows: list[str] = []
+    for model in models:
+        capabilities = dict(model.capabilities or {})
+        supported = {
+            key: capabilities[key]
+            for key in (
+                "resolutions",
+                "aspect_ratios",
+                "durations",
+                "duration_resolution_map",
+                "generation_modes",
+                "default_resolution",
+            )
+            if key in capabilities
+        }
+        rows.append(
+            f"- {model.model_type.value}：{model.name}（ID: {model.id}；"
+            f"平台模型名: {model.model_id}；默认: {'是' if model.is_default else '否'}；"
+            f"能力: {json.dumps(supported, ensure_ascii=False, separators=(',', ':')) or '{}'}）"
+        )
+    return "\n".join(rows) or "- 当前没有可调用的图片或视频模型"
+
+
+async def resolve_personal_media_model(
+    session: AsyncSession,
+    *,
+    task: AITask,
+    media_type: ModelType,
+    requested_model: str | None,
+    resolution: str | None = None,
+) -> tuple[AIModel, Provider]:
+    model: AIModel | None = None
+    normalized_requested = str(requested_model or "").strip()
+    if normalized_requested:
+        model = await session.get(AIModel, normalized_requested)
+        if model is None:
+            model = await session.scalar(
+                select(AIModel).where(
+                    AIModel.tenant_id == task.tenant_id,
+                    AIModel.model_type == media_type,
+                    AIModel.enabled.is_(True),
+                    or_(
+                        AIModel.model_id == normalized_requested,
+                        AIModel.name == normalized_requested,
+                    ),
+                )
+            )
+    elif media_type == ModelType.IMAGE and resolution:
+        model = await resolve_image_model(
+            session,
+            tenant_id=task.tenant_id,
+            resolution=resolution,
+        )
+    else:
+        model = await session.scalar(
+            select(AIModel).where(
+                AIModel.tenant_id == task.tenant_id,
+                AIModel.model_type == media_type,
+                AIModel.is_default.is_(True),
+                AIModel.enabled.is_(True),
+            )
+        )
+    if (
+        model is None
+        or model.tenant_id != task.tenant_id
+        or model.model_type != media_type
+        or not model.enabled
+    ):
+        label = "图片" if media_type == ModelType.IMAGE else "视频"
+        raise RuntimeError(f"当前没有可用的{label}模型，请联系管理员配置默认模型")
+    provider = await session.get(Provider, model.provider_id)
+    if provider is None or provider.tenant_id != task.tenant_id or not provider.enabled:
+        raise RuntimeError("所选媒体模型所属平台当前不可用")
+    return model, provider
 
 
 def default_gateway_factory(provider: Provider) -> OpenAICompatibleMediaGateway:
@@ -1394,6 +1742,7 @@ async def runtime_request(
                 "base_url": provider.base_url,
                 "api_key": api_key,
                 "extra_headers": provider.extra_headers or {},
+                "api_mode": str(capabilities.get("agent_api_mode") or "chat_completions"),
                 "reasoning_effort": config.get("reasoning_effort"),
                 "max_tokens": config.get("max_tokens"),
             },
@@ -1962,6 +2311,22 @@ async def agent_chat_runtime_request(
             if workflow_file is not None:
                 project_files.append(workflow_file)
         if personal_scope:
+            personal_media_models = list(
+                (
+                    await session.scalars(
+                        select(AIModel)
+                        .join(Provider, Provider.id == AIModel.provider_id)
+                        .where(
+                            AIModel.tenant_id == task.tenant_id,
+                            AIModel.model_type.in_([ModelType.IMAGE, ModelType.VIDEO]),
+                            AIModel.enabled.is_(True),
+                            Provider.tenant_id == task.tenant_id,
+                            Provider.enabled.is_(True),
+                        )
+                        .order_by(AIModel.model_type, AIModel.is_default.desc(), AIModel.name)
+                    )
+                ).all()
+            )
             personal_skills = list(
                 (
                     await session.scalars(
@@ -2037,10 +2402,34 @@ async def agent_chat_runtime_request(
                     )
                 ).all()
             ) if attachment_ids else []
-        attachments_by_id = {item.id: item for item in attachment_rows}
+        # The current message attachments are authoritative, but ordinary chat
+        # also needs to understand phrases such as “基于刚才那张图”. Expose a
+        # small, bounded set of recent session images to the runtime so the
+        # Agent can actually see them and return their IDs in a media action.
+        runtime_attachment_rows = attachment_rows
+        if personal_scope and len(runtime_attachment_rows) < MAX_CHAT_ATTACHMENTS:
+            historical_rows = list(
+                (
+                    await session.scalars(
+                        select(PersonalAgentAttachment)
+                        .where(
+                            PersonalAgentAttachment.session_id == chat_session.id,
+                            PersonalAgentAttachment.tenant_id == task.tenant_id,
+                            PersonalAgentAttachment.user_id == task.user_id,
+                            PersonalAgentAttachment.message_id.is_not(None),
+                            PersonalAgentAttachment.mime_type.like("image/%"),
+                            PersonalAgentAttachment.id.not_in(attachment_ids or [""]),
+                        )
+                        .order_by(PersonalAgentAttachment.created_at.desc())
+                        .limit(MAX_CHAT_ATTACHMENTS)
+                    )
+                ).all()
+            )
+            runtime_attachment_rows = attachment_rows + historical_rows[
+                : MAX_CHAT_ATTACHMENTS - len(attachment_rows)
+            ]
         attachment_files: list[ProjectFile | PersonalAgentAttachment] = []
-        for attachment_id in attachment_ids:
-            attachment = attachments_by_id.get(attachment_id)
+        for attachment in runtime_attachment_rows:
             if (
                 attachment is None
                 or not attachment.storage_path
@@ -2069,6 +2458,16 @@ async def agent_chat_runtime_request(
         config = agent.config or {}
         capabilities = model.capabilities or {}
         prompt = current_agent_chat_prompt(user_message)
+        if personal_scope and runtime_attachment_rows:
+            catalog = "、".join(
+                f"{item.id}（{item.name}）"
+                for item in runtime_attachment_rows
+            )
+            prompt = (
+                f"{prompt}\n\n本轮可引用的会话图片附件：{catalog}。"
+                "如果用户要求基于、参考或仿照某张历史图片，必须在 "
+                "媒体动作标记的 reference_attachment_ids 中填写对应 ID。"
+            )
         retrieved_memories = (
             await retrieve_project_memories(
                 session,
@@ -2105,6 +2504,12 @@ async def agent_chat_runtime_request(
                 f"{agent.system_prompt}\n\n"
                 f"{personal_agent_system_instructions(personal_skills, mode=mode)}"
                 f"{personal_skill_instructions}"
+                + (
+                    "\n\n平台当前可调用的媒体模型目录（只能填写这里列出的 ID 或名称）：\n"
+                    f"{personal_media_model_catalog(personal_media_models)}"
+                    if mode == "chat"
+                    else ""
+                )
             )
             runtime_project_id = personal_agent_scope_id(user.id)
         else:
@@ -2133,6 +2538,7 @@ async def agent_chat_runtime_request(
                 "base_url": provider.base_url,
                 "api_key": api_key,
                 "extra_headers": provider.extra_headers or {},
+                "api_mode": str(capabilities.get("agent_api_mode") or "chat_completions"),
                 "reasoning_effort": config.get("reasoning_effort"),
                 "max_tokens": config.get("max_tokens"),
             },
@@ -2303,6 +2709,7 @@ async def memory_maintenance_runtime_request(
                 "base_url": provider.base_url,
                 "api_key": api_key,
                 "extra_headers": provider.extra_headers or {},
+                "api_mode": str(capabilities.get("agent_api_mode") or "chat_completions"),
                 "reasoning_effort": config.get("reasoning_effort"),
                 "max_tokens": min(int(configured_max), 4_000) if configured_max else 4_000,
             },
@@ -2465,12 +2872,15 @@ async def ensure_memory_maintenance_task(
     )
     if existing is not None:
         return existing, False
+    text_model_id = str(source_task.request_payload.get("text_model_id") or "").strip()
+    if not text_model_id:
+        text_model_id = str(source_task.model_id or "").strip()
     memory_task = AITask(
         tenant_id=source_task.tenant_id,
         user_id=source_task.user_id,
         project_id=source_task.project_id,
         task_type="agent_memory_maintenance",
-        model_id=source_task.model_id,
+        model_id=text_model_id or None,
         idempotency_key=idempotency_key,
         cost=Decimal("0"),
         request_payload={
@@ -2676,6 +3086,26 @@ async def generate_personal_agent_media(
         resolution = str(options.get("resolution") or "1K")
         aspect_ratio = str(options.get("aspect_ratio") or "1:1")
         await record_progress(task_id, 62, "最终提示词已就绪，正在调用图片模型")
+        reference_image_url: str | None = None
+        generation_mode = "text_to_image"
+        if str(task_snapshot.request_payload.get("media_generation_mode") or "") == "image_to_image":
+            reference_ids = [
+                str(item)
+                for item in task_snapshot.request_payload.get("attachment_ids") or []
+                if str(item)
+            ]
+            if reference_ids:
+                reference = ordered_attachments[0] if ordered_attachments else None
+                if reference is not None:
+                    data = await object_storage().get_bytes(reference.storage_path)
+                    content_type = reference.mime_type or media_content_type_from_key_or_bytes(
+                        reference.storage_path,
+                        data,
+                    )
+                    reference_image_url = (
+                        f"data:{content_type};base64,{base64.b64encode(data).decode('ascii')}"
+                    )
+                    generation_mode = "image_to_image"
         image_data = await gateway.generate_image(
             ImageGenerationRequest(
                 model=model_identifier,
@@ -2684,6 +3114,8 @@ async def generate_personal_agent_media(
                 aspect_ratio=aspect_ratio,
                 capabilities=capabilities,
                 idempotency_key=task_snapshot.idempotency_key or task_snapshot.id,
+                reference_image_url=reference_image_url,
+                generation_mode=generation_mode,
             )
         )
         await record_progress(task_id, 88, "图片已生成，正在写入个人会话")
@@ -2697,7 +3129,6 @@ async def generate_personal_agent_media(
         mime_type = "image/webp"
         media_name = f"AI图片-{task_snapshot.id[:8]}.webp"
         duration_seconds: float | None = None
-        generation_mode: str | None = None
         provider_job_id: str | None = None
     else:
         requested_duration = float(options.get("duration_seconds") or 5)
@@ -2714,20 +3145,24 @@ async def generate_personal_agent_media(
         ):
             aspect_ratio = str(supported_aspects[0])
         resolution = str(options.get("resolution") or "720p")
+        requested_generation_mode = str(
+            task_snapshot.request_payload.get("media_generation_mode") or ""
+        )
         reference_media: list[dict[str, str]] = []
-        for index, attachment in enumerate(ordered_attachments, start=1):
-            data = await object_storage().get_bytes(attachment.storage_path)
-            encoded = base64.b64encode(data).decode("ascii")
-            reference_media.append(
-                {
-                    "type": "image",
-                    "url": attachment.media_url,
-                    "data_uri": f"data:{attachment.mime_type};base64,{encoded}",
-                    "base64": encoded,
-                    "token": f"<Picture {index}>",
-                    "role": "first_frame" if index == 1 else "reference",
-                }
-            )
+        if requested_generation_mode != "text_to_video":
+            for index, attachment in enumerate(ordered_attachments, start=1):
+                data = await object_storage().get_bytes(attachment.storage_path)
+                encoded = base64.b64encode(data).decode("ascii")
+                reference_media.append(
+                    {
+                        "type": "image",
+                        "url": attachment.media_url,
+                        "data_uri": f"data:{attachment.mime_type};base64,{encoded}",
+                        "base64": encoded,
+                        "token": f"<Picture {index}>",
+                        "role": "first_frame" if index == 1 else "reference",
+                    }
+                )
         reference_limits = capabilities.get("reference_limits")
         image_limit = reference_limits.get("image") if isinstance(reference_limits, dict) else None
         max_references = int(image_limit.get("max_count") or 0) if isinstance(image_limit, dict) else 0
@@ -2736,7 +3171,23 @@ async def generate_personal_agent_media(
         configured_modes = [
             str(item) for item in capabilities.get("generation_modes") or [] if str(item)
         ]
-        if reference_media and len(reference_media) > 1 and "multi_shot" in configured_modes:
+        if requested_generation_mode == "image_to_video" and not reference_media:
+            raise RuntimeError("图生视频需要至少一张参考图片")
+        if requested_generation_mode == "text_to_video":
+            generation_mode = "text_to_video"
+            reference_media = []
+        elif requested_generation_mode == "image_to_video":
+            if len(reference_media) > 1 and "multi_shot" in configured_modes:
+                generation_mode = "multi_shot"
+            elif "first_frame" in configured_modes:
+                generation_mode = "first_frame"
+            elif "full_reference" in configured_modes:
+                generation_mode = "full_reference"
+            elif not configured_modes:
+                generation_mode = "first_frame"
+            else:
+                raise RuntimeError("当前视频模型不支持图生视频参考模式")
+        elif reference_media and len(reference_media) > 1 and "multi_shot" in configured_modes:
             generation_mode = "multi_shot"
         elif reference_media and "first_frame" in configured_modes:
             generation_mode = "first_frame"
@@ -2926,6 +3377,9 @@ async def execute_agent_chat_task(
         task=task,
         session_id=str(task.request_payload.get("agent_chat_session_id") or ""),
         publish_text=mode not in {"image", "video"},
+        hide_media_actions=(
+            mode == "chat" and task.request_payload.get("scope") == "personal"
+        ),
     )
     run_stream = getattr(runtime, "run_stream", None)
     try:
@@ -2934,18 +3388,212 @@ async def execute_agent_chat_task(
         else:
             result = await runtime.run(request)
     finally:
-        await relay.flush()
+        await relay.finish()
         await relay.persist_snapshot(force=True)
     assistant_response = result.final_response
     generated_media: dict[str, object] | None = None
+    media_prompt: PersonalMediaPromptPayload | None = None
+    if mode == "chat" and task.request_payload.get("scope") == "personal":
+        envelope = media_action_from_response(result.final_response)
+        current_prompt = request.prompt.split(
+            "\n\n本轮可引用的会话图片附件：",
+            1,
+        )[0].strip()
+        if envelope is None:
+            async with SessionLocal() as session:
+                available_models = list(
+                    (
+                        await session.scalars(
+                            select(AIModel)
+                            .join(Provider, Provider.id == AIModel.provider_id)
+                            .where(
+                                AIModel.tenant_id == task.tenant_id,
+                                AIModel.model_type.in_([ModelType.IMAGE, ModelType.VIDEO]),
+                                AIModel.enabled.is_(True),
+                                Provider.tenant_id == task.tenant_id,
+                                Provider.enabled.is_(True),
+                            )
+                        )
+                    ).all()
+                )
+            fallback_action = infer_explicit_media_action(
+                current_prompt,
+                available_attachments=request.attachments,
+                available_models=available_models,
+            )
+            if fallback_action is not None:
+                contextual_interpretation = result.final_response.strip()
+                if re.search(r"(?:不能|无法|不支持|没有).{0,12}(?:生成|制作)", contextual_interpretation):
+                    contextual_interpretation = ""
+                fallback_action.prompt = f"用户的生成要求：{current_prompt}"
+                if contextual_interpretation:
+                    fallback_action.prompt += (
+                        "\n\n结合会话上下文形成的创作理解："
+                        f"{contextual_interpretation[:4000]}"
+                    )
+                envelope = PersonalChatResponsePayload(
+                    message=(
+                        "我已根据当前对话和你的参数开始生成图片。"
+                        if fallback_action.type == "image"
+                        else "我已根据当前对话和你的参数开始生成视频。"
+                    ),
+                    media=fallback_action,
+                )
+        if envelope is not None:
+            assistant_response = envelope.message.strip() or "我已理解你的要求。"
+            if envelope.media is not None:
+                action = validate_personal_media_action(envelope.media)
+                reference_ids = list(action.reference_attachment_ids)
+                if action.generation_mode.startswith("image_to_") and not reference_ids:
+                    reference_ids = [
+                        str(item)
+                        for item in task.request_payload.get("attachment_ids") or []
+                        if str(item)
+                    ]
+                if action.generation_mode.startswith("image_to_") and not reference_ids:
+                    reference_ids = [
+                        item.id
+                        for item in request.attachments
+                        if item.mime_type.startswith("image/")
+                    ]
+                if action.generation_mode.startswith("image_to_") and not reference_ids:
+                    raise RuntimeError("请先上传一张参考图片，再使用参考生成")
+                media_type = ModelType.IMAGE if action.type == "image" else ModelType.VIDEO
+                requested_resolution = action.resolution
+                if media_type == ModelType.IMAGE and requested_resolution:
+                    requested_resolution = normalize_image_resolution(requested_resolution)
+                    if requested_resolution is None:
+                        raise RuntimeError("图片分辨率仅支持 1K、2K 或 4K")
+                async with SessionLocal() as session:
+                    media_task = await owned_task_for_update(session, task_id)
+                    if not owns_running_task(media_task):
+                        return
+                    media_model, _provider = await resolve_personal_media_model(
+                        session,
+                        task=media_task,
+                        media_type=media_type,
+                        requested_model=action.model_id,
+                        resolution=requested_resolution,
+                    )
+                    if reference_ids:
+                        reference_rows = list(
+                            (
+                                await session.scalars(
+                                    select(PersonalAgentAttachment).where(
+                                        PersonalAgentAttachment.id.in_(reference_ids),
+                                        PersonalAgentAttachment.tenant_id == media_task.tenant_id,
+                                        PersonalAgentAttachment.user_id == media_task.user_id,
+                                        PersonalAgentAttachment.session_id
+                                        == str(
+                                            media_task.request_payload.get(
+                                                "agent_chat_session_id"
+                                            )
+                                            or ""
+                                        ),
+                                        PersonalAgentAttachment.mime_type.like("image/%"),
+                                    )
+                                )
+                            ).all()
+                        )
+                        valid_reference_ids = {item.id for item in reference_rows}
+                        if any(item not in valid_reference_ids for item in reference_ids):
+                            raise RuntimeError("本轮引用的历史图片已失效，请重新上传")
+                    capabilities = dict(media_model.capabilities or {})
+                    if media_type == ModelType.IMAGE:
+                        default_resolution, default_aspect = default_image_options(capabilities)
+                        resolved_resolution = requested_resolution or default_resolution
+                        resolved_aspect = action.aspect_ratio or default_aspect
+                        resolved_duration = None
+                    else:
+                        default_resolution, default_aspect, default_duration = default_video_options(
+                            capabilities
+                        )
+                        resolved_resolution = requested_resolution or default_resolution
+                        resolved_aspect = action.aspect_ratio or default_aspect
+                        resolved_duration = action.duration_seconds or default_duration
+                    pricing = await resolve_task_pricing(
+                        session,
+                        tenant_id=media_task.tenant_id,
+                        task_type=(
+                            "asset_image_generation"
+                            if media_type == ModelType.IMAGE
+                            else "shot_video_generation"
+                        ),
+                    )
+                    await debit_additional_task_cost(
+                        session,
+                        media_task,
+                        pricing.total_cost,
+                        reason=(
+                            "普通对话自动图片生成"
+                            if media_type == ModelType.IMAGE
+                            else "普通对话自动视频生成"
+                        ),
+                    )
+                    payload = dict(media_task.request_payload)
+                    payload.update(
+                        {
+                            "original_mode": "chat",
+                            "mode": action.type,
+                            "media_model_id": media_model.id,
+                            "media_generation_mode": action.generation_mode,
+                            "media_options": {
+                                key: value
+                                for key, value in {
+                                    "resolution": resolved_resolution,
+                                    "aspect_ratio": resolved_aspect,
+                                    "duration_seconds": resolved_duration,
+                                }.items()
+                                if value is not None
+                            },
+                            "attachment_ids": reference_ids,
+                        }
+                    )
+                    media_task.request_payload = payload
+                    media_task.model_id = media_model.id
+                    media_task.result_payload = {
+                        **(media_task.result_payload or {}),
+                        "media_intent": {
+                            "type": action.type,
+                            "generation_mode": action.generation_mode,
+                            "model_id": media_model.id,
+                            "reference_attachment_ids": reference_ids,
+                        },
+                    }
+                    await session.commit()
+                task.request_payload = payload
+                task.model_id = media_model.id
+                mode = action.type
+                media_prompt = PersonalMediaPromptPayload(
+                    message=assistant_response,
+                    prompt=action.prompt,
+                )
     if mode in {"image", "video"}:
         await record_progress(task_id, 52, "Agent 已理解需求，正在整理最终媒体提示词")
-        media_prompt = PersonalMediaPromptPayload.model_validate(
-            parse_json_object(result.final_response)
-        )
-        assistant_response = media_prompt.message.strip() or (
-            "图片已按你的要求生成。" if mode == "image" else "视频已按你的要求生成。"
-        )
+        if media_prompt is None:
+            try:
+                media_prompt = PersonalMediaPromptPayload.model_validate(
+                    parse_json_object(result.final_response)
+                )
+            except (RuntimeError, ValidationError):
+                # Agent tool use can complete without a final text response. The user's
+                # current message remains a valid direct-generation instruction.
+                fallback_prompt = request.prompt.strip()
+                if not fallback_prompt:
+                    raise RuntimeError("未能获取本轮媒体生成描述，请重新输入后再试") from None
+                media_prompt = PersonalMediaPromptPayload(
+                    message="",
+                    prompt=fallback_prompt,
+                )
+                assistant_response = (
+                    "未收到可用的 AI 提示词，已按你的原始描述继续生成图片。"
+                    if mode == "image"
+                    else "未收到可用的 AI 提示词，已按你的原始描述继续生成视频。"
+                )
+            else:
+                assistant_response = media_prompt.message.strip() or (
+                    "图片已按你的要求生成。" if mode == "image" else "视频已按你的要求生成。"
+                )
         generated_media = await generate_personal_agent_media(
             task_id,
             prompt=media_prompt.prompt,
@@ -3097,6 +3745,10 @@ async def execute_agent_chat_task(
                     "scope": "personal",
                     "scene": "workspace",
                     "mode": mode,
+                    "requested_mode": str(
+                        task.request_payload.get("original_mode") or mode
+                    ),
+                    "media_intent": (task.result_payload or {}).get("media_intent"),
                     "selected_skill_ids": list(
                         task.request_payload.get("selected_skill_ids") or []
                     ),
@@ -3188,9 +3840,9 @@ async def execute_agent_chat_task(
             status=TaskStatus.SUCCEEDED,
             progress=100,
             message=(
-                "个人图片已生成并同步到会话"
+                "对话中的图片已生成并同步到会话"
                 if mode == "image"
-                else "个人视频已生成并同步到会话"
+                else "对话中的视频已生成并同步到会话"
                 if mode == "video"
                 else "Agent 回复已完成并同步到创作会话"
             ),

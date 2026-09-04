@@ -93,6 +93,7 @@ const saving = ref(false)
 const testingProviderId = ref<string | null>(null)
 const testingModelId = ref<string | null>(null)
 const installingAutoDlPreset = ref(false)
+const installingAgnesPreset = ref(false)
 const settingDefaultType = ref<ModelType | null>(null)
 const settingImageResolution = ref<ImageResolution | null>(null)
 const dialog = ref<DialogKind>(null)
@@ -230,7 +231,8 @@ const modelForm = reactive({
   model_id: '',
   name: '',
   model_type: 'text' as ModelType,
-  capabilities: defaultVideoCapabilities(),
+  capabilities: {} as ReturnType<typeof defaultVideoCapabilities>,
+  agent_api_mode: 'chat_completions' as 'chat_completions' | 'responses',
   enabled: true,
   is_default: false,
 })
@@ -320,6 +322,7 @@ const activeProvider = computed(() => (
 ))
 const activeProviderModels = computed(() => models.value.filter((item) => item.provider_id === activeProvider.value?.id))
 const autoDlPresetInstalled = computed(() => providers.value.some((item) => item.code === 'autodl-minimax-h3'))
+const agnesPresetInstalled = computed(() => providers.value.some((item) => item.code === 'agnes-ai'))
 const activeProviderCredentialCount = computed(() => activeProvider.value?.configured_credentials.length ?? 0)
 const activeProviderHasAdapter = computed(() => Object.keys(activeProvider.value?.adapter_config ?? {}).length > 0)
 const videoCapabilitySummaries = computed<Record<string, string[]>>(() => Object.fromEntries(
@@ -718,7 +721,10 @@ function openModel(model?: AIModel, providerId?: string, modelType?: ModelType):
     model_id: model?.model_id ?? '',
     name: model?.name ?? '',
     model_type: model?.model_type ?? modelType ?? 'text',
-    capabilities: normalizedVideoCapabilities(model?.capabilities ?? {}),
+    capabilities: model?.model_type === 'video'
+      ? normalizedVideoCapabilities(model?.capabilities ?? {})
+      : cloneJsonRecord(model?.capabilities ?? {}),
+    agent_api_mode: model?.capabilities?.agent_api_mode === 'responses' ? 'responses' : 'chat_completions',
     enabled: model?.enabled ?? true,
     is_default: model?.is_default ?? false,
   })
@@ -808,6 +814,24 @@ async function installAutoDlPreset(): Promise<void> {
     })
   } finally {
     installingAutoDlPreset.value = false
+  }
+}
+
+async function installAgnesPreset(): Promise<void> {
+  if (installingAgnesPreset.value || agnesPresetInstalled.value) return
+  installingAgnesPreset.value = true
+  try {
+    const result = await api<{ provider: Provider }>('/admin/provider-presets/agnes-ai/install', { method: 'POST' })
+    await loadAll()
+    activeProviderId.value = result.provider.id
+    toast.show('Agnes AI 已添加', {
+      message: '已预置文本、图片和视频模型。请填写 API Key，启用平台与需要的模型后测试连接。',
+      tone: 'success',
+    })
+  } catch (error) {
+    toast.show('Agnes AI 添加失败', { message: error instanceof Error ? error.message : undefined, tone: 'error' })
+  } finally {
+    installingAgnesPreset.value = false
   }
 }
 
@@ -1008,7 +1032,9 @@ async function saveDialog(): Promise<void> {
       const payload = modelForm.id
         ? {
             name: modelForm.name,
-            ...(modelForm.model_type === 'video' ? { capabilities: modelForm.capabilities } : {}),
+            ...(modelForm.model_type === 'video'
+              ? { capabilities: modelForm.capabilities }
+              : { capabilities: { ...modelForm.capabilities, agent_api_mode: modelForm.agent_api_mode } }),
             enabled: modelForm.enabled,
             is_default: modelForm.is_default,
           }
@@ -1017,7 +1043,9 @@ async function saveDialog(): Promise<void> {
             model_id: modelForm.model_id,
             name: modelForm.name,
             model_type: modelForm.model_type,
-            ...(modelForm.model_type === 'video' ? { capabilities: modelForm.capabilities } : {}),
+            ...(modelForm.model_type === 'video'
+              ? { capabilities: modelForm.capabilities }
+              : { capabilities: { ...modelForm.capabilities, agent_api_mode: modelForm.agent_api_mode } }),
             enabled: modelForm.enabled,
             is_default: modelForm.is_default,
           }
@@ -1303,6 +1331,7 @@ async function saveSkill(): Promise<void> {
         <header class="section-heading">
           <div><h2>模型服务</h2><p>供应商接入、万能适配协议与模型能力在同一工作台维护</p></div>
           <div class="section-actions">
+            <button class="button button--secondary" type="button" :disabled="installingAgnesPreset || agnesPresetInstalled" @click="installAgnesPreset"><LoaderCircle v-if="installingAgnesPreset" class="spin" :size="17" /><Sparkles v-else :size="17" />{{ agnesPresetInstalled ? 'Agnes AI 已添加' : '添加 Agnes AI' }}</button>
             <button class="button button--secondary" type="button" :disabled="installingAutoDlPreset || autoDlPresetInstalled" @click="installAutoDlPreset"><LoaderCircle v-if="installingAutoDlPreset" class="spin" :size="17" /><Film v-else :size="17" />{{ autoDlPresetInstalled ? 'AutoDL H3 已添加' : '添加 AutoDL H3' }}</button>
             <button class="button button--secondary" type="button" @click="openProvider()"><Plus :size="17" />接入供应商</button>
             <button class="button button--primary" type="button" :disabled="!activeProvider" @click="openModel(undefined, activeProvider?.id)"><Plus :size="17" />添加模型</button>
@@ -1654,6 +1683,7 @@ async function saveSkill(): Promise<void> {
           <label class="field"><span>模型类型</span><UiSelect v-model="modelForm.model_type" :options="modelTypeOptions" :disabled="Boolean(modelForm.id)" /></label>
           <label class="field"><span>模型 ID</span><input v-model="modelForm.model_id" :disabled="Boolean(modelForm.id)" required placeholder="上游请求使用的模型标识" /></label>
           <label class="field"><span>显示名称</span><input v-model="modelForm.name" required placeholder="便于管理员与项目识别" /></label>
+          <label v-if="modelForm.model_type === 'text'" class="field"><span>Agent 接口模式</span><UiSelect v-model="modelForm.agent_api_mode" :options="[{ value: 'chat_completions', label: 'Chat Completions', description: '传统 /chat/completions 工具调用' }, { value: 'responses', label: 'Responses API', description: '请求 /responses，适合支持 Responses 的中转模型' }]" /></label>
           <VideoCapabilityEditor v-if="modelForm.model_type === 'video'" v-model="modelForm.capabilities" />
           <div class="model-publish-controls field--full">
             <button class="capability-switch" type="button" :disabled="editingRequiredDefault" :aria-pressed="modelForm.is_default" @click="modelForm.is_default = !modelForm.is_default"><span><i></i></span><div><strong>默认模型</strong><small>项目未指定模型时自动使用</small></div></button>

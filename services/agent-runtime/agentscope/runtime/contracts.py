@@ -20,6 +20,7 @@ class ModelBinding(ContractModel):
     base_url: HttpUrl | None = None
     api_key: SecretStr
     extra_headers: dict[str, str] = Field(default_factory=dict, max_length=50)
+    api_mode: Literal["chat_completions", "responses"] = "chat_completions"
     reasoning_effort: str | None = Field(default=None, max_length=40)
     max_tokens: int | None = Field(default=None, ge=1, le=200_000)
 

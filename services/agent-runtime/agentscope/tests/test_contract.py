@@ -9,6 +9,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from runtime import AGENTSCOPE_VERSION, CONTRACT_VERSION, RUNTIME_VERSION
+from runtime.adapter import AgentScopeAdapter
 from runtime.config import get_settings
 from runtime.context import (
     collect_project_file_changes,
@@ -50,6 +51,18 @@ class FakeAdapter:
                 skill_versions=request.skill_versions,
             ),
         )
+
+
+def test_official_grok_binding_uses_native_xai_protocol() -> None:
+    assert AgentScopeAdapter._is_official_xai_binding(
+        "xai", "grok-4", "https://api.x.ai/v1"
+    )
+    assert AgentScopeAdapter._is_official_xai_binding(
+        "custom-provider", "grok-3-mini", "https://api.x.ai/v1"
+    )
+    assert not AgentScopeAdapter._is_official_xai_binding(
+        "xai", "grok-4", "https://proxy.example.test/v1"
+    )
 
 
 class FailingAdapter:

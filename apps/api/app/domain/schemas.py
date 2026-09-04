@@ -1346,6 +1346,10 @@ class AgentSkillPublic(BaseModel):
 class AgentChatOptions(BaseModel):
     agents: list[AgentOptionPublic]
     skills: list[AgentSkillPublic]
+    text_models: list[ModelPublic] = Field(default_factory=list)
+    image_models: list[ModelPublic] = Field(default_factory=list)
+    video_models: list[ModelPublic] = Field(default_factory=list)
+    tts_models: list[ModelPublic] = Field(default_factory=list)
 
 
 class AgentChatSessionCreate(BaseModel):
@@ -1383,6 +1387,8 @@ class AgentChatMessageCreate(BaseModel):
     attachment_ids: list[str] = Field(default_factory=list, max_length=4)
     chapter_id: str | None = Field(default=None, min_length=1, max_length=36)
     mode: Literal["chat", "image", "video", "skill"] = "chat"
+    text_model_id: str | None = Field(default=None, min_length=1, max_length=36)
+    media_model_id: str | None = Field(default=None, min_length=1, max_length=36)
     skill_ids: list[str] = Field(default_factory=list, max_length=12)
     media_options: AgentChatMediaOptions = Field(default_factory=AgentChatMediaOptions)
 

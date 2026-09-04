@@ -8,9 +8,8 @@ import {
   Coins,
   BrainCircuit,
   Camera,
-  BookOpenText,
-  Images,
   LayoutGrid,
+  MessageSquareText,
   Download,
   LogOut,
   ShieldCheck,
@@ -55,11 +54,10 @@ const currentSectionImage = computed(() => {
 })
 
 const navItems = computed(() => [
-  { label: '创作台', icon: LayoutGrid, to: '/workspace', active: route.path.startsWith('/workspace') || route.name === 'director' },
-  { label: '技能广场', icon: Sparkles, to: '/marketplace/skill', active: route.path === '/marketplace/skill' },
-  { label: '模板广场', icon: BookOpenText, to: '/marketplace/template', active: route.path === '/marketplace/template' },
-  { label: '素材广场', icon: Images, to: '/marketplace/material', active: route.path === '/marketplace/material' },
-  { label: '我的 Skills', icon: BrainCircuit, to: '/skills', active: route.path.startsWith('/skills') },
+  { label: 'Agent', icon: MessageSquareText, to: '/workspace', active: route.path.startsWith('/workspace') },
+  { label: '项目', icon: LayoutGrid, to: '/projects', active: route.path === '/projects' || route.name === 'director' },
+  { label: 'Skills', icon: BrainCircuit, to: '/skills', active: route.path.startsWith('/skills') },
+  { label: '广场', icon: Sparkles, to: '/marketplace/skill', active: route.path.startsWith('/marketplace') },
   ...(auth.isAdmin
     ? [{ label: '管理', icon: ShieldCheck, to: '/admin/overview', active: route.path.startsWith('/admin') }]
     : []),

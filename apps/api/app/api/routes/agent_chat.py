@@ -64,6 +64,7 @@ from app.domain.schemas import (
     AgentChatSessionPublic,
     AgentOptionPublic,
     AgentSkillPublic,
+    ModelPublic,
     TaskPublic,
 )
 from app.services.agent_memory import retrieve_project_memories
@@ -559,8 +560,11 @@ async def resolve_text_model(
     db: AsyncSession,
     agent: AgentProfile,
     tenant_id: str,
+    model_id: str | None = None,
 ) -> tuple[AIModel, Provider, str]:
-    model = await db.get(AIModel, agent.text_model_id) if agent.text_model_id else None
+    model = await db.get(AIModel, model_id) if model_id else None
+    if model is None and not model_id:
+        model = await db.get(AIModel, agent.text_model_id) if agent.text_model_id else None
     if model is None:
         model = await db.scalar(
             select(AIModel).where(
@@ -2233,25 +2237,26 @@ async def default_personal_media_model(
     tenant_id: str,
     model_type: ModelType,
     resolution: str | None = None,
+    model_id: str | None = None,
 ) -> tuple[AIModel, Provider]:
     if model_type == ModelType.IMAGE:
         normalized_resolution = normalize_image_resolution(resolution or "1K")
         if normalized_resolution is None:
             raise HTTPException(status_code=422, detail="图片分辨率仅支持 1K、2K 或 4K")
-        model = await resolve_image_model(
-            db,
-            tenant_id=tenant_id,
-            resolution=normalized_resolution,
-        )
+        model = await db.get(AIModel, model_id) if model_id else None
+        if model is None:
+            model = await resolve_image_model(db, tenant_id=tenant_id, resolution=normalized_resolution)
     else:
-        model = await db.scalar(
+        model = await db.get(AIModel, model_id) if model_id else None
+        if model is None:
+            model = await db.scalar(
             select(AIModel).where(
                 AIModel.tenant_id == tenant_id,
                 AIModel.model_type == model_type,
                 AIModel.is_default.is_(True),
                 AIModel.enabled.is_(True),
             )
-        )
+            )
     if model is None:
         label = "图片" if model_type == ModelType.IMAGE else "视频"
         configuration = (
@@ -2266,6 +2271,8 @@ async def default_personal_media_model(
                 f"全局默认模型完成配置"
             ),
         )
+    if model.tenant_id != tenant_id or model.model_type != model_type or not model.enabled:
+        raise HTTPException(status_code=422, detail="所选模型不可用或与当前功能类型不匹配")
     provider = await db.get(Provider, model.provider_id)
     if provider is None or provider.tenant_id != tenant_id or not provider.enabled:
         label = "图片" if model_type == ModelType.IMAGE else "视频"
@@ -2284,7 +2291,31 @@ async def personal_chat_options(
     db: AsyncSession = Depends(get_session),
 ) -> AgentChatOptions:
     agent = await resolve_scene_agent(db, tenant_id=user.tenant_id, scene="workspace")
-    return AgentChatOptions(agents=[AgentOptionPublic.model_validate(agent)], skills=[])
+    models = list(
+        (
+            await db.scalars(
+                select(AIModel)
+                .where(AIModel.tenant_id == user.tenant_id, AIModel.enabled.is_(True))
+                .order_by(AIModel.model_type, AIModel.is_default.desc(), AIModel.name)
+            )
+        ).all()
+    )
+    return AgentChatOptions(
+        agents=[AgentOptionPublic.model_validate(agent)],
+        skills=[],
+        text_models=[
+            ModelPublic.model_validate(item) for item in models if item.model_type == ModelType.TEXT
+        ],
+        image_models=[
+            ModelPublic.model_validate(item) for item in models if item.model_type == ModelType.IMAGE
+        ],
+        video_models=[
+            ModelPublic.model_validate(item) for item in models if item.model_type == ModelType.VIDEO
+        ],
+        tts_models=[
+            ModelPublic.model_validate(item) for item in models if item.model_type == ModelType.TTS
+        ],
+    )
 
 
 @personal_router.post(
@@ -2543,7 +2574,9 @@ async def send_personal_message(
         attachment.session_id = chat_session.id
         attachment.message_id = user_message.id
 
-    text_model, _text_provider, _api_key = await resolve_text_model(db, agent, user.tenant_id)
+    text_model, _text_provider, _api_key = await resolve_text_model(
+        db, agent, user.tenant_id, payload.text_model_id
+    )
     media_model: AIModel | None = None
     bill_task_type = "agent_chat_run"
     queue_message = "个人 Agent 回复"
@@ -2553,6 +2586,7 @@ async def send_personal_message(
             tenant_id=user.tenant_id,
             model_type=ModelType.IMAGE,
             resolution=payload.media_options.resolution or "1K",
+            model_id=payload.media_model_id,
         )
         bill_task_type = "asset_image_generation"
         queue_message = "个人图片生成"
@@ -2561,6 +2595,7 @@ async def send_personal_message(
             db,
             tenant_id=user.tenant_id,
             model_type=ModelType.VIDEO,
+            model_id=payload.media_model_id,
         )
         bill_task_type = "shot_video_generation"
         queue_message = "个人视频生成"

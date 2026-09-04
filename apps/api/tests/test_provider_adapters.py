@@ -13,8 +13,12 @@ from app.services.media_gateway import (
     VideoGenerationRequest,
 )
 from app.services.provider_adapters import (
+    AGNES_VIDEO_MODEL_ID,
     AUTODL_MINIMAX_H3_MODEL_ID,
     VideoModelCapabilities,
+    agnes_image_capabilities,
+    agnes_video_adapter_config,
+    agnes_video_capabilities,
     autodl_minimax_h3_adapter_config,
     autodl_minimax_h3_capabilities,
     closest_supported_video_duration,
@@ -97,6 +101,33 @@ class FakeRetryImageClient:
         return FakeResponse(
             {"data": [{"b64_json": base64.b64encode(b"valid-image-bytes").decode()}]}
         )
+
+
+class FakeAgnesImageUrlClient:
+    def __init__(self, **_kwargs) -> None:
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args) -> None:
+        return None
+
+    async def post(self, _url: str, **_kwargs) -> FakeResponse:
+        return FakeResponse(
+            {
+                "data": [
+                    {
+                        "url": "https://cdn.example.test/generated.png",
+                        "b64_json": "",
+                    }
+                ]
+            }
+        )
+
+    async def get(self, url: str, **_kwargs) -> FakeResponse:
+        assert url == "https://cdn.example.test/generated.png"
+        return FakeResponse(content=b"valid-image-bytes", content_type="application/octet-stream")
 
 
 def adapter_config() -> dict:
@@ -249,6 +280,119 @@ def test_declarative_video_adapter_creates_polls_and_extracts_result(monkeypatch
     assert completed.content_type == "video/mp4"
 
 
+class FakeAgnesClient:
+    requests: list[tuple[str, str, dict | None, dict | None]] = []
+
+    def __init__(self, **_kwargs) -> None:
+        self.is_closed = False
+
+    async def request(self, method: str, url: str, **kwargs) -> FakeResponse:
+        self.requests.append((method, url, kwargs.get("json"), kwargs.get("params")))
+        if url.endswith("/agnesapi"):
+            return FakeResponse(
+                {
+                    "id": "agnes-video-1",
+                    "status": "completed",
+                    "url": "https://cdn.example.test/agnes.mp4",
+                }
+            )
+        return FakeResponse({"video_id": "agnes-video-1", "status": "processing"})
+
+    async def get(self, url: str, **_kwargs) -> FakeResponse:
+        assert url == "https://cdn.example.test/agnes.mp4"
+        return FakeResponse(content=b"agnes-video", content_type="video/mp4")
+
+    async def aclose(self) -> None:
+        self.is_closed = True
+
+
+def test_agnes_preset_contract_supports_multimodal_video_references(monkeypatch) -> None:
+    async def allow_test_urls(_url: str, *, media_name: str = "图片") -> None:
+        assert media_name
+
+    FakeAgnesClient.requests.clear()
+    monkeypatch.setattr(media_gateway, "_validate_download_url", allow_test_urls)
+    monkeypatch.setattr(media_gateway.httpx, "AsyncClient", FakeAgnesClient)
+    gateway = OpenAICompatibleMediaGateway(
+        base_url="https://apihub.agnes-ai.com/v1",
+        api_key="agnes-secret",
+        extra_headers={},
+        adapter_config=agnes_video_adapter_config(),
+    )
+    request = VideoGenerationRequest(
+        model=AGNES_VIDEO_MODEL_ID,
+        prompt="雨夜街道，镜头缓慢推进",
+        resolution="720p",
+        aspect_ratio="16:9",
+        duration_seconds=6,
+        reference_image_url=None,
+        reference_media=[
+            {"type": "image", "url": "https://assets.example.test/frame.png"},
+            {"type": "audio", "url": "https://assets.example.test/voice.mp3"},
+        ],
+        capabilities=agnes_video_capabilities(),
+        idempotency_key="agnes-video-task-1",
+        generation_mode="first_frame",
+        audio_enabled=True,
+    )
+
+    submitted = asyncio.run(gateway.submit_video(request))
+    assert submitted.status == "pending"
+    assert submitted.provider_job_id == "agnes-video-1"
+    create = FakeAgnesClient.requests[0]
+    assert create[0:2] == ("POST", "https://apihub.agnes-ai.com/v1/videos")
+    assert create[2] == {
+        "model": AGNES_VIDEO_MODEL_ID,
+        "prompt": "雨夜街道，镜头缓慢推进",
+        "seconds": "6",
+        "mode": "reference",
+        "size": "720P",
+        "aspect_ratio": "16:9",
+        "n": 1,
+        "images": ["https://assets.example.test/frame.png"],
+        "audios": ["https://assets.example.test/voice.mp3"],
+    }
+
+    completed = asyncio.run(gateway.poll_video(request, submitted.provider_job_id))
+    assert completed.status == "succeeded"
+    assert completed.video_data == b"agnes-video"
+    assert completed.content_type == "video/mp4"
+    poll = FakeAgnesClient.requests[1]
+    assert poll[0:2] == ("GET", "https://apihub.agnes-ai.com/v1/../agnesapi")
+    assert poll[3] == {"video_id": "agnes-video-1", "model_name": AGNES_VIDEO_MODEL_ID}
+
+
+def test_agnes_image_capabilities_use_nested_response_format() -> None:
+    capabilities = agnes_image_capabilities()
+    assert capabilities["endpoint"] == "images/generations"
+    assert capabilities["size_map"]["4K"] == "4K"
+    assert capabilities["request_overrides"] == {"extra_body": {"response_format": "url"}}
+    assert capabilities["nested_response_format"] is True
+    assert capabilities["aspect_ratio_parameter"] == "ratio"
+
+
+def test_agnes_flash_video_capabilities_only_advertise_supported_720p() -> None:
+    capabilities = agnes_video_capabilities()
+
+    assert capabilities["duration_resolution_map"] == [
+        {"durations": [4, 5, 6, 7, 8, 9, 10, 11, 12], "resolutions": ["720p"]}
+    ]
+    assert capabilities["provider_resolution_map"] == {"720p": "720P"}
+
+
+def test_agnes_video_references_use_embedded_media_data() -> None:
+    references = agnes_video_adapter_config()["video"]["references"]
+
+    assert {item["media_type"]: item["source"] for item in references} == {
+        "image": "data_uri",
+        "audio": "data_uri",
+    }
+
+
+def test_agnes_video_poll_interval_is_rate_limit_safe() -> None:
+    assert agnes_video_adapter_config()["video"]["poll_interval_seconds"] >= 10
+
+
 def test_image_generation_retries_transient_gateway_status(monkeypatch) -> None:
     async def no_sleep(_delay: float) -> None:
         return None
@@ -277,6 +421,32 @@ def test_image_generation_retries_transient_gateway_status(monkeypatch) -> None:
     assert result == b"valid-image-bytes"
     assert FakeRetryImageClient.attempts == 2
     assert FakeRetryImageClient.idempotency_keys == ["image-task-1", "image-task-1"]
+
+
+def test_image_generation_falls_back_to_url_when_b64_json_is_empty(monkeypatch) -> None:
+    async def allow_test_urls(_url: str, *, media_name: str = "图片") -> None:
+        assert media_name == "图片"
+
+    monkeypatch.setattr(media_gateway.httpx, "AsyncClient", FakeAgnesImageUrlClient)
+    monkeypatch.setattr(media_gateway, "_validate_download_url", allow_test_urls)
+    gateway = OpenAICompatibleMediaGateway(
+        base_url="https://apihub.agnes-ai.com/v1",
+        api_key="secret",
+        extra_headers={},
+    )
+    result = asyncio.run(
+        gateway.generate_image(
+            ImageGenerationRequest(
+                model="agnes-image-2.1-flash",
+                prompt="red cup",
+                resolution="2K",
+                aspect_ratio="16:9",
+                capabilities=agnes_image_capabilities(),
+                idempotency_key="agnes-image-task-1",
+            )
+        )
+    )
+    assert result == b"valid-image-bytes"
 
 
 def test_autodl_minimax_h3_preset_renders_indexed_data_uri_references(monkeypatch) -> None:

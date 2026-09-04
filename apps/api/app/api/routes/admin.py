@@ -108,9 +108,17 @@ from app.services.object_storage import (
     persist_media_file,
 )
 from app.services.provider_adapters import (
+    AGNES_IMAGE_21_MODEL_ID,
+    AGNES_IMAGE_MODEL_ID,
+    AGNES_PROVIDER_CODE,
+    AGNES_TEXT_MODEL_ID,
+    AGNES_VIDEO_MODEL_ID,
     AUTODL_MINIMAX_H3_MODEL_ID,
     AUTODL_MINIMAX_H3_PROVIDER_CODE,
     ProviderAdapterConfig,
+    agnes_image_capabilities,
+    agnes_video_adapter_config,
+    agnes_video_capabilities,
     autodl_minimax_h3_adapter_config,
     autodl_minimax_h3_capabilities,
     normalize_video_capabilities,
@@ -997,6 +1005,75 @@ async def install_autodl_minimax_h3_preset(
     return {
         "provider": provider_public(provider),
         "model": ModelPublic.model_validate(model),
+    }
+
+
+@router.post("/provider-presets/agnes-ai/install", status_code=status.HTTP_200_OK)
+async def install_agnes_ai_preset(
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, object]:
+    """Install Agnes' OpenAI-compatible text/image API and custom async video API."""
+    provider = await session.scalar(
+        select(Provider).where(
+            Provider.tenant_id == admin.tenant_id,
+            Provider.code == AGNES_PROVIDER_CODE,
+        )
+    )
+    if provider is None:
+        provider = Provider(
+            tenant_id=admin.tenant_id,
+            code=AGNES_PROVIDER_CODE,
+            name="Agnes AI",
+            provider_type=ProviderType.OPENAI_COMPATIBLE,
+            base_url="https://apihub.agnes-ai.com/v1",
+            extra_headers={},
+            adapter_config=agnes_video_adapter_config(),
+            max_concurrency=2,
+            enabled=False,
+        )
+        session.add(provider)
+        await session.flush()
+    else:
+        provider.base_url = provider.base_url or "https://apihub.agnes-ai.com/v1"
+        provider.adapter_config = agnes_video_adapter_config()
+
+    definitions = [
+        (AGNES_TEXT_MODEL_ID, "Agnes 2.5 Flash", ModelType.TEXT, {}),
+        (AGNES_IMAGE_21_MODEL_ID, "Agnes Image 2.1 Flash", ModelType.IMAGE, agnes_image_capabilities()),
+        (AGNES_IMAGE_MODEL_ID, "Agnes Image 2.5 Flash", ModelType.IMAGE, agnes_image_capabilities()),
+        (AGNES_VIDEO_MODEL_ID, "Agnes Video 2.5 Flash", ModelType.VIDEO, agnes_video_capabilities()),
+    ]
+    installed: list[AIModel] = []
+    for model_id, name, model_type, capabilities in definitions:
+        model = await session.scalar(
+            select(AIModel).where(
+                AIModel.provider_id == provider.id,
+                AIModel.model_id == model_id,
+            )
+        )
+        if model is None:
+            model = AIModel(
+                tenant_id=admin.tenant_id,
+                provider_id=provider.id,
+                model_id=model_id,
+                name=name,
+                model_type=model_type,
+                capabilities=capabilities,
+                enabled=False,
+                is_default=False,
+            )
+            session.add(model)
+        elif model_type == ModelType.VIDEO:
+            model.capabilities = capabilities
+        installed.append(model)
+    await session.commit()
+    await session.refresh(provider)
+    for model in installed:
+        await session.refresh(model)
+    return {
+        "provider": provider_public(provider),
+        "models": [ModelPublic.model_validate(model) for model in installed],
     }
 
 

@@ -7,6 +7,7 @@ from contextlib import suppress
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any, Protocol
+from urllib.parse import urlparse
 
 from runtime.config import Settings
 from runtime.context import (
@@ -61,7 +62,7 @@ class AgentScopeAdapter:
         from agentscope.agent import Agent, ReActConfig
         from agentscope.credential import OpenAICredential
         from agentscope.message import Base64Source, DataBlock, Msg, TextBlock, UserMsg
-        from agentscope.model import OpenAIChatModel
+        from agentscope.model import OpenAIChatModel, OpenAIResponseModel
         from agentscope.permission import PermissionContext, PermissionMode
         from agentscope.state import AgentState
         from agentscope.tool import Edit, Glob, Grep, Read, Toolkit, Write
@@ -93,21 +94,57 @@ class AgentScopeAdapter:
             parameters["reasoning_effort"] = binding.reasoning_effort
             parameters["thinking_enable"] = binding.reasoning_effort != "none"
 
-        credential = OpenAICredential(
-            api_key=binding.api_key.get_secret_value(),
-            base_url=str(binding.base_url).rstrip("/") if binding.base_url else None,
-        )
-        model = OpenAIChatModel(
-            credential=credential,
-            model=binding.model,
-            parameters=OpenAIChatModel.Parameters(**parameters),
-            stream=True,
-            context_size=self.settings.model_context_size,
-            client_kwargs={
-                "timeout": self.settings.request_timeout_seconds,
-                "default_headers": binding.extra_headers or None,
-            },
-        )
+        if self._is_official_xai_binding(binding.provider, binding.model, binding.base_url):
+            from agentscope.credential import XAICredential
+            from agentscope.model import XAIChatModel
+
+            host = urlparse(str(binding.base_url)).hostname or "api.x.ai"
+            xai_parameters = {
+                key: value
+                for key, value in parameters.items()
+                if key in {"max_tokens", "reasoning_effort", "thinking_enable"}
+            }
+            model = XAIChatModel(
+                credential=XAICredential(
+                    api_key=binding.api_key.get_secret_value(),
+                    api_host=host,
+                ),
+                model=binding.model,
+                parameters=XAIChatModel.Parameters(**xai_parameters),
+                stream=True,
+                context_size=self.settings.model_context_size,
+            )
+        elif binding.api_mode == "responses":
+            model = OpenAIResponseModel(
+                credential=OpenAICredential(
+                    api_key=binding.api_key.get_secret_value(),
+                    base_url=str(binding.base_url).rstrip("/") if binding.base_url else None,
+                ),
+                model=binding.model,
+                parameters=OpenAIResponseModel.Parameters(**parameters),
+                stream=True,
+                context_size=self.settings.model_context_size,
+                client_kwargs={
+                    "timeout": self.settings.request_timeout_seconds,
+                    "default_headers": binding.extra_headers or None,
+                },
+            )
+        else:
+            credential = OpenAICredential(
+                api_key=binding.api_key.get_secret_value(),
+                base_url=str(binding.base_url).rstrip("/") if binding.base_url else None,
+            )
+            model = OpenAIChatModel(
+                credential=credential,
+                model=binding.model,
+                parameters=OpenAIChatModel.Parameters(**parameters),
+                stream=True,
+                context_size=self.settings.model_context_size,
+                client_kwargs={
+                    "timeout": self.settings.request_timeout_seconds,
+                    "default_headers": binding.extra_headers or None,
+                },
+            )
 
         events: list[dict[str, Any]] = []
         streamed_text: list[str] = []
@@ -209,6 +246,16 @@ class AgentScopeAdapter:
         from runtime.path_guard import WorkspacePathGuard
 
         return WorkspacePathGuard(context.workspace, context.writable_files, context.new_files_root)
+
+    @staticmethod
+    def _is_official_xai_binding(provider: str, model: str, base_url: Any) -> bool:
+        """Use AgentScope's native xAI protocol only for the official host."""
+        host = urlparse(str(base_url or "")).hostname or ""
+        normalized_provider = provider.strip().lower()
+        normalized_model = model.strip().lower()
+        return host in {"api.x.ai", "api.xai.com"} and (
+            normalized_provider in {"xai", "grok"} or normalized_model.startswith("grok")
+        )
 
     @staticmethod
     def _load_state(context: RunContext, state_type, permission_type, permission_mode):

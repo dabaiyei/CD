@@ -777,6 +777,10 @@ export interface AgentSkill {
 export interface AgentChatOptions {
   agents: AgentOption[]
   skills: AgentSkill[]
+  text_models: AIModel[]
+  image_models: AIModel[]
+  video_models: AIModel[]
+  tts_models: AIModel[]
 }
 
 export interface AgentChatSession {

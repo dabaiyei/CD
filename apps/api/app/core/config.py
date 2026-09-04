@@ -76,7 +76,7 @@ class Settings(BaseSettings):
     task_lease_timeout_seconds: float = 15 * 60
     task_heartbeat_seconds: float = 20.0
     agent_chat_task_timeout_seconds: float = Field(default=300.0, gt=0, le=300.0)
-    media_request_timeout_seconds: float = 180.0
+    media_request_timeout_seconds: float = 300.0
     allow_private_media_urls: bool = False
 
     @field_validator("database_url", mode="after")

@@ -35,6 +35,23 @@ def _runtime_error_message(exc: Exception) -> str:
         if status_code >= 500:
             return f"模型供应商服务异常 (HTTP {status_code})"
 
+    # The native xAI SDK uses gRPC and exposes INVALID_ARGUMENT instead of an
+    # HTTP status. Keep the provider detail useful without echoing its body.
+    grpc_code = getattr(exc, "code", None)
+    if callable(grpc_code):
+        try:
+            code_name = str(grpc_code()).rsplit(".", 1)[-1].upper()
+        except Exception:
+            code_name = ""
+        if code_name == "INVALID_ARGUMENT":
+            return "Grok 请求参数或工具调用格式不兼容，请检查模型名称与 xAI 官方地址"
+        if code_name in {"UNAUTHENTICATED", "PERMISSION_DENIED"}:
+            return "Grok API Key 无效或没有模型权限"
+        if code_name == "RESOURCE_EXHAUSTED":
+            return "Grok 额度不足或请求过于频繁"
+        if code_name in {"UNAVAILABLE", "DEADLINE_EXCEEDED"}:
+            return "Grok 服务暂时不可用或响应超时"
+
     exception_name = type(exc).__name__.lower()
     if "timeout" in exception_name:
         return "模型供应商响应超时"

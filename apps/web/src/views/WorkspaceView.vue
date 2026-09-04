@@ -1,6 +1,6 @@
 <script setup lang="ts">
-import { computed, onBeforeUnmount, onMounted, reactive, ref } from 'vue'
-import { useRouter } from 'vue-router'
+import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useRoute, useRouter } from 'vue-router'
 import { AlignLeft, Check, CircleAlert, Clapperboard, Film, Image as ImageIcon, ImagePlus, LoaderCircle, MonitorUp, Palette, Plus, Ratio, Search, Sparkles, Trash2, Type } from 'lucide-vue-next'
 import gsap from 'gsap'
 
@@ -15,6 +15,7 @@ import { useToastStore } from '@/stores/toast'
 import type { Project } from '@/types'
 
 const router = useRouter()
+const route = useRoute()
 const auth = useAuthStore()
 const projectStore = useProjectsStore()
 const toast = useToastStore()
@@ -31,6 +32,8 @@ const pendingCover = ref<File | null>(null)
 const pendingCoverPreview = ref<string | null>(null)
 const deleteTarget = ref<Project | null>(null)
 const deleting = ref(false)
+const agentOnly = computed(() => route.name === 'workspace')
+const projectsOnly = computed(() => route.name === 'projects')
 
 const emptyForm = (): Partial<ProjectPayload> & Pick<ProjectPayload, 'name'> => ({
   name: '',
@@ -111,13 +114,21 @@ function setupWorkspaceMotion(): void {
   })
 }
 
-onMounted(async () => {
-  setupWorkspaceMotion()
+async function loadProjects(): Promise<void> {
   try {
     await projectStore.load()
   } catch (error) {
     toast.show('项目加载失败', { message: error instanceof Error ? error.message : undefined, tone: 'error' })
   }
+}
+
+onMounted(async () => {
+  setupWorkspaceMotion()
+  if (projectsOnly.value) await loadProjects()
+})
+
+watch(projectsOnly, (visible, wasVisible) => {
+  if (visible && !wasVisible) void loadProjects()
 })
 
 onBeforeUnmount(() => {
@@ -265,11 +276,11 @@ async function generateCover(): Promise<void> {
 
 <template>
   <div ref="workspaceRoot" class="workspace-page page-stack">
-    <section class="workspace-agent-stage workspace-reveal workspace-reveal--agent" aria-label="AI 创作助手">
+    <section v-if="agentOnly" class="workspace-agent-stage workspace-agent-stage--home workspace-reveal workspace-reveal--agent" aria-label="AI 创作助手">
       <AgentChatPanel personal :pricing="projectStore.pricing" />
     </section>
 
-    <div class="workspace-command-grid workspace-command-grid--projects">
+    <div v-if="projectsOnly" class="workspace-command-grid workspace-command-grid--projects">
       <main class="project-library workspace-reveal workspace-reveal--toolbar">
         <header class="project-library__header">
           <div><span>PROJECT LIBRARY</span><h2>制作项目</h2></div>

@@ -116,6 +116,114 @@ class ProviderAdapterConfig(BaseModel):
 
 AUTODL_MINIMAX_H3_PROVIDER_CODE = "autodl-minimax-h3"
 AUTODL_MINIMAX_H3_MODEL_ID = "minimax_h3_lightx2v_v5_15s"
+AGNES_PROVIDER_CODE = "agnes-ai"
+AGNES_TEXT_MODEL_ID = "agnes-2.5-flash"
+AGNES_IMAGE_21_MODEL_ID = "agnes-image-2.1-flash"
+AGNES_IMAGE_MODEL_ID = "agnes-image-2.5-flash"
+AGNES_VIDEO_MODEL_ID = "agnes-video-2.5-flash"
+
+
+def agnes_video_adapter_config() -> dict[str, Any]:
+    """Return Agnes' documented asynchronous video API as a declarative adapter."""
+    return ProviderAdapterConfig.model_validate(
+        {
+            "schema_version": 1,
+            "video": {
+                "create": {
+                    "method": "POST",
+                    "path": "videos",
+                    "headers": {"Content-Type": "application/json"},
+                    "body": {
+                        "model": "{{model}}",
+                        "prompt": "{{prompt}}",
+                        "seconds": "{{duration_string}}",
+                        "mode": "{{provider_mode}}",
+                        "size": "{{provider_resolution}}",
+                        "aspect_ratio": "{{aspect_ratio}}",
+                        "n": 1,
+                    },
+                },
+                "poll": {
+                    "method": "GET",
+                    "path": "../agnesapi",
+                    "query": {
+                        "video_id": "{{job_id}}",
+                        "model_name": "{{model}}",
+                    },
+                },
+                "response": {
+                    "task_id_path": "video_id",
+                    "status_path": "status",
+                    "result_url_path": "metadata.url",
+                    "error_path": "error.message",
+                    "success_values": ["completed", "success", "succeeded", "done"],
+                    "pending_values": ["queued", "in_progress", "processing", "running"],
+                    "failed_values": ["failed", "error", "cancelled", "canceled"],
+                },
+                "references": [
+                    {
+                        "media_type": "image",
+                        "strategy": "array",
+                        "field": "images",
+                        # Agnes does not accept local /uploads paths. The worker
+                        # materializes project media as a data URI before submit.
+                        "source": "data_uri",
+                    },
+                    {
+                        "media_type": "audio",
+                        "strategy": "array",
+                        "field": "audios",
+                        "source": "data_uri",
+                    },
+                ],
+                # Agnes limits status-query frequency; a conservative interval
+                # avoids turning a healthy long-running job into HTTP 429.
+                "poll_interval_seconds": 10,
+                "poll_timeout_seconds": 1800,
+            },
+        }
+    ).model_dump(exclude_none=True)
+
+
+def agnes_video_capabilities() -> dict[str, Any]:
+    return VideoModelCapabilities.model_validate(
+        {
+            "schema_version": 1,
+            "generation_modes": ["text_to_video", "first_frame"],
+            "reference_limits": {
+                "image": {"enabled": True, "min_count": 1, "max_count": 5},
+                "video": {"enabled": False, "min_count": 0, "max_count": 0},
+                "audio": {"enabled": True, "min_count": 0, "max_count": 3},
+            },
+            "audio_policy": "optional",
+            "duration_resolution_map": [
+                {
+                    "durations": [4, 5, 6, 7, 8, 9, 10, 11, 12],
+                    # Agnes Video 2.5 Flash currently accepts 720P only.
+                    "resolutions": ["720p"],
+                }
+            ],
+            "aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
+            "prompt_languages": ["zh-CN", "en"],
+            "negative_prompt_supported": False,
+            "asynchronous": True,
+            "provider_mode_map": {"text_to_video": "text", "first_frame": "reference"},
+            "provider_resolution_map": {"720p": "720P"},
+        }
+    ).model_dump()
+
+
+def agnes_image_capabilities() -> dict[str, Any]:
+    """Return the shared Agnes Image 2.1/2.5 request contract."""
+    return {
+        "endpoint": "images/generations",
+        "size_map": {"1K": "1K", "2K": "2K", "3K": "3K", "4K": "4K"},
+        "aspect_ratio_parameter": "ratio",
+        "nested_response_format": True,
+        # URL output is considerably more reliable for Agnes and is downloaded
+        # into our object storage by the media gateway.
+        "request_overrides": {"extra_body": {"response_format": "url"}},
+    }
 
 
 def autodl_minimax_h3_adapter_config() -> dict[str, Any]:

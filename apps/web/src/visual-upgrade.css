@@ -2045,15 +2045,6 @@ body,
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .sidebar-toggle,
-  .sidebar-tooltip,
-  .sidebar .nav-item {
-    animation-duration: 0ms !important;
-    transition-duration: 0ms !important;
-  }
-}
-
 /* Interactive scene masthead and unified account dock */
 .app-shell {
   --topbar-height: 78px;
@@ -2419,7 +2410,6 @@ body,
 
 @media (max-width: 480px) {
   .topbar__context-copy small,
-  .topbar-tool:first-child,
   .topbar__divider {
     display: none;
   }
@@ -2566,12 +2556,180 @@ body,
   margin: 0 auto;
 }
 
+.agent-model-bar {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 14px;
+  background: color-mix(in srgb, var(--surface-strong) 82%, transparent);
+  box-shadow: inset 0 0 0 1px var(--line), 0 8px 24px rgb(0 0 0 / 5%);
+}
+
+/* Doubao-style home: keep the product top navigation, simplify the chrome,
+   and let the conversation own the viewport below it. */
+.app-shell--top-navigation .page-content:has(.workspace-agent-stage--home) {
+  padding: 0;
+  min-height: calc(100dvh - 74px);
+}
+
+.workspace-agent-stage--home {
+  width: 100%;
+  min-height: calc(100dvh - 74px);
+  padding: 28px clamp(18px, 4vw, 64px) 34px;
+  background:
+    radial-gradient(circle at 50% 0%, color-mix(in srgb, var(--brand) 8%, transparent), transparent 42%),
+    var(--canvas);
+}
+
+.workspace-agent-stage--home > .agent-studio {
+  width: min(1120px, 100%);
+  min-height: calc(100dvh - 136px);
+  margin: 0 auto;
+}
+
+.workspace-agent-stage--home .agent-composer-shell {
+  min-height: calc(100dvh - 136px);
+  border: 0;
+  border-radius: 28px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.workspace-agent-stage--home .agent-workbench-header {
+  min-height: 54px;
+  padding: 0 4px 14px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.workspace-agent-stage--home .agent-workspace-body {
+  min-height: calc(100dvh - 206px);
+  padding: 0;
+  background: transparent;
+}
+
+.workspace-agent-stage--home .agent-mode-switcher,
+.workspace-agent-stage--home .agent-model-bar {
+  width: min(760px, 100%);
+  margin: 0 auto 14px;
+  border-radius: 18px;
+}
+
+.workspace-agent-stage--home .agent-conversation {
+  width: min(820px, 100%);
+  margin: 0 auto;
+}
+
+.workspace-agent-stage--home .agent-thread {
+  height: min(58dvh, 680px);
+  min-height: 300px;
+  padding: 12px 8px 18px;
+  background: transparent;
+}
+
+.workspace-agent-stage--home .agent-composer {
+  position: sticky;
+  bottom: 16px;
+  z-index: 5;
+  width: min(820px, 100%);
+  margin: 10px auto 0;
+  padding: 12px 14px;
+  border-radius: 24px;
+  background: color-mix(in srgb, var(--surface) 92%, transparent);
+  box-shadow: 0 16px 42px rgb(0 0 0 / 12%), inset 0 0 0 1px var(--line);
+  backdrop-filter: blur(22px) saturate(1.2);
+}
+
+.workspace-agent-stage--home .agent-empty-guide {
+  width: min(820px, 100%);
+  margin: 8vh auto 0;
+  padding: 0 12px;
+  background: transparent;
+  box-shadow: none;
+}
+
+.workspace-agent-stage--home .agent-empty-guide > div:nth-child(2) {
+  max-width: 680px;
+}
+
+@media (max-width: 760px) {
+  .app-shell--top-navigation .page-content:has(.workspace-agent-stage--home) {
+    min-height: calc(100dvh - 58px);
+  }
+
+  .workspace-agent-stage--home {
+    min-height: calc(100dvh - 58px);
+    padding: 10px 10px calc(18px + env(safe-area-inset-bottom));
+  }
+
+  .workspace-agent-stage--home > .agent-studio,
+  .workspace-agent-stage--home .agent-composer-shell {
+    min-height: calc(100dvh - 78px);
+  }
+
+  .workspace-agent-stage--home .agent-workbench-header {
+    padding: 0 2px 8px;
+  }
+
+  .workspace-agent-stage--home .agent-thread {
+    height: calc(100dvh - 300px);
+    min-height: 240px;
+    padding-inline: 0;
+  }
+
+  .workspace-agent-stage--home .agent-composer {
+    bottom: max(8px, env(safe-area-inset-bottom));
+    margin-top: 4px;
+    padding: 9px;
+    border-radius: 20px;
+  }
+
+  .workspace-agent-stage--home .agent-empty-guide {
+    margin-top: 7vh;
+  }
+}
+
+.agent-model-bar__label {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  color: var(--ink-secondary);
+  font-size: 12px;
+  font-weight: 700;
+  white-space: nowrap;
+}
+
+.agent-model-bar .ui-select,
+.agent-model-bar [data-radix-popper-content-wrapper] {
+  min-width: 230px;
+}
+
+.agent-model-bar__hint {
+  overflow: hidden;
+  color: var(--ink-tertiary);
+  font-size: 11px;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .agent-model-bar {
+    align-items: stretch;
+    flex-wrap: wrap;
+  }
+
+  .agent-model-bar .ui-select {
+    flex: 1 1 180px;
+    min-width: 0;
+  }
+}
+
 .workspace-agent-stage > .agent-studio {
   width: 100%;
   max-width: none;
 }
 
-.workspace-agent-stage .agent-composer-shell {
+.workspace-agent-stage:not(.workspace-agent-stage--home) .agent-composer-shell {
   overflow: hidden;
   border: 1px solid rgb(255 255 255 / 10%);
   border-radius: 8px;
@@ -2590,11 +2748,11 @@ body,
   padding-inline: 14px;
 }
 
-.workspace-agent-stage .agent-studio:not(.agent-studio--collapsed) .agent-composer-shell {
+.workspace-agent-stage:not(.workspace-agent-stage--home) .agent-studio:not(.agent-studio--collapsed) .agent-composer-shell {
   max-height: min(520px, calc(100dvh - var(--topbar-height) - 32px));
 }
 
-.workspace-agent-stage .agent-studio:not(.agent-studio--collapsed) .agent-thread {
+.workspace-agent-stage:not(.workspace-agent-stage--home) .agent-studio:not(.agent-studio--collapsed) .agent-thread {
   max-height: min(290px, 34dvh);
   min-height: 160px;
   padding-block: 18px;
@@ -2689,7 +2847,7 @@ body,
     border-radius: 7px;
   }
 
-  .workspace-agent-stage .agent-studio:not(.agent-studio--collapsed) .agent-composer-shell {
+  .workspace-agent-stage:not(.workspace-agent-stage--home) .agent-studio:not(.agent-studio--collapsed) .agent-composer-shell {
     max-height: none;
   }
 
@@ -3303,5 +3461,1366 @@ body,
   .admin-page .model-services-section .provider-model-empty > div .button {
     width: 100%;
     min-height: 40px;
+  }
+}
+
+/* Home Agent final layout override.  This block intentionally lives at EOF so
+   the older workspace rules above remain scoped to project/director screens. */
+.app-shell--top-navigation .page-content:has(.workspace-agent-stage--home) {
+  min-height: calc(100dvh - var(--topbar-height, 74px));
+  overflow: hidden;
+  padding: 0;
+}
+
+.workspace-agent-stage--home {
+  display: flex;
+  min-height: calc(100dvh - var(--topbar-height, 74px));
+  align-items: stretch;
+  justify-content: center;
+  padding: 0 clamp(16px, 3vw, 40px) 24px;
+  background:
+    radial-gradient(circle at 50% -10%, color-mix(in srgb, var(--brand) 8%, transparent), transparent 42%),
+    var(--canvas);
+}
+
+.workspace-agent-stage--home > .agent-studio {
+  display: flex;
+  width: min(1120px, 100%);
+  min-height: calc(100dvh - var(--topbar-height, 74px));
+  flex-direction: column;
+  margin: 0 auto;
+}
+
+.workspace-agent-stage--home .agent-composer-shell {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  overflow: visible;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.workspace-agent-stage--home .agent-workbench-header {
+  flex: 0 0 auto;
+  min-height: 58px;
+  padding: 5px 4px 10px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.workspace-agent-stage--home .agent-workspace-body {
+  display: flex;
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  padding: 0;
+  background: transparent;
+}
+
+.workspace-agent-stage--home .agent-mode-switcher,
+.workspace-agent-stage--home .agent-model-bar {
+  width: min(760px, 100%);
+  margin-inline: auto;
+}
+
+.workspace-agent-stage--home .agent-mode-switcher {
+  flex: 0 0 auto;
+  margin-bottom: 10px;
+  padding: 5px 7px;
+  border: 0;
+  border-radius: 17px;
+  background: color-mix(in srgb, var(--surface-strong) 76%, transparent);
+  box-shadow: 0 4px 18px rgb(0 0 0 / 4%);
+}
+
+.workspace-agent-stage--home .agent-model-bar {
+  flex: 0 0 auto;
+  margin-bottom: 10px;
+  border-radius: 15px;
+}
+
+.workspace-agent-stage--home .agent-conversation {
+  display: flex;
+  width: min(820px, 100%);
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  margin-inline: auto;
+}
+
+.workspace-agent-stage--home .agent-thread {
+  width: 100%;
+  max-height: none !important;
+  min-height: 0;
+  flex: 1;
+  padding: 24px 8px 18px;
+  background: transparent;
+}
+
+.workspace-agent-stage--home .agent-empty-guide {
+  display: flex;
+  width: min(820px, 100%);
+  min-height: 0;
+  flex: 1;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  margin: 0 auto;
+  padding: 0 10px 24px;
+  background: transparent;
+  box-shadow: none;
+  text-align: center;
+}
+
+.workspace-agent-stage--home .agent-empty-guide__icon {
+  width: 46px;
+  height: 46px;
+  margin-bottom: 14px;
+  border-radius: 15px;
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--brand) 12%, transparent), inset 0 0 0 1px color-mix(in srgb, var(--brand) 10%, transparent);
+}
+
+.workspace-agent-stage--home .agent-empty-guide > div:nth-child(2) {
+  max-width: 680px;
+}
+
+.workspace-agent-stage--home .agent-empty-guide strong {
+  display: block;
+  font-size: clamp(24px, 3vw, 34px);
+  line-height: 1.2;
+  text-wrap: balance;
+}
+
+.workspace-agent-stage--home .agent-empty-guide p {
+  max-width: 620px;
+  margin-top: 10px;
+  font-size: 13px;
+  line-height: 1.7;
+  text-wrap: pretty;
+}
+
+.workspace-agent-stage--home .agent-starters {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 22px;
+}
+
+.workspace-agent-stage--home .agent-starters button {
+  min-width: 116px;
+  min-height: 40px;
+  padding-inline: 14px;
+  border-radius: 999px;
+  box-shadow: 0 5px 16px rgb(0 0 0 / 6%);
+  transition-property: transform, background-color, box-shadow;
+  transition-duration: 160ms;
+  transition-timing-function: cubic-bezier(0.2, 0, 0, 1);
+}
+
+.workspace-agent-stage--home .agent-starters button:active {
+  transform: scale(0.96);
+}
+
+.workspace-agent-stage--home .agent-composer {
+  position: sticky;
+  bottom: 0;
+  z-index: 5;
+  flex: 0 0 auto;
+  width: min(820px, 100%);
+  margin: 12px auto 0;
+  padding: 12px 14px calc(12px + env(safe-area-inset-bottom));
+  border: 0;
+  border-radius: 24px;
+  background: color-mix(in srgb, var(--surface) 94%, transparent);
+  box-shadow: 0 16px 42px rgb(0 0 0 / 12%), 0 0 0 1px color-mix(in srgb, var(--line) 78%, transparent);
+  backdrop-filter: blur(22px) saturate(1.2);
+}
+
+@media (max-width: 760px) {
+  .app-shell--top-navigation .page-content:has(.workspace-agent-stage--home) {
+    min-height: calc(100dvh - 64px);
+  }
+
+  .workspace-agent-stage--home {
+    min-height: calc(100dvh - 64px);
+    padding: 0 8px env(safe-area-inset-bottom);
+  }
+
+  .workspace-agent-stage--home > .agent-studio,
+  .workspace-agent-stage--home .agent-composer-shell {
+    min-height: calc(100dvh - 64px);
+  }
+
+  .workspace-agent-stage--home .agent-workbench-header {
+    min-height: 58px;
+    padding: 4px 2px 8px;
+  }
+
+  .workspace-agent-stage--home .agent-mode-switcher {
+    width: 100%;
+    margin-bottom: 8px;
+    overflow-x: auto;
+    justify-content: flex-start;
+    scrollbar-width: none;
+  }
+
+  .workspace-agent-stage--home .agent-mode-switcher::-webkit-scrollbar {
+    display: none;
+  }
+
+  .workspace-agent-stage--home .agent-mode-switcher button {
+    flex: 0 0 auto;
+    min-width: 92px;
+  }
+
+  .workspace-agent-stage--home .agent-model-bar {
+    width: 100%;
+    margin-bottom: 8px;
+  }
+
+  .workspace-agent-stage--home .agent-thread {
+    padding: 12px 0 16px;
+  }
+
+  .workspace-agent-stage--home .agent-empty-guide {
+    padding: 0 8px 18px;
+  }
+
+  .workspace-agent-stage--home .agent-empty-guide strong {
+    font-size: 26px;
+  }
+
+  .workspace-agent-stage--home .agent-starters {
+    justify-content: flex-start;
+    width: 100%;
+  }
+
+  .workspace-agent-stage--home .agent-starters button {
+    min-width: 0;
+    flex: 1 1 calc(50% - 8px);
+  }
+
+  .workspace-agent-stage--home .agent-composer {
+    width: 100%;
+    margin-top: 4px;
+    padding: 9px 10px calc(9px + env(safe-area-inset-bottom));
+    border-radius: 20px;
+  }
+
+  .workspace-agent-stage--home .agent-composer textarea {
+    min-height: 54px;
+    max-height: 160px;
+    font-size: 16px;
+  }
+}
+
+/* Doubao-like Agent home chrome: one history trigger, one mode menu, one
+   compact composer. The functional project/director Agent keeps its original
+   header and controls. */
+.workspace-agent-stage--home .agent-workbench-header {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 60px;
+  padding: 6px 0 10px;
+}
+
+.workspace-agent-stage--home .agent-workbench-header__identity,
+.workspace-agent-stage--home .agent-workbench-header__actions,
+.workspace-agent-stage--home .agent-mode-switcher--legacy,
+.workspace-agent-stage--home .agent-model-bar {
+  display: none !important;
+}
+
+.workspace-agent-stage--home .agent-home-header__left,
+.workspace-agent-stage--home .agent-home-mode-menu {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+}
+
+.workspace-agent-stage--home .agent-history-trigger,
+.workspace-agent-stage--home .agent-mode-dropdown > summary {
+  display: inline-flex;
+  min-height: 40px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 10px;
+  color: var(--ink-secondary);
+  background: transparent;
+  cursor: pointer;
+  font-size: 13px;
+  font-weight: 600;
+  list-style: none;
+  transition-property: color, background-color, scale;
+  transition-duration: var(--duration-quick, 150ms);
+  transition-timing-function: var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
+}
+
+.workspace-agent-stage--home .agent-history-trigger span {
+  display: none;
+}
+
+.workspace-agent-stage--home .agent-history-trigger:hover,
+.workspace-agent-stage--home .agent-mode-dropdown > summary:hover {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--surface-strong) 65%, transparent);
+}
+
+.workspace-agent-stage--home .agent-history-trigger:active,
+.workspace-agent-stage--home .agent-mode-dropdown > summary:active {
+  scale: 0.96;
+}
+
+.workspace-agent-stage--home .agent-history-trigger svg {
+  color: var(--ink-tertiary);
+}
+
+.workspace-agent-stage--home .agent-mode-dropdown {
+  position: relative;
+}
+
+.workspace-agent-stage--home .agent-mode-dropdown > summary::-webkit-details-marker {
+  display: none;
+}
+
+.workspace-agent-stage--home .agent-mode-dropdown > summary {
+  gap: 6px;
+  padding-inline: 10px 7px;
+  color: #fff;
+}
+
+.workspace-agent-stage--home .agent-mode-dropdown > summary svg:first-child {
+  opacity: 0.9;
+}
+
+.workspace-agent-stage--home .agent-mode-dropdown > summary svg:last-child {
+  transition-property: transform;
+  transition-duration: var(--duration-quick, 150ms);
+  transition-timing-function: var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
+}
+
+.workspace-agent-stage--home .agent-mode-dropdown[open] > summary {
+  background: color-mix(in srgb, #2f7fff 10%, transparent);
+}
+
+.workspace-agent-stage--home .agent-mode-dropdown[open] > summary svg:last-child {
+  transform: rotate(180deg);
+}
+
+.workspace-agent-stage--home .agent-mode-dropdown__panel {
+  position: absolute;
+  top: calc(100% + 8px);
+  right: 0;
+  z-index: 60;
+  display: grid;
+  width: min(320px, calc(100vw - 28px));
+  gap: 14px;
+  padding: 14px;
+  border-radius: 16px;
+  color: var(--ink);
+  background: var(--surface);
+  box-shadow: 0 22px 56px rgb(0 0 0 / 17%);
+  transform-origin: top right;
+  animation: agent-mode-menu-in var(--duration-fast, 250ms) var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1)) both;
+}
+
+.workspace-agent-stage--home .agent-mode-dropdown__section {
+  display: grid;
+  gap: 7px;
+}
+
+.workspace-agent-stage--home .agent-mode-dropdown__label {
+  padding-inline: 4px;
+  color: var(--ink-tertiary);
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.04em;
+}
+
+.workspace-agent-stage--home .agent-mode-dropdown__option {
+  display: grid;
+  width: 100%;
+  min-height: 48px;
+  grid-template-columns: 34px minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 9px;
+  padding: 5px 8px;
+  border: 0;
+  border-radius: 11px;
+  color: var(--ink-secondary);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition-property: color, background-color, scale;
+  transition-duration: var(--duration-quick, 150ms);
+  transition-timing-function: var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
+}
+
+.workspace-agent-stage--home .agent-mode-dropdown__option:hover,
+.workspace-agent-stage--home .agent-mode-dropdown__option[aria-pressed='true'] {
+  color: var(--ink);
+  background: color-mix(in srgb, #2f7fff 9%, var(--surface-subtle));
+}
+
+.workspace-agent-stage--home .agent-mode-dropdown__option:active {
+  scale: 0.96;
+}
+
+.workspace-agent-stage--home .agent-mode-dropdown__option > span:nth-child(2) {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.workspace-agent-stage--home .agent-mode-dropdown__option strong,
+.workspace-agent-stage--home .agent-mode-dropdown__option small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-agent-stage--home .agent-mode-dropdown__option strong {
+  font-size: 12px;
+}
+
+.workspace-agent-stage--home .agent-mode-dropdown__option small {
+  color: var(--ink-tertiary);
+  font-size: 10px;
+}
+
+.workspace-agent-stage--home .agent-mode-dropdown__option-icon {
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  color: #2f7fff;
+  background: color-mix(in srgb, #2f7fff 11%, var(--surface));
+}
+
+.workspace-agent-stage--home .agent-mode-dropdown__option:nth-of-type(2) .agent-mode-dropdown__option-icon {
+  color: #d35b8a;
+  background: color-mix(in srgb, #d35b8a 11%, var(--surface));
+}
+
+.workspace-agent-stage--home .agent-mode-dropdown__option:nth-of-type(3) .agent-mode-dropdown__option-icon {
+  color: #5d83d1;
+  background: color-mix(in srgb, #5d83d1 11%, var(--surface));
+}
+
+.workspace-agent-stage--home .agent-mode-dropdown__option:nth-of-type(4) .agent-mode-dropdown__option-icon {
+  color: #b5842b;
+  background: color-mix(in srgb, #b5842b 11%, var(--surface));
+}
+
+.workspace-agent-stage--home .agent-mode-dropdown .ui-select {
+  width: 100%;
+  min-height: 40px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--surface-subtle);
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, var(--line) 60%, transparent);
+}
+
+.workspace-agent-stage--home .agent-history-backdrop {
+  position: fixed;
+  inset: var(--topbar-height, 64px) 0 0;
+  z-index: 49;
+  border: 0;
+  background: rgb(5 10 18 / 15%);
+  cursor: default;
+  backdrop-filter: blur(2px);
+}
+
+.workspace-agent-stage--home .agent-history-drawer {
+  position: fixed;
+  top: calc(var(--topbar-height, 64px) + 10px);
+  left: 14px;
+  z-index: 50;
+  display: flex;
+  width: min(360px, calc(100vw - 28px));
+  max-height: calc(100dvh - var(--topbar-height, 64px) - 28px);
+  flex-direction: column;
+  overflow: hidden;
+  padding: 16px;
+  border-radius: 20px;
+  color: var(--ink);
+  background: color-mix(in srgb, var(--surface) 96%, transparent);
+  box-shadow: 0 24px 70px rgb(0 0 0 / 20%);
+  backdrop-filter: blur(24px) saturate(1.15);
+}
+
+.workspace-agent-stage--home .agent-history-drawer__header,
+.workspace-agent-stage--home .agent-history-drawer__actions,
+.workspace-agent-stage--home .agent-history-drawer__footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.workspace-agent-stage--home .agent-history-drawer__header {
+  padding-bottom: 14px;
+}
+
+.workspace-agent-stage--home .agent-history-drawer__header > div {
+  display: grid;
+  gap: 3px;
+}
+
+.workspace-agent-stage--home .agent-history-drawer__header strong {
+  font-size: 15px;
+}
+
+.workspace-agent-stage--home .agent-history-drawer__header small {
+  color: var(--ink-tertiary);
+  font-size: 10px;
+}
+
+.workspace-agent-stage--home .agent-history-drawer__header > button,
+.workspace-agent-stage--home .agent-history-drawer__actions button,
+.workspace-agent-stage--home .agent-history-drawer__footer button {
+  display: inline-flex;
+  min-height: 36px;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 9px;
+  color: var(--ink-secondary);
+  background: var(--surface-subtle);
+  cursor: pointer;
+  font-size: 11px;
+  transition-property: color, background-color, scale;
+  transition-duration: var(--duration-quick, 150ms);
+  transition-timing-function: var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
+}
+
+.workspace-agent-stage--home .agent-history-drawer__header > button:hover,
+.workspace-agent-stage--home .agent-history-drawer__actions button:hover,
+.workspace-agent-stage--home .agent-history-drawer__footer button:hover {
+  color: var(--ink);
+  background: var(--surface-strong);
+}
+
+.workspace-agent-stage--home .agent-history-drawer__header > button:active,
+.workspace-agent-stage--home .agent-history-drawer__actions button:active,
+.workspace-agent-stage--home .agent-history-drawer__footer button:active {
+  scale: 0.96;
+}
+
+.workspace-agent-stage--home .agent-history-drawer__actions {
+  padding-bottom: 12px;
+}
+
+.workspace-agent-stage--home .agent-history-drawer__actions button {
+  width: 100%;
+  justify-content: center;
+  color: #2f7fff;
+  background: color-mix(in srgb, #2f7fff 9%, var(--surface));
+}
+
+.workspace-agent-stage--home .agent-history-drawer__list {
+  display: grid;
+  min-height: 0;
+  gap: 4px;
+  overflow-y: auto;
+  padding: 2px 0 12px;
+  overscroll-behavior: contain;
+  scrollbar-width: thin;
+}
+
+.workspace-agent-stage--home .agent-history-drawer__list button {
+  display: grid;
+  width: 100%;
+  min-height: 54px;
+  grid-template-columns: 20px minmax(0, 1fr) 18px;
+  align-items: center;
+  gap: 9px;
+  padding: 7px 9px;
+  border: 0;
+  border-radius: 11px;
+  color: var(--ink-secondary);
+  background: transparent;
+  cursor: pointer;
+  text-align: left;
+  transition-property: color, background-color, scale;
+  transition-duration: var(--duration-quick, 150ms);
+  transition-timing-function: var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
+}
+
+.workspace-agent-stage--home .agent-history-drawer__list button:hover,
+.workspace-agent-stage--home .agent-history-drawer__list button.active {
+  color: var(--ink);
+  background: color-mix(in srgb, #2f7fff 9%, var(--surface-subtle));
+}
+
+.workspace-agent-stage--home .agent-history-drawer__list button:active {
+  scale: 0.98;
+}
+
+.workspace-agent-stage--home .agent-history-drawer__list button > span {
+  display: grid;
+  min-width: 0;
+  gap: 3px;
+}
+
+.workspace-agent-stage--home .agent-history-drawer__list button strong,
+.workspace-agent-stage--home .agent-history-drawer__list button small {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-agent-stage--home .agent-history-drawer__list button strong {
+  font-size: 12px;
+}
+
+.workspace-agent-stage--home .agent-history-drawer__list button small {
+  color: var(--ink-tertiary);
+  font-size: 10px;
+}
+
+.workspace-agent-stage--home .agent-history-drawer__empty {
+  display: grid;
+  min-height: 170px;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  color: var(--ink-tertiary);
+  font-size: 11px;
+}
+
+.workspace-agent-stage--home .agent-history-drawer__footer {
+  justify-content: flex-start;
+  margin-top: auto;
+  padding-top: 12px;
+  box-shadow: 0 -8px 16px -18px var(--ink);
+}
+
+.workspace-agent-stage--home .agent-history-drawer__footer button {
+  color: var(--danger);
+  background: transparent;
+}
+
+.workspace-agent-stage--home .agent-composer {
+  width: min(820px, 100%);
+  margin-top: 14px;
+  padding: 9px 12px 10px;
+  border-radius: 17px;
+  background: var(--surface);
+  box-shadow: 0 12px 34px rgb(0 0 0 / 10%);
+}
+
+.workspace-agent-stage--home .agent-composer-shell--active .agent-composer {
+  border-top: 0;
+  background: var(--surface);
+}
+
+.workspace-agent-stage--home .agent-composer textarea {
+  min-height: 54px;
+  padding: 4px 2px;
+  font-size: 14px;
+  line-height: 1.65;
+}
+
+.workspace-agent-stage--home .agent-composer__actions {
+  min-height: 34px;
+  margin-top: 5px;
+  gap: 6px;
+}
+
+.workspace-agent-stage--home .agent-attach-button {
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  min-height: 34px;
+  border: 0;
+  border-radius: 9px;
+  color: var(--ink-secondary);
+  background: transparent;
+  box-shadow: none;
+}
+
+.workspace-agent-stage--home .agent-attach-button:hover:not(:disabled) {
+  color: #2f7fff;
+  background: color-mix(in srgb, #2f7fff 9%, transparent);
+  box-shadow: none;
+}
+
+.workspace-agent-stage--home .agent-inline-parameters {
+  display: flex;
+  min-width: 0;
+  flex: 1;
+  align-items: center;
+  gap: 3px;
+  overflow: visible;
+}
+
+.workspace-agent-stage--home .agent-inline-select {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.workspace-agent-stage--home .agent-inline-select > summary {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  gap: 4px;
+  padding: 0 7px;
+  border: 0;
+  border-radius: 8px;
+  color: var(--ink-tertiary);
+  background: transparent;
+  cursor: pointer;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  list-style: none;
+  white-space: nowrap;
+  transition-property: color, background-color, scale;
+  transition-duration: var(--duration-quick, 150ms);
+  transition-timing-function: var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
+}
+
+.workspace-agent-stage--home .agent-inline-select > summary::-webkit-details-marker {
+  display: none;
+}
+
+.workspace-agent-stage--home .agent-inline-select > summary:hover,
+.workspace-agent-stage--home .agent-inline-select[open] > summary {
+  color: #2f7fff;
+  background: color-mix(in srgb, #2f7fff 9%, transparent);
+}
+
+.workspace-agent-stage--home .agent-inline-select > summary:active {
+  scale: 0.96;
+}
+
+.workspace-agent-stage--home .agent-inline-select__menu {
+  position: absolute;
+  right: 0;
+  bottom: calc(100% + 7px);
+  z-index: 55;
+  display: grid;
+  width: max-content;
+  min-width: 104px;
+  max-width: min(240px, calc(100vw - 24px));
+  gap: 2px;
+  padding: 5px;
+  border-radius: 11px;
+  background: var(--surface);
+  box-shadow: 0 16px 40px rgb(0 0 0 / 16%);
+  transform-origin: bottom right;
+  pointer-events: auto;
+  animation: agent-mode-menu-in var(--duration-fast, 250ms) var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1)) both;
+}
+
+.workspace-agent-stage--home .agent-inline-select__menu button {
+  display: flex;
+  min-height: 34px;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 7px;
+  color: var(--ink-secondary);
+  background: transparent;
+  cursor: pointer;
+  font-size: 10px;
+  font-variant-numeric: tabular-nums;
+  text-align: left;
+  white-space: nowrap;
+}
+
+.workspace-agent-stage--home .agent-inline-select__menu button:hover,
+.workspace-agent-stage--home .agent-inline-select__menu button[aria-pressed='true'] {
+  color: var(--ink);
+  background: color-mix(in srgb, #2f7fff 9%, var(--surface-subtle));
+}
+
+.workspace-agent-stage--home .agent-inline-select__menu button:active {
+  scale: 0.96;
+}
+
+.workspace-agent-stage--home .agent-inline-model-select {
+  min-width: 0;
+  max-width: 180px;
+  margin-left: auto;
+}
+
+.workspace-agent-stage--home .agent-inline-model-select > summary {
+  min-height: 40px;
+  max-width: 180px;
+  padding-right: 6px;
+  padding-left: 9px;
+  font-size: 11px;
+}
+
+.workspace-agent-stage--home .agent-inline-model-select > summary > span {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.workspace-agent-stage--home .agent-inline-model-select__menu {
+  width: max-content;
+  min-width: 210px;
+  max-width: min(320px, calc(100vw - 32px));
+}
+
+.workspace-agent-stage--home .agent-inline-model-select__menu button {
+  min-height: 44px;
+  transition-property: color, background-color, scale;
+  transition-duration: var(--duration-quick, 150ms);
+}
+
+.workspace-agent-stage--home .agent-inline-model-select__menu button > span {
+  display: grid;
+  min-width: 0;
+  gap: 2px;
+}
+
+.workspace-agent-stage--home .agent-inline-model-select__menu strong,
+.workspace-agent-stage--home .agent-inline-model-select__menu small {
+  max-width: 240px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.workspace-agent-stage--home .agent-inline-model-select__menu strong {
+  color: inherit;
+  font-size: 11px;
+  font-weight: 600;
+}
+
+.workspace-agent-stage--home .agent-inline-model-select__menu small {
+  color: var(--ink-tertiary);
+  font-size: 9px;
+}
+
+.workspace-agent-stage--home .agent-send-button {
+  width: 34px;
+  min-width: 34px;
+  height: 34px;
+  min-height: 34px;
+  padding: 0;
+  border-radius: 10px;
+  font-size: 0;
+  box-shadow: none;
+}
+
+.workspace-agent-stage--home .agent-send-button:hover:not(:disabled) {
+  box-shadow: 0 7px 16px color-mix(in srgb, var(--brand) 22%, transparent);
+}
+
+.workspace-agent-stage--home .agent-send-button > span:last-child {
+  display: none;
+}
+
+@keyframes agent-mode-menu-in {
+  from {
+    opacity: 0;
+    filter: blur(var(--blur-small, 2px));
+    transform: translateY(-4px) scale(var(--scale-medium, 0.97));
+  }
+  to {
+    opacity: 1;
+    filter: blur(0);
+    transform: translateY(0) scale(1);
+  }
+}
+
+.agent-history-drawer-enter-active,
+.agent-history-drawer-leave-active {
+  transition-property: opacity, transform, filter;
+  transition-duration: var(--panel-open-dur, 400ms);
+  transition-timing-function: var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
+  will-change: transform, opacity, filter;
+}
+
+.agent-history-drawer-enter-from,
+.agent-history-drawer-leave-to {
+  opacity: 0;
+  filter: blur(var(--blur-small, 2px));
+  transform: translateX(-30px);
+}
+
+.agent-history-backdrop-enter-active,
+.agent-history-backdrop-leave-active {
+  transition-property: opacity;
+  transition-duration: var(--duration-fast, 250ms);
+  transition-timing-function: var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
+}
+
+.agent-history-backdrop-enter-from,
+.agent-history-backdrop-leave-to {
+  opacity: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .workspace-agent-stage--home .agent-mode-dropdown__panel,
+  .workspace-agent-stage--home .agent-inline-select__menu {
+    animation: none;
+  }
+
+  .agent-history-drawer-enter-active,
+  .agent-history-drawer-leave-active,
+  .agent-history-backdrop-enter-active,
+  .agent-history-backdrop-leave-active {
+    transition-duration: 0.01ms;
+  }
+}
+
+@media (max-width: 760px) {
+  .workspace-agent-stage--home .agent-workbench-header {
+    flex-direction: row;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 54px;
+    padding: 2px 0 6px;
+  }
+
+  .workspace-agent-stage--home .agent-home-header__left,
+  .workspace-agent-stage--home .agent-home-mode-menu {
+    flex: 0 1 auto;
+  }
+
+  .workspace-agent-stage--home .agent-home-mode-menu {
+    max-width: 50%;
+  }
+
+  .workspace-agent-stage--home .agent-history-trigger,
+  .workspace-agent-stage--home .agent-mode-dropdown > summary {
+    min-height: 40px;
+    font-size: 12px;
+  }
+
+  .workspace-agent-stage--home .agent-history-trigger span {
+    display: none;
+  }
+
+  .workspace-agent-stage--home .agent-mode-dropdown__panel {
+    position: fixed;
+    top: calc(var(--topbar-height, 64px) + 8px);
+    right: 10px;
+    width: min(320px, calc(100vw - 20px));
+  }
+
+  .workspace-agent-stage--home .agent-composer {
+    border: 1px solid color-mix(in srgb, var(--line) 86%, transparent);
+    margin-top: 5px;
+    padding: 7px 8px calc(7px + env(safe-area-inset-bottom));
+    border-radius: 16px;
+    box-shadow: 0 12px 30px rgb(0 0 0 / 10%), inset 0 0 0 1px color-mix(in srgb, var(--surface-strong) 48%, transparent);
+  }
+
+  .workspace-agent-stage--home .agent-composer textarea {
+    min-height: 52px;
+    padding: 4px 3px;
+  }
+
+}
+
+:root[data-theme='light'] .workspace-agent-stage--home .agent-mode-dropdown > summary,
+:root[data-theme='light'] .workspace-agent-stage--home .agent-history-drawer__actions button,
+:root[data-theme='light'] .workspace-agent-stage--home .agent-inline-select > summary,
+:root[data-theme='light'] .workspace-agent-stage--home .agent-attach-button:hover:not(:disabled) {
+  color: #236fe5;
+}
+
+:root[data-theme='light'] .workspace-agent-stage--home .agent-composer,
+:root[data-theme='light'] .workspace-agent-stage--home .agent-mode-dropdown__panel,
+:root[data-theme='light'] .workspace-agent-stage--home .agent-inline-select__menu,
+:root[data-theme='light'] .workspace-agent-stage--home .agent-history-drawer {
+  box-shadow: 0 16px 42px rgb(31 45 63 / 12%);
+}
+
+/* Screenshot correction: the personal Agent is a full-page workspace.  The
+   legacy page-stack and agent shell surfaces must not create a second white
+   card or an extra bottom band around the conversation. */
+.app-shell--top-navigation {
+  height: 100dvh;
+  min-height: 100dvh;
+  overflow: hidden;
+}
+
+.app-shell--top-navigation .shell-main {
+  display: flex;
+  height: 100%;
+  min-height: 0;
+  flex-direction: column;
+}
+
+.app-shell--top-navigation .topbar--scene {
+  flex: 0 0 var(--topbar-height, 82px);
+}
+
+.app-shell--top-navigation .page-content:has(.workspace-agent-stage--home) {
+  display: flex;
+  height: auto;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow: hidden;
+  padding: 0;
+  background: var(--canvas);
+}
+
+.workspace-page.page-stack:has(.workspace-agent-stage--home) {
+  display: block;
+  width: 100%;
+  height: 100%;
+  min-height: 0;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: var(--canvas);
+}
+
+.workspace-agent-stage--home,
+.workspace-agent-stage--home > .agent-studio,
+.workspace-agent-stage--home .agent-composer-shell,
+.workspace-agent-stage--home .agent-workspace-body,
+.workspace-agent-stage--home .agent-conversation {
+  width: 100%;
+  max-width: none;
+  min-height: 0;
+  border: 0;
+  border-radius: 0;
+  background: var(--canvas);
+  box-shadow: none;
+}
+
+.workspace-agent-stage--home {
+  height: 100%;
+  padding: 0;
+}
+
+.workspace-agent-stage--home > .agent-studio {
+  display: flex;
+  height: 100%;
+  flex: 1 1 auto;
+  flex-direction: column;
+  margin: 0;
+}
+
+.workspace-agent-stage--home .agent-composer-shell {
+  display: flex;
+  height: 100%;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow: visible;
+}
+
+.workspace-agent-stage--home .agent-workbench-header {
+  flex: 0 0 auto;
+  padding-inline: clamp(16px, 3vw, 40px);
+}
+
+.workspace-agent-stage--home .agent-workspace-body {
+  display: flex;
+  height: 100%;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow: visible;
+}
+
+.workspace-agent-stage--home .agent-conversation {
+  display: flex;
+  flex: 1 1 auto;
+  flex-direction: column;
+  overflow: hidden;
+  margin-inline: auto;
+}
+
+.workspace-agent-stage--home .agent-thread {
+  width: 100%;
+  max-height: none !important;
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  background: transparent;
+}
+
+.workspace-agent-stage--home .agent-composer {
+  position: relative;
+  z-index: 20;
+  flex: 0 0 auto;
+  background: var(--canvas);
+  box-shadow: none;
+}
+
+/* Menus must be able to escape the full-height shell. The conversation keeps
+   its own scroll context, while anchored controls remain fully clickable. */
+.workspace-agent-stage--home .agent-mode-dropdown,
+.workspace-agent-stage--home .agent-inline-select {
+  position: relative;
+  z-index: 60;
+}
+
+.workspace-agent-stage--home .agent-mode-dropdown__panel {
+  min-width: min(320px, calc(100vw - 28px));
+  overflow: visible;
+}
+
+/* The model selector is rendered inside the mode panel. Give its trigger the
+   panel width and let the value occupy the available text column. */
+.workspace-agent-stage--home .agent-mode-dropdown__section .ui-select {
+  width: 100%;
+  min-width: 0;
+  max-width: none;
+}
+
+.workspace-agent-stage--home .agent-mode-dropdown__section .ui-select--default {
+  min-height: 40px;
+}
+
+.workspace-agent-stage--home .agent-mode-dropdown__section .ui-select__value {
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.workspace-agent-stage--home .agent-mode-dropdown__section .ui-select__value span {
+  display: block;
+  min-width: 0;
+  max-width: none;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+@media (max-width: 760px) {
+  .app-shell--top-navigation .page-content:has(.workspace-agent-stage--home) {
+    height: auto;
+  }
+
+  .workspace-agent-stage--home .agent-workbench-header {
+    padding-inline: 10px;
+  }
+}
+
+/* Final height contract for the home Agent.  Every level receives a concrete
+   viewport height so the composer shell cannot collapse to its content size. */
+.app-shell--top-navigation .page-content:has(.workspace-agent-stage--home) {
+  height: calc(100dvh - var(--topbar-height, 82px)) !important;
+  min-height: 0 !important;
+  flex: 0 0 auto !important;
+}
+
+.workspace-page.page-stack:has(.workspace-agent-stage--home),
+.workspace-page.page-stack:has(.workspace-agent-stage--home) > .workspace-agent-stage--home,
+.workspace-agent-stage--home > .agent-studio,
+.workspace-agent-stage--home .agent-composer-shell {
+  height: 100% !important;
+  min-height: 0 !important;
+}
+
+.workspace-page.page-stack:has(.workspace-agent-stage--home) {
+  flex: 1 1 auto;
+}
+
+.workspace-page.page-stack:has(.workspace-agent-stage--home) > .workspace-agent-stage--home {
+  display: flex;
+  flex: 1 1 0;
+  min-width: 0;
+}
+
+.workspace-agent-stage--home > .agent-studio {
+  flex: 1 1 0;
+}
+
+.workspace-agent-stage--home .agent-composer-shell {
+  flex: 1 1 0;
+}
+
+/* The home route is an application surface, not a content card. Position its
+   page layer against the viewport so an ancestor's intrinsic height cannot
+   leave an unpainted strip below the composer. */
+.app-shell--top-navigation .page-content:has(.workspace-agent-stage--home) {
+  position: fixed;
+  z-index: 1;
+  inset: var(--topbar-height, 82px) 0 0;
+  display: flex;
+  width: 100%;
+  height: auto !important;
+  min-height: 0 !important;
+  margin: 0;
+  padding: 0;
+  overflow: hidden;
+  background: var(--canvas);
+}
+
+.workspace-page.page-stack:has(.workspace-agent-stage--home) {
+  position: relative;
+  display: flex;
+  width: 100%;
+  height: 100%;
+  min-height: 0 !important;
+  flex: 1 1 0;
+  flex-direction: column;
+}
+
+.workspace-page.page-stack:has(.workspace-agent-stage--home) > .workspace-agent-stage--home {
+  height: 100%;
+  min-height: 0 !important;
+  flex: 1 1 0;
+}
+
+.workspace-agent-stage--home > .agent-studio,
+.workspace-agent-stage--home .agent-composer-shell {
+  height: 100% !important;
+  min-height: 0 !important;
+}
+
+/* Home Agent must never inherit the compact workspace ceiling. Keep this
+   explicit because the home shell is the viewport surface on desktop too. */
+.workspace-agent-stage--home .agent-studio:not(.agent-studio--collapsed) .agent-composer-shell {
+  max-height: none !important;
+}
+
+@media (max-width: 760px) {
+  .app-shell--top-navigation .page-content:has(.workspace-agent-stage--home) {
+    inset: var(--topbar-height, 64px) 0 0;
+    bottom: calc(60px + env(safe-area-inset-bottom));
+  }
+}
+
+/* Lift only the desktop composer. The page surface must still reach the
+   viewport edge so the canvas color stays continuous below it. */
+@media (min-width: 761px) {
+  .app-shell--top-navigation .page-content:has(.workspace-agent-stage--home) {
+    bottom: 0;
+  }
+
+  .workspace-agent-stage--home .agent-composer {
+    margin-bottom: 20px;
+  }
+}
+
+/* Final mobile contract: keep the top controls on one responsive row and
+   keep the composer visibly separated from the canvas and mobile nav. */
+@media (max-width: 760px) {
+  .app-shell--top-navigation .topbar--scene {
+    grid-template-columns: minmax(0, 1fr) auto;
+    height: var(--topbar-height, 64px);
+    min-height: var(--topbar-height, 64px);
+  }
+
+  .app-shell--top-navigation .topbar__navigation {
+    min-width: 0;
+    gap: 0;
+  }
+
+  .app-shell--top-navigation .topbar__actions {
+    min-width: 0;
+    flex: 0 0 auto;
+  }
+
+  .app-shell--top-navigation .topbar-tool .theme-toggle {
+    display: inline-flex !important;
+    width: 40px;
+    min-width: 40px;
+    height: 40px;
+  }
+
+  .workspace-agent-stage--home .agent-workbench-header {
+    display: flex;
+    width: 100%;
+    min-width: 0;
+    flex-direction: row !important;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+  }
+
+  .workspace-agent-stage--home .agent-home-header__left,
+  .workspace-agent-stage--home .agent-home-mode-menu,
+  .workspace-agent-stage--home .agent-mode-dropdown,
+  .workspace-agent-stage--home .agent-mode-dropdown > summary {
+    min-width: 0;
+  }
+
+  .workspace-agent-stage--home .agent-home-header__left,
+  .workspace-agent-stage--home .agent-home-mode-menu {
+    flex: 0 1 50%;
+  }
+
+  .workspace-agent-stage--home .agent-home-mode-menu {
+    display: flex;
+    justify-content: flex-end;
+    max-width: 50%;
+    margin-left: auto;
+  }
+
+  .workspace-agent-stage--home .agent-mode-dropdown > summary {
+    max-width: 100%;
+    overflow: hidden;
+    white-space: nowrap;
+  }
+
+  .workspace-agent-stage--home .agent-composer {
+    border: 1px solid color-mix(in srgb, var(--line) 86%, transparent) !important;
+    box-shadow: 0 12px 30px rgb(0 0 0 / 10%), inset 0 0 0 1px color-mix(in srgb, var(--surface-strong) 48%, transparent) !important;
+  }
+
+  .workspace-agent-stage--home .agent-composer textarea {
+    width: 100%;
+    min-width: 0;
+    min-height: 52px;
+    padding: 4px 3px;
+  }
+
+  .workspace-agent-stage--home .agent-composer__actions {
+    min-width: 0;
+    flex-wrap: wrap;
+  }
+
+  .workspace-agent-stage--home .agent-inline-model-select {
+    display: none;
+  }
+}
+
+/* Desktop home alignment: messages and composer share one readable content
+   rail instead of stretching the conversation to the viewport edges. */
+@media (min-width: 761px) {
+  .app-shell--top-navigation .page-content:has(.workspace-agent-stage--home),
+  .workspace-agent-stage--home,
+  .workspace-agent-stage--home .agent-workspace-body,
+  .workspace-agent-stage--home .agent-conversation,
+  .workspace-agent-stage--home .agent-thread {
+    background: var(--canvas) !important;
+  }
+
+  .workspace-agent-stage--home .agent-workbench-header {
+    background: var(--canvas) !important;
+  }
+
+  .workspace-agent-stage--home .agent-conversation,
+  .workspace-agent-stage--home .agent-composer {
+    width: min(1040px, calc(100% - 32px));
+    max-width: 1040px;
+    margin-inline: auto;
+  }
+
+  .workspace-agent-stage--home .agent-thread {
+    padding-inline: 0;
+  }
+
+  .workspace-agent-stage--home .agent-composer {
+    border: 1px solid color-mix(in srgb, var(--line) 86%, transparent);
+    background: var(--surface) !important;
+    box-shadow: 0 14px 36px rgb(0 0 0 / 10%), inset 0 0 0 1px color-mix(in srgb, var(--surface-strong) 48%, transparent);
   }
 }

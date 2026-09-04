@@ -212,6 +212,44 @@ async def debit_task_cost(
     )
 
 
+async def debit_additional_task_cost(
+    session: AsyncSession,
+    task: AITask,
+    amount: Decimal,
+    *,
+    reason: str,
+) -> None:
+    """Charge an extra capability used after a task has already been queued.
+
+    A normal chat run can be upgraded by the Agent into a real image/video
+    generation after the text model has understood the request. Keep that
+    charge on the same durable task so failure/refund and audit records remain
+    atomic.
+    """
+    if amount <= 0:
+        return
+    account = await session.scalar(
+        select(CreditAccount)
+        .where(CreditAccount.tenant_id == task.tenant_id, CreditAccount.user_id == task.user_id)
+        .with_for_update()
+    )
+    if account is None or account.balance < amount:
+        raise HTTPException(status_code=402, detail="积分不足，无法执行媒体生成")
+    account.balance -= amount
+    task.cost += amount
+    session.add(
+        CreditLedger(
+            tenant_id=task.tenant_id,
+            user_id=task.user_id,
+            amount=-amount,
+            balance_after=account.balance,
+            reason=reason,
+            reference_type="ai_task",
+            reference_id=task.id,
+        )
+    )
+
+
 async def refund_task_cost(
     session: AsyncSession,
     task: AITask,

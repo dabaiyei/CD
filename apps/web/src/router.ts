@@ -19,6 +19,7 @@ export const router = createRouter({
     },
     { path: '/', redirect: '/workspace' },
     { path: '/workspace', name: 'workspace', component: () => import('@/views/WorkspaceView.vue') },
+    { path: '/projects', name: 'projects', component: () => import('@/views/WorkspaceView.vue') },
     { path: '/skills', name: 'user-skills', component: () => import('@/views/UserSkillsView.vue') },
     {
       path: '/marketplace/:kind(skill|template|material)',

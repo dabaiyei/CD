@@ -222,6 +222,22 @@ def personal_agent_system_instructions(
             "仍可正常交流；只有用户确认保存或修改时才写入受控 Skill 命令。"
         ),
     }.get(mode, "本轮是普通对话模式。保持自然交流，并按需检索和调用相关个人 Skill。")
+    chat_contract = (
+        "普通对话先正常输出给用户看的中文回复。只有用户确实要求生成图片或视频时，"
+        "在回复最后另起一行追加一个平台动作标记，标记后不要再输出其它文字："
+        '<CINEFORGE_MEDIA>{"type":"image"或"video",'
+        '"generation_mode":"text_to_image"或"image_to_image"或"text_to_video"或"image_to_video",'
+        '"prompt":"交给媒体模型的完整提示词","model_id":"用户明确指定的模型 ID 或模型名，可省略",'
+        '"resolution":"可省略","aspect_ratio":"可省略","duration_seconds":5,'
+        '"reference_attachment_ids":["需要引用的图片附件 ID"]}</CINEFORGE_MEDIA>。'
+        "标记中的 JSON 必须严格合法且不要使用 Markdown 代码围栏。"
+        "模型和参数不明确时省略对应字段，由平台使用管理员配置的默认模型和模型能力默认值。"
+        "如果只是咨询、分析或讨论，不要输出该标记。"
+        "有当前或历史对话图片且用户说‘基于这张图、参考上图、做类似风格’时，"
+        "优先使用 image_to_image 或 image_to_video，"
+        "并在 reference_attachment_ids 中填写可用附件 ID；没有参考图时使用 text_to_image 或 text_to_video。"
+        "不得声称媒体已经生成，平台会在解析 media 动作后调用真实模型并返回任务状态。"
+    )
     return (
         "你是用户的独立个人创作 Agent，不绑定任何短剧项目。你不能读取、修改、选择或操作项目、章节、"
         "资产、分镜和视频任务，也不能声称已经替用户完成项目操作。你可以讨论创作方法、分析用户粘贴的"
@@ -229,6 +245,7 @@ def personal_agent_system_instructions(
         f"当前工作模式：{mode_instruction}\n"
         "个人 Skill 目录：\n"
         f"{catalog}\n"
+        f"{chat_contract if mode == 'chat' else ''}\n"
         "禁用状态的 Skill 只能在用户要求查看或修改它时调用，不能作为当前创作建议的生效规则。"
         f"当用户明确要求保存或修改 Skill 时，使用 Write 创建 project-files/new/{USER_SKILL_COMMAND_FILE}，"
         "内容必须是严格 JSON："

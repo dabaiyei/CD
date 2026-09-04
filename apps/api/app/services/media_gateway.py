@@ -40,6 +40,8 @@ class ImageGenerationRequest:
     aspect_ratio: str
     capabilities: dict[str, object]
     idempotency_key: str
+    reference_image_url: str | None = None
+    generation_mode: str = "text_to_image"
 
 
 @dataclass(slots=True)
@@ -112,10 +114,23 @@ class OpenAICompatibleMediaGateway:
             "model": request.model,
             "prompt": request.prompt,
             "n": 1,
-            "response_format": "b64_json",
         }
+        if not request.capabilities.get("nested_response_format"):
+            payload["response_format"] = "b64_json"
         if isinstance(size, str) and size:
             payload["size"] = size
+        ratio_parameter = request.capabilities.get("aspect_ratio_parameter")
+        if isinstance(ratio_parameter, str) and ratio_parameter:
+            payload[ratio_parameter] = request.aspect_ratio
+        if request.reference_image_url:
+            reference_parameter = request.capabilities.get("image_reference_parameter")
+            if not isinstance(reference_parameter, str) or not reference_parameter.strip():
+                # Keep the default compatible with the common OpenAI-compatible
+                # image-to-image contracts. Providers with a different field can
+                # override it in the model capabilities.
+                reference_parameter = "image_url"
+            payload[reference_parameter] = request.reference_image_url
+            payload.setdefault("generation_mode", request.generation_mode)
         overrides = request.capabilities.get("request_overrides")
         if isinstance(overrides, dict):
             payload.update(overrides)
@@ -125,7 +140,9 @@ class OpenAICompatibleMediaGateway:
         headers = {**self.headers, "Idempotency-Key": request.idempotency_key}
         timeout = httpx.Timeout(get_settings().media_request_timeout_seconds)
         try:
-            async with httpx.AsyncClient(timeout=timeout, follow_redirects=False) as client:
+            # 供应商通常返回对象存储/CDN URL。部分 CDN 会先返回 301/302，
+            # 如果不跟随重定向，响应体可能为空，最终会被误判为“空文件”。
+            async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
                 response: httpx.Response | None = None
                 for attempt in range(IMAGE_REQUEST_ATTEMPTS):
                     try:
@@ -158,7 +175,9 @@ class OpenAICompatibleMediaGateway:
                 if not isinstance(item, dict):
                     raise ModelGatewayError("图片平台返回了无法识别的数据结构")
                 encoded = item.get("b64_json")
-                if isinstance(encoded, str):
+                # Agnes 等兼容接口会同时返回 b64_json="" 和有效的 url。
+                # 空 Base64 不是图片数据，应继续回退到 URL 下载分支。
+                if isinstance(encoded, str) and encoded.strip():
                     try:
                         return _bounded_image(base64.b64decode(encoded, validate=True))
                     except ValueError as exc:
@@ -168,11 +187,17 @@ class OpenAICompatibleMediaGateway:
                     await _validate_download_url(image_url)
                     downloaded = await client.get(image_url)
                     downloaded.raise_for_status()
-                    if not downloaded.headers.get("content-type", "").startswith("image/"):
+                    downloaded_content_type = downloaded.headers.get("content-type", "").split(";", 1)[0]
+                    if (
+                        not downloaded_content_type.startswith("image/")
+                        and downloaded_content_type != "application/octet-stream"
+                    ):
                         raise ModelGatewayError("图片下载地址未返回图片内容")
                     return _bounded_image(downloaded.content)
         except httpx.HTTPStatusError as exc:
-            raise ModelGatewayError(f"图片平台返回 HTTP {exc.response.status_code}") from exc
+            raise ModelGatewayError(
+                _http_error_message(exc.response, prefix="图片平台返回")
+            ) from exc
         except httpx.HTTPError as exc:
             raise ModelGatewayError("无法连接图片模型平台") from exc
         except ValueError as exc:
@@ -252,7 +277,15 @@ class OpenAICompatibleMediaGateway:
             "aspect_ratio": request.aspect_ratio,
             "duration": request.duration_seconds,
             "duration_seconds": request.duration_seconds,
+            "duration_string": f"{request.duration_seconds:g}",
             "generation_mode": request.generation_mode,
+            "provider_mode": _mapped_capability_value(
+                request.capabilities.get("provider_mode_map"),
+                "first_frame" if references else request.generation_mode,
+            ),
+            "provider_resolution": _mapped_capability_value(
+                request.capabilities.get("provider_resolution_map"), request.resolution
+            ),
             "audio_enabled": request.audio_enabled,
             "idempotency_key": request.idempotency_key,
             "credentials": self.credentials,
@@ -314,10 +347,29 @@ class OpenAICompatibleMediaGateway:
             _inject_reference_payloads(body, context.get("references") or [], references)
         client = httpx.AsyncClient(
             timeout=httpx.Timeout(get_settings().media_request_timeout_seconds),
-            follow_redirects=False,
+            follow_redirects=True,
         )
         try:
-            response = await client.request(template.method, url, headers=headers, params=query, json=body)
+            response: httpx.Response | None = None
+            attempts = 4 if template.method == "GET" else 1
+            for attempt in range(attempts):
+                response = await client.request(
+                    template.method,
+                    url,
+                    headers=headers,
+                    params=query,
+                    json=body,
+                )
+                if response.status_code not in RETRYABLE_IMAGE_STATUS_CODES or attempt + 1 >= attempts:
+                    break
+                retry_after = response.headers.get("retry-after", "")
+                try:
+                    delay = min(max(float(retry_after), 2.0), 20.0)
+                except ValueError:
+                    delay = min(5.0 * (attempt + 1), 20.0)
+                await asyncio.sleep(delay)
+            if response is None:
+                raise ModelGatewayError("自定义供应商未返回响应")
             response.raise_for_status()
             payload = response.json()
             if not isinstance(payload, dict):
@@ -329,7 +381,12 @@ class OpenAICompatibleMediaGateway:
             return payload, client
         except httpx.HTTPStatusError as exc:
             await client.aclose()
-            raise ModelGatewayError(f"自定义供应商返回 HTTP {exc.response.status_code}") from exc
+            raise ModelGatewayError(
+                _http_error_message(
+                    exc.response,
+                    prefix="自定义供应商返回",
+                )
+            ) from exc
         except httpx.HTTPError as exc:
             await client.aclose()
             raise ModelGatewayError("无法连接自定义供应商") from exc
@@ -347,8 +404,20 @@ class OpenAICompatibleMediaGateway:
         mapping: VideoResponseMapping,
     ) -> VideoGenerationResult:
         task_id_value = extract_path(body, mapping.task_id_path)
+        # 异步供应商的创建响应和轮询响应经常使用不同的任务 ID 字段。
+        # Agnes 创建时返回 video_id，轮询时返回 id；两者都应能恢复同一个任务。
+        if task_id_value in (None, ""):
+            for fallback_path in ("id", "video_id", "data.id", "data.video_id"):
+                task_id_value = extract_path(body, fallback_path)
+                if task_id_value not in (None, ""):
+                    break
         provider_job_id = str(task_id_value) if task_id_value not in (None, "") else None
         status_value = extract_path(body, mapping.status_path)
+        if status_value in (None, ""):
+            for fallback_path in ("status", "data.status", "internal_status"):
+                status_value = extract_path(body, fallback_path)
+                if status_value not in (None, ""):
+                    break
         raw_status = str(status_value or "").strip().lower()
         error_value = extract_path(body, mapping.error_path)
         error_message = str(error_value) if error_value not in (None, "") else None
@@ -373,6 +442,11 @@ class OpenAICompatibleMediaGateway:
             except ValueError as exc:
                 raise ModelGatewayError("视频平台返回了无效的 Base64 数据") from exc
         result_url = extract_path(body, mapping.result_url_path)
+        if result_url in (None, ""):
+            for fallback_path in ("url", "metadata.url", "data.url", "data.video_url"):
+                result_url = extract_path(body, fallback_path)
+                if result_url not in (None, ""):
+                    break
         if isinstance(result_url, str) and result_url:
             await _validate_download_url(result_url, media_name="视频")
             downloaded = await client.get(result_url)
@@ -417,7 +491,9 @@ class OpenAICompatibleMediaGateway:
                     raise ModelGatewayError("视频平台返回了无法识别的数据结构")
                 return await _parse_video_response(client, body)
         except httpx.HTTPStatusError as exc:
-            raise ModelGatewayError(f"视频平台返回 HTTP {exc.response.status_code}") from exc
+            raise ModelGatewayError(
+                _http_error_message(exc.response, prefix="视频平台返回")
+            ) from exc
         except httpx.HTTPError as exc:
             raise ModelGatewayError("无法连接视频模型平台") from exc
         except ValueError as exc:
@@ -505,6 +581,14 @@ def _bounded_image(data: bytes) -> bytes:
     return data
 
 
+def _mapped_capability_value(mapping: object, value: str) -> str:
+    if isinstance(mapping, dict):
+        mapped = mapping.get(value)
+        if isinstance(mapped, str) and mapped:
+            return mapped
+    return value
+
+
 def _bounded_video(data: bytes) -> bytes:
     if not data:
         raise ModelGatewayError("视频平台返回了空文件")
@@ -553,7 +637,7 @@ async def _parse_video_response(
     video_url = _first_string(source, body, keys=("url", "video_url", "output_url"))
     if video_url:
         await _validate_download_url(video_url, media_name="视频")
-        downloaded = await client.get(video_url)
+        downloaded = await client.get(video_url, follow_redirects=True)
         downloaded.raise_for_status()
         content_type = downloaded.headers.get("content-type", "").split(";", 1)[0]
         if not content_type.startswith("video/"):
@@ -604,7 +688,7 @@ async def _parse_speech_response(
     audio_url = _first_string(source, body, keys=("url", "audio_url", "output_url"))
     if audio_url:
         await _validate_download_url(audio_url, media_name="音频")
-        downloaded = await client.get(audio_url)
+        downloaded = await client.get(audio_url, follow_redirects=True)
         downloaded.raise_for_status()
         content_type = downloaded.headers.get("content-type", "").split(";", 1)[0]
         if not content_type.startswith("audio/"):
@@ -630,6 +714,28 @@ def _first_string(*sources: dict[str, object], keys: tuple[str, ...]) -> str | N
             if isinstance(value, str) and value.strip():
                 return value.strip()
     return None
+
+
+def _http_error_message(response: httpx.Response, *, prefix: str) -> str:
+    """Expose a useful upstream validation error without returning raw response data."""
+    detail: object = None
+    try:
+        payload = response.json()
+    except (ValueError, TypeError):
+        payload = None
+    if isinstance(payload, dict):
+        error = payload.get("error")
+        if isinstance(error, dict):
+            detail = error.get("message") or error.get("detail") or error.get("code")
+        elif isinstance(error, str):
+            detail = error
+        detail = detail or payload.get("detail") or payload.get("message")
+    if not detail:
+        raw_text = str(getattr(response, "text", "") or "").strip()
+        if raw_text and len(raw_text) <= 500:
+            detail = raw_text
+    suffix = f"：{str(detail).strip()}" if detail else ""
+    return f"{prefix} HTTP {response.status_code}{suffix}"
 
 
 def _inject_reference_payloads(

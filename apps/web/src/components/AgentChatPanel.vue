@@ -17,6 +17,7 @@ import {
   ImagePlus,
   LoaderCircle,
   Maximize2,
+  Menu,
   MessageSquareText,
   Minimize2,
   PanelTopClose,
@@ -25,7 +26,6 @@ import {
   Plus,
   Search,
   Send,
-  SlidersHorizontal,
   Sparkles,
   Square,
   Trash2,
@@ -59,6 +59,7 @@ import type {
   PricingRule,
   Project,
   UserSkill,
+  AIModel,
 } from '@/types'
 
 type PersonalAgentMode = 'chat' | 'image' | 'video' | 'skill'
@@ -87,7 +88,7 @@ const activity = useActivityStore()
 
 const selectedProjectId = ref('')
 const selectedSessionId = ref('')
-const options = ref<AgentChatOptions>({ agents: [], skills: [] })
+const options = ref<AgentChatOptions>({ agents: [], skills: [], text_models: [], image_models: [], video_models: [], tts_models: [] })
 const sessions = ref<AgentChatSession[]>([])
 const messages = ref<AgentChatMessage[]>([])
 const draft = ref('')
@@ -96,10 +97,13 @@ const submitting = ref(false)
 const runTaskId = ref('')
 const textarea = ref<HTMLTextAreaElement | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
+const agentRoot = ref<HTMLElement | null>(null)
 const contextMenu = ref<HTMLDetailsElement | null>(null)
+const modeMenu = ref<HTMLDetailsElement | null>(null)
 const thread = ref<HTMLDivElement | null>(null)
 const stickToLatest = ref(true)
 const focusMode = ref(false)
+const historyDrawerOpen = ref(false)
 const collapsed = ref(props.defaultCollapsed)
 const copiedMessageId = ref('')
 const cancelling = ref(false)
@@ -114,6 +118,9 @@ const imageResolution = ref('1K')
 const videoAspectRatio = ref('16:9')
 const videoResolution = ref('720p')
 const videoDuration = ref(5)
+const selectedTextModelId = ref('')
+const selectedImageModelId = ref('')
+const selectedVideoModelId = ref('')
 const skillCommandIndex = ref(0)
 const deleteSessionTarget = ref<AgentChatSession | null>(null)
 const deletingSession = ref(false)
@@ -135,6 +142,7 @@ let directorWorkflowDiscoveryUntil = 0
 let streamScrollFrame: number | undefined
 let copiedResetTimer: ReturnType<typeof setTimeout> | undefined
 const settlingTaskIds = new Set<string>()
+const dropdownSelector = '.agent-mode-dropdown, .agent-context-switcher, .agent-inline-select'
 
 const selectedProject = computed(() => props.projects.find((item) => item.id === selectedProjectId.value))
 const personalMode = computed(() => props.personal && props.scene === 'workspace')
@@ -224,6 +232,61 @@ const mediaProgressValue = computed(() => {
 const mediaProgressIndeterminate = computed(() => (
   trackedTask.value?.status === 'queued' || mediaProgressValue.value === 0
 ))
+const activeModelList = computed(() => {
+  if (personalAgentMode.value === 'image') return options.value.image_models
+  if (personalAgentMode.value === 'video') return options.value.video_models
+  return options.value.text_models
+})
+const activeModelId = computed({
+  get: () => personalAgentMode.value === 'image'
+    ? selectedImageModelId.value
+    : personalAgentMode.value === 'video' ? selectedVideoModelId.value : selectedTextModelId.value,
+  set: (value: string) => {
+    if (personalAgentMode.value === 'image') selectedImageModelId.value = value
+    else if (personalAgentMode.value === 'video') selectedVideoModelId.value = value
+    else selectedTextModelId.value = value
+  },
+})
+const activeModel = computed<AIModel | null>(() => activeModelList.value.find((item) => item.id === activeModelId.value) ?? null)
+const imageModelResolutions = computed(() => {
+  const raw = activeModel.value?.capabilities?.resolutions
+  if (Array.isArray(raw) && raw.length) return raw.filter((item): item is string => typeof item === 'string')
+  const sizeMap = activeModel.value?.capabilities?.size_map
+  if (sizeMap && typeof sizeMap === 'object') return Object.keys(sizeMap)
+  return ['1K', '2K', '4K']
+})
+const imageModelRatios = computed(() => {
+  const raw = activeModel.value?.capabilities?.aspect_ratios
+  if (Array.isArray(raw) && raw.length) return raw.filter((item): item is string => typeof item === 'string')
+  return ['1:1', '16:9', '9:16']
+})
+const videoModelCapabilities = computed(() => activeModel.value?.capabilities ?? {})
+const videoModelResolutions = computed(() => {
+  const raw = videoModelCapabilities.value.duration_resolution_map
+  if (Array.isArray(raw)) {
+    const values = raw.flatMap((item) => item && typeof item === 'object' && Array.isArray((item as { resolutions?: unknown }).resolutions) ? (item as { resolutions: unknown[] }).resolutions : [])
+    if (values.length) return [...new Set(values.filter((item): item is string => typeof item === 'string'))]
+  }
+  return ['720p']
+})
+const videoModelRatios = computed(() => {
+  const raw = videoModelCapabilities.value.aspect_ratios
+  return Array.isArray(raw) && raw.length ? raw.filter((item): item is string => typeof item === 'string') : ['16:9', '9:16', '1:1']
+})
+const videoModelDurations = computed(() => {
+  const raw = videoModelCapabilities.value.duration_resolution_map
+  if (Array.isArray(raw)) {
+    const values = raw.flatMap((item) => item && typeof item === 'object' && Array.isArray((item as { durations?: unknown }).durations) ? (item as { durations: unknown[] }).durations : [])
+    if (values.length) return [...new Set(values.filter((item): item is number => typeof item === 'number'))]
+  }
+  return [5, 10]
+})
+const activeModelOptions = computed(() => activeModelList.value.map((model) => ({
+  value: model.id,
+  label: model.name,
+  description: model.is_default ? '系统默认模型' : model.model_id,
+  icon: personalAgentMode.value === 'image' ? ImageIcon : personalAgentMode.value === 'video' ? Video : Bot,
+})))
 const mediaProgressDisplay = computed(() => (
   trackedTask.value?.status === 'queued' ? '排队中' : `${mediaProgressValue.value}%`
 ))
@@ -304,6 +367,28 @@ const sessionSelectOptions = computed(() => sessions.value.map((session) => ({
   icon: History,
 })))
 
+watch(activeModelList, (models) => {
+  if (!models.length) {
+    activeModelId.value = ''
+    return
+  }
+  if (!models.some((item) => item.id === activeModelId.value)) {
+    activeModelId.value = models.find((item) => item.is_default)?.id ?? models[0]!.id
+  }
+}, { immediate: true })
+
+watch([activeModel, personalAgentMode], () => {
+  if (personalAgentMode.value === 'image') {
+    if (!imageModelResolutions.value.includes(imageResolution.value)) imageResolution.value = imageModelResolutions.value[0] ?? '1K'
+    if (!imageModelRatios.value.includes(imageAspectRatio.value)) imageAspectRatio.value = imageModelRatios.value[0] ?? '1:1'
+  }
+  if (personalAgentMode.value === 'video') {
+    if (!videoModelResolutions.value.includes(videoResolution.value)) videoResolution.value = videoModelResolutions.value[0] ?? '720p'
+    if (!videoModelRatios.value.includes(videoAspectRatio.value)) videoAspectRatio.value = videoModelRatios.value[0] ?? '16:9'
+    if (!videoModelDurations.value.includes(videoDuration.value)) videoDuration.value = videoModelDurations.value[0] ?? 5
+  }
+})
+
 watch(
   () => props.projects.map((item) => item.id).join(','),
   () => {
@@ -342,6 +427,8 @@ watch(
 
 onMounted(() => {
   window.addEventListener('keydown', handleWindowKeydown)
+  document.addEventListener('pointerdown', handleDocumentPointerDown)
+  document.addEventListener('focusin', handleDocumentFocusIn)
   if (props.initialPrompt && props.scene !== 'director') draft.value = props.initialPrompt
   if (personalMode.value) void loadProjectContext()
   else {
@@ -355,6 +442,8 @@ onMounted(() => {
 
 onUnmounted(() => {
   window.removeEventListener('keydown', handleWindowKeydown)
+  document.removeEventListener('pointerdown', handleDocumentPointerDown)
+  document.removeEventListener('focusin', handleDocumentFocusIn)
   if (runPollTimer) clearTimeout(runPollTimer)
   if (directorWorkflowPollTimer) clearTimeout(directorWorkflowPollTimer)
   if (streamScrollFrame !== undefined) cancelAnimationFrame(streamScrollFrame)
@@ -391,8 +480,59 @@ function selectProject(value: string): void {
 
 function selectSession(value: string): void {
   if (value === selectedSessionId.value) return
+  historyDrawerOpen.value = false
   selectedSessionId.value = value
   void openSession(value)
+}
+
+function closeDropdowns(except?: HTMLDetailsElement | null): void {
+  agentRoot.value?.querySelectorAll<HTMLDetailsElement>(dropdownSelector).forEach((details) => {
+    if (details !== except) details.removeAttribute('open')
+  })
+}
+
+function handleDocumentPointerDown(event: PointerEvent): void {
+  const target = event.target
+  if (!(target instanceof Element)) return
+
+  // Reka UI teleports select menus to body. Let the select finish its own
+  // selection first instead of unmounting the parent mode menu on pointerdown.
+  if (target.closest('.ui-select-menu')) return
+
+  const current = target.closest<HTMLDetailsElement>(dropdownSelector)
+  closeDropdowns(current)
+}
+
+function handleDocumentFocusIn(event: FocusEvent): void {
+  const target = event.target
+  if (!(target instanceof Element)) return
+
+  // Reka UI renders its menu into body. Keep the parent mode menu open while
+  // focus moves into that portalled list, but close native details when focus
+  // moves elsewhere.
+  if (target.closest('.ui-select-menu')) return
+
+  const current = target.closest<HTMLDetailsElement>(dropdownSelector)
+  closeDropdowns(current)
+}
+
+function handleDetailsToggle(event: Event): void {
+  const details = event.currentTarget instanceof HTMLDetailsElement
+    ? event.currentTarget
+    : event.target instanceof HTMLDetailsElement ? event.target : null
+  if (details?.open) closeDropdowns(details)
+}
+
+function closeDropdownFromEvent(event: Event): void {
+  const details = event.currentTarget instanceof Element
+    ? event.currentTarget.closest<HTMLDetailsElement>(dropdownSelector)
+    : null
+  details?.removeAttribute('open')
+}
+
+function selectActiveModel(value: string): void {
+  activeModelId.value = value
+  modeMenu.value?.removeAttribute('open')
 }
 
 async function loadProjectContext(): Promise<void> {
@@ -400,7 +540,7 @@ async function loadProjectContext(): Promise<void> {
   const version = ++loadVersion
   loading.value = true
   messages.value = []
-  options.value = { agents: [], skills: [] }
+  options.value = { agents: [], skills: [], text_models: [], image_models: [], video_models: [], tts_models: [] }
   if (personalMode.value) userSkills.value = []
   selectedSessionId.value = ''
   trackRunTask(null)
@@ -562,6 +702,8 @@ function startNewConversation(): void {
   messages.value = []
   draft.value = ''
   selectedSkillIds.value = []
+  historyDrawerOpen.value = false
+  modeMenu.value?.removeAttribute('open')
   resizeTextarea()
   void nextTick(() => textarea.value?.focus())
 }
@@ -570,7 +712,18 @@ function selectPersonalMode(mode: PersonalAgentMode): void {
   if (!personalMode.value || sending.value || personalAgentMode.value === mode) return
   personalAgentMode.value = mode
   skillCommandIndex.value = 0
+  modeMenu.value?.removeAttribute('open')
   void nextTick(() => textarea.value?.focus())
+}
+
+function toggleHistoryDrawer(): void {
+  if (sending.value) return
+  historyDrawerOpen.value = !historyDrawerOpen.value
+  modeMenu.value?.removeAttribute('open')
+}
+
+function closeHistoryDrawer(): void {
+  historyDrawerOpen.value = false
 }
 
 function removeSelectedSkill(skillId: string): void {
@@ -663,6 +816,10 @@ async function deleteCurrentSession(): Promise<void> {
 }
 
 function handleWindowKeydown(event: KeyboardEvent): void {
+  if (event.key === 'Escape' && historyDrawerOpen.value) {
+    historyDrawerOpen.value = false
+    return
+  }
   if (event.key === 'Escape' && focusMode.value) focusMode.value = false
 }
 
@@ -1196,6 +1353,10 @@ async function sendMessage(): Promise<void> {
           attachment_ids: attachments.map((item) => item.id),
           chapter_id: props.scene === 'director' ? props.chapterId : undefined,
           mode: personalMode.value ? submittedMode : undefined,
+          text_model_id: personalMode.value ? selectedTextModelId.value || undefined : undefined,
+          media_model_id: personalMode.value && submittedMode !== 'chat' && submittedMode !== 'skill'
+            ? (submittedMode === 'image' ? selectedImageModelId.value : selectedVideoModelId.value) || undefined
+            : undefined,
           skill_ids: personalMode.value ? submittedSkillIds : undefined,
           media_options: personalMode.value ? mediaOptions : undefined,
         }),
@@ -1246,6 +1407,7 @@ async function sendMessage(): Promise<void> {
   <Teleport to="body" :disabled="!focusMode">
     <section
       v-bind="$attrs"
+      ref="agentRoot"
       class="agent-studio"
       :class="{ 'agent-studio--focus': focusMode, 'agent-studio--collapsed': collapsed, 'agent-studio--personal': personalMode }"
       aria-labelledby="agent-studio-title"
@@ -1263,6 +1425,53 @@ async function sendMessage(): Promise<void> {
 
     <div v-else class="agent-composer-shell" :class="{ 'agent-composer-shell--active': hasConversation }">
       <header class="agent-workbench-header">
+        <template v-if="personalMode">
+          <div class="agent-home-header__left">
+            <span id="agent-studio-title" class="sr-only">{{ assistantTitle }}</span>
+            <button
+              class="agent-history-trigger"
+              type="button"
+              :aria-expanded="historyDrawerOpen"
+              aria-controls="agent-history-drawer"
+              title="打开历史记录"
+              @click="toggleHistoryDrawer"
+            >
+              <Menu :size="19" />
+              <span>历史记录</span>
+            </button>
+          </div>
+          <div class="agent-home-mode-menu">
+            <details ref="modeMenu" class="agent-mode-dropdown" @toggle="handleDetailsToggle">
+              <summary :aria-label="`当前模式：${currentPersonalMode.label}`">
+                <span>{{ currentPersonalMode.label }}</span>
+                <ChevronDown :size="15" />
+              </summary>
+              <div class="agent-mode-dropdown__panel" data-origin="top-right">
+                <div class="agent-mode-dropdown__section">
+                  <span class="agent-mode-dropdown__label">工作模式</span>
+                  <button
+                    v-for="mode in personalModes"
+                    :key="mode.value"
+                    class="agent-mode-dropdown__option"
+                    type="button"
+                    :aria-pressed="personalAgentMode === mode.value"
+                    :disabled="sending"
+                    @click="selectPersonalMode(mode.value)"
+                  >
+                    <span class="agent-mode-dropdown__option-icon"><component :is="mode.icon" :size="16" /></span>
+                    <span><strong>{{ mode.label }}</strong><small>{{ mode.description }}</small></span>
+                    <Check v-if="personalAgentMode === mode.value" :size="15" />
+                  </button>
+                </div>
+                <div v-if="activeModelOptions.length" class="agent-mode-dropdown__section">
+                  <span class="agent-mode-dropdown__label">{{ currentPersonalMode.label }}模型</span>
+                  <UiSelect :model-value="activeModelId" :options="activeModelOptions" :disabled="sending" placeholder="选择模型" @update:model-value="selectActiveModel" />
+                </div>
+              </div>
+            </details>
+          </div>
+        </template>
+        <template v-else>
         <div class="agent-workbench-header__identity">
           <div v-if="scene === 'director' || personalMode" class="agent-context-switcher agent-context-switcher--static">
             <span class="agent-avatar"><Sparkles :size="16" /></span>
@@ -1272,7 +1481,7 @@ async function sendMessage(): Promise<void> {
               <small v-else><FolderKanban :size="12" />{{ selectedProject?.name || '未选择项目' }}</small>
             </span>
           </div>
-          <details v-else ref="contextMenu" class="agent-context-switcher">
+          <details v-else ref="contextMenu" class="agent-context-switcher" @toggle="handleDetailsToggle">
             <summary title="切换项目">
               <span class="agent-avatar"><Sparkles :size="16" /></span>
               <span class="agent-context-switcher__copy">
@@ -1318,23 +1527,56 @@ async function sendMessage(): Promise<void> {
             <PanelTopClose v-else :size="18" />
           </button>
         </div>
+        </template>
       </header>
 
-      <div v-if="!collapsed" class="agent-workspace-body">
-        <nav v-if="personalMode" class="agent-mode-switcher" aria-label="个人 Agent 模式">
-          <button
-            v-for="mode in personalModes"
-            :key="mode.value"
-            type="button"
-            :aria-pressed="personalAgentMode === mode.value"
-            :disabled="sending"
-            :title="mode.description"
-            @click="selectPersonalMode(mode.value)"
-          >
-            <span class="agent-mode-switcher__icon"><component :is="mode.icon" :size="17" /></span>
-            <span><strong>{{ mode.label }}</strong></span>
-          </button>
-        </nav>
+      <Transition name="agent-history-backdrop">
+        <button
+          v-if="personalMode && historyDrawerOpen"
+          class="agent-history-backdrop"
+          type="button"
+          aria-label="关闭历史记录"
+          @click="closeHistoryDrawer"
+        ></button>
+      </Transition>
+      <Transition name="agent-history-drawer">
+        <aside
+          v-if="personalMode && historyDrawerOpen"
+          id="agent-history-drawer"
+          class="agent-history-drawer"
+          aria-label="历史记录"
+        >
+          <div class="agent-history-drawer__header">
+            <div>
+              <strong>历史记录</strong>
+              <small>{{ sessions.length ? `${sessions.length} 个会话` : '还没有历史会话' }}</small>
+            </div>
+            <button type="button" title="关闭历史记录" @click="closeHistoryDrawer"><X :size="18" /></button>
+          </div>
+          <div class="agent-history-drawer__actions">
+            <button type="button" :disabled="sending" @click="startNewConversation"><Plus :size="15" />新对话</button>
+          </div>
+          <div v-if="sessions.length" class="agent-history-drawer__list">
+            <button
+              v-for="session in sessions"
+              :key="session.id"
+              type="button"
+              :class="{ active: selectedSessionId === session.id }"
+              @click="selectSession(session.id)"
+            >
+              <History :size="16" />
+              <span><strong>{{ session.title }}</strong><small>{{ formatSessionTime(session.last_message_at) }}</small></span>
+              <Check v-if="selectedSessionId === session.id" :size="15" />
+            </button>
+          </div>
+          <div v-else class="agent-history-drawer__empty"><History :size="24" /><span>新的对话会显示在这里</span></div>
+          <div class="agent-history-drawer__footer">
+            <button type="button" :disabled="!selectedSessionId || sending" @click="requestDeleteSession"><Trash2 :size="15" />删除当前对话</button>
+          </div>
+        </aside>
+      </Transition>
+
+          <div v-if="!collapsed" class="agent-workspace-body">
         <div v-if="messages.length" class="agent-conversation">
           <div ref="thread" class="agent-thread" :class="{ 'is-streaming': sending }" aria-live="off" @scroll.passive="updateScrollIntent">
             <div class="agent-thread__virtual" :style="{ height: `${virtualMessageHeight}px` }">
@@ -1609,28 +1851,6 @@ async function sendMessage(): Promise<void> {
             @keydown="handleComposerKeydown"
           ></textarea>
 
-          <div v-if="personalMode && personalAgentMode === 'image'" class="agent-media-options">
-            <span><SlidersHorizontal :size="14" />图片参数</span>
-            <div class="agent-option-group" aria-label="图片比例">
-              <button v-for="ratio in ['1:1', '16:9', '9:16']" :key="ratio" type="button" :aria-pressed="imageAspectRatio === ratio" @click="imageAspectRatio = ratio">{{ ratio }}</button>
-            </div>
-            <div class="agent-option-group" aria-label="图片分辨率">
-              <button v-for="resolution in ['1K', '2K', '4K']" :key="resolution" type="button" :aria-pressed="imageResolution === resolution" @click="imageResolution = resolution">{{ resolution }}</button>
-            </div>
-          </div>
-          <div v-else-if="personalMode && personalAgentMode === 'video'" class="agent-media-options agent-media-options--video">
-            <span><SlidersHorizontal :size="14" />视频参数</span>
-            <div class="agent-option-group" aria-label="视频比例">
-              <button v-for="ratio in ['16:9', '9:16', '1:1']" :key="ratio" type="button" :aria-pressed="videoAspectRatio === ratio" @click="videoAspectRatio = ratio">{{ ratio }}</button>
-            </div>
-            <div class="agent-option-group" aria-label="视频分辨率">
-              <button v-for="resolution in ['720p', '1080p']" :key="resolution" type="button" :aria-pressed="videoResolution === resolution" @click="videoResolution = resolution">{{ resolution }}</button>
-            </div>
-            <div class="agent-option-group" aria-label="视频时长">
-              <button v-for="duration in [5, 10]" :key="duration" type="button" :aria-pressed="videoDuration === duration" @click="videoDuration = duration">{{ duration }}s</button>
-            </div>
-          </div>
-
           <div class="agent-composer__actions">
             <input ref="fileInput" class="sr-only" type="file" accept="image/jpeg,image/png,image/webp" multiple @change="uploadAttachments" />
             <button
@@ -1643,6 +1863,66 @@ async function sendMessage(): Promise<void> {
               <LoaderCircle v-if="uploadingAttachments" class="spin" :size="18" />
               <ImagePlus v-else :size="18" />
             </button>
+            <div v-if="personalMode && personalAgentMode === 'image'" class="agent-inline-parameters" aria-label="图片参数">
+              <details class="agent-inline-select" @toggle="handleDetailsToggle">
+                <summary>比例 {{ imageAspectRatio }}<ChevronDown :size="13" /></summary>
+                <div class="agent-inline-select__menu">
+                  <button v-for="ratio in imageModelRatios" :key="ratio" type="button" :aria-pressed="imageAspectRatio === ratio" @click="imageAspectRatio = ratio; closeDropdownFromEvent($event)">{{ ratio }}<Check v-if="imageAspectRatio === ratio" :size="13" /></button>
+                </div>
+              </details>
+              <details class="agent-inline-select" @toggle="handleDetailsToggle">
+                <summary>{{ imageResolution }}<ChevronDown :size="13" /></summary>
+                <div class="agent-inline-select__menu">
+                  <button v-for="resolution in imageModelResolutions" :key="resolution" type="button" :aria-pressed="imageResolution === resolution" @click="imageResolution = resolution; closeDropdownFromEvent($event)">{{ resolution }}<Check v-if="imageResolution === resolution" :size="13" /></button>
+                </div>
+              </details>
+            </div>
+            <div v-else-if="personalMode && personalAgentMode === 'video'" class="agent-inline-parameters" aria-label="视频参数">
+              <details class="agent-inline-select" @toggle="handleDetailsToggle">
+                <summary>比例 {{ videoAspectRatio }}<ChevronDown :size="13" /></summary>
+                <div class="agent-inline-select__menu">
+                  <button v-for="ratio in videoModelRatios" :key="ratio" type="button" :aria-pressed="videoAspectRatio === ratio" @click="videoAspectRatio = ratio; closeDropdownFromEvent($event)">{{ ratio }}<Check v-if="videoAspectRatio === ratio" :size="13" /></button>
+                </div>
+              </details>
+              <details class="agent-inline-select" @toggle="handleDetailsToggle">
+                <summary>{{ videoResolution }}<ChevronDown :size="13" /></summary>
+                <div class="agent-inline-select__menu">
+                  <button v-for="resolution in videoModelResolutions" :key="resolution" type="button" :aria-pressed="videoResolution === resolution" @click="videoResolution = resolution; closeDropdownFromEvent($event)">{{ resolution }}<Check v-if="videoResolution === resolution" :size="13" /></button>
+                </div>
+              </details>
+              <details class="agent-inline-select" @toggle="handleDetailsToggle">
+                <summary>{{ videoDuration }} 秒<ChevronDown :size="13" /></summary>
+                <div class="agent-inline-select__menu">
+                  <button v-for="duration in videoModelDurations" :key="duration" type="button" :aria-pressed="videoDuration === duration" @click="videoDuration = duration; closeDropdownFromEvent($event)">{{ duration }} 秒<Check v-if="videoDuration === duration" :size="13" /></button>
+                </div>
+              </details>
+            </div>
+            <details
+              v-if="personalMode && activeModel"
+              class="agent-inline-select agent-inline-model-select"
+              @toggle="handleDetailsToggle"
+            >
+              <summary
+                :title="`当前模型：${activeModel.name}`"
+                :aria-disabled="sending"
+                @click="sending && $event.preventDefault()"
+              >
+                <span>{{ activeModel.name }}</span><ChevronDown :size="13" />
+              </summary>
+              <div class="agent-inline-select__menu agent-inline-model-select__menu">
+                <button
+                  v-for="model in activeModelList"
+                  :key="model.id"
+                  type="button"
+                  :aria-pressed="activeModelId === model.id"
+                  :disabled="sending"
+                  @click="selectActiveModel(model.id); closeDropdownFromEvent($event)"
+                >
+                  <span><strong>{{ model.name }}</strong><small>{{ model.is_default ? '系统默认' : model.model_id }}</small></span>
+                  <Check v-if="activeModelId === model.id" :size="13" />
+                </button>
+              </div>
+            </details>
             <button
               class="agent-send-button"
               :class="[
