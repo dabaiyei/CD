@@ -220,9 +220,9 @@ function formatDate(value: string): string {
   <div class="user-skills-page page-stack">
     <header class="page-header skills-hero">
       <div class="skills-hero__content">
-        <span class="eyebrow">PERSONAL CAPABILITIES</span>
+        <span class="eyebrow"><BrainCircuit :size="14" />个人能力</span>
         <h1>我的 Skills</h1>
-        <p>把你的导演经验、画面技法和生产方法，沉淀为 AI 随时可调用的能力。</p>
+        <p>把导演经验、画面技法和生产方法沉淀为 AI 可按需调用的能力。</p>
       </div>
       <button class="button skills-hero__action" type="button" @click="openCreate">
         <Plus :size="18" /><span>添加 Skill</span>
@@ -238,6 +238,7 @@ function formatDate(value: string): string {
 
     <div class="skills-workspace-layout">
       <aside class="skills-stage-rail">
+        <span class="skills-stage-rail__label">能力阶段</span>
         <nav class="skill-filter-bar" aria-label="按创作阶段筛选">
           <button :class="{ active: stageFilter === 'all' }" type="button" @click="stageFilter = 'all'">
             <Sparkles :size="15" /><span>全部能力</span><small class="tabular-nums">{{ skills.length }}</small>

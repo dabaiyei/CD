@@ -1,0 +1,22 @@
+{
+  "contractVersion": "v2",
+  "runtimeType": "agentscope",
+  "tenantId": "11c71fbd-5422-4a24-a1ae-e50a75dd6889",
+  "projectId": "720ebefb-0b0d-412f-8dae-7814b89fe879",
+  "taskId": "d8b18f0b-6074-4ddb-b61d-649a390c803e",
+  "sessionId": "d8b18f0b-6074-4ddb-b61d-649a390c803e",
+  "promptVersions": {
+    "screenplay-agent": "3"
+  },
+  "skillVersions": {
+    "tenants/11c71fbd-5422-4a24-a1ae-e50a75dd6889/visual-handbooks/9d716da5-f49d-4c1e-859c-3a06e24995ac": "1"
+  },
+  "skills": [
+    {
+      "path": "tenants/11c71fbd-5422-4a24-a1ae-e50a75dd6889/visual-handbooks/9d716da5-f49d-4c1e-859c-3a06e24995ac/technique-storyboard-table-design.md",
+      "sha256": "d4d39fc912a6b491ea3d2421e2e8776345aae75a9256263583bb0c0f734ec199",
+      "version": "7"
+    }
+  ],
+  "projectFiles": []
+}

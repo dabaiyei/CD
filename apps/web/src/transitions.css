@@ -223,13 +223,15 @@
   to { opacity: 0; filter: blur(var(--blur-small)); scale: var(--modal-scale-close); }
 }
 
-.dialog-content.t-modal[data-state='open'] {
+.dialog-content.t-modal[data-state='open'],
+.agent-media-viewer.t-modal[data-state='open'] {
   animation: t-modal-open var(--modal-open-dur) var(--modal-ease) both;
   transform-origin: center;
   will-change: scale, opacity, filter;
 }
 
-.dialog-content.t-modal[data-state='closed'] {
+.dialog-content.t-modal[data-state='closed'],
+.agent-media-viewer.t-modal[data-state='closed'] {
   animation: t-modal-close var(--modal-close-dur) var(--modal-ease) both;
   transform-origin: center;
   will-change: scale, opacity, filter;
@@ -294,11 +296,6 @@
 .agent-media-status-leave-active {
   transition-duration: var(--duration-quick);
   transition-timing-function: var(--ease-in-out);
-}
-
-.agent-generated-media {
-  animation-duration: var(--duration-slow);
-  animation-timing-function: var(--ease-smooth-out);
 }
 
 .agent-file-sync {

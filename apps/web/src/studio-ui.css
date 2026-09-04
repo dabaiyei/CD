@@ -1080,7 +1080,7 @@ input:-webkit-autofill:focus {
 .director-main-workspace {
   min-width: 0;
   min-height: 0;
-  grid-template-columns: minmax(0, 1fr) minmax(340px, 360px);
+  grid-template-columns: minmax(0, 1fr) 12px clamp(280px, var(--director-agent-width, 360px), 52%);
   grid-template-rows: minmax(0, 1fr) !important;
   overflow: hidden;
   padding: 0;
@@ -1098,7 +1098,78 @@ input:-webkit-autofill:focus {
 }
 
 .director-pane-resizer {
-  display: none;
+  position: relative;
+  z-index: 4;
+  display: flex;
+  width: 12px;
+  min-width: 12px;
+  min-height: 0;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink-tertiary);
+  cursor: col-resize;
+  outline: none;
+  touch-action: none;
+}
+
+.director-pane-resizer::before {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 1px;
+  content: '';
+  background: var(--line);
+  transition-property: width, background-color, box-shadow;
+  transition-duration: 160ms;
+  transition-timing-function: ease-out;
+}
+
+.director-pane-resizer>span {
+  position: relative;
+  display: inline-flex;
+  width: 20px;
+  height: 46px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 6px;
+  color: inherit;
+  background: var(--surface);
+  box-shadow: 0 0 0 1px rgb(255 255 255 / 8%), 0 5px 14px rgb(0 0 0 / 20%);
+  opacity: 0;
+  scale: .25;
+  filter: blur(4px);
+  transition-property: color, background-color, box-shadow, opacity, scale, filter;
+  transition-duration: 160ms;
+  transition-timing-function: ease-out;
+}
+
+.director-pane-resizer:hover::before,
+.director-pane-resizer:focus-visible::before,
+.director-main-workspace.is-resizing .director-pane-resizer::before {
+  width: 2px;
+  background: var(--brand);
+  box-shadow: 0 0 10px color-mix(in srgb, var(--brand) 24%, transparent);
+}
+
+.director-pane-resizer:hover>span,
+.director-pane-resizer:focus-visible>span,
+.director-main-workspace.is-resizing .director-pane-resizer>span {
+  color: var(--brand);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand) 22%, transparent), 0 7px 18px rgb(0 0 0 / 24%);
+  opacity: 1;
+  scale: 1;
+  filter: blur(0);
+}
+
+.director-main-workspace.is-resizing .director-pane-resizer>span {
+  scale: .96;
+}
+
+body.director-resizing,
+body.director-resizing * {
+  cursor: col-resize !important;
+  user-select: none !important;
 }
 
 .director-agent-workspace {
@@ -1764,6 +1835,10 @@ input:-webkit-autofill:focus {
   .director-main-workspace {
     grid-template-columns: minmax(0, 1fr);
     grid-template-rows: minmax(430px, 58dvh) minmax(420px, auto) !important;
+  }
+
+  .director-pane-resizer {
+    display: none;
   }
 
   .director-agent-workspace {

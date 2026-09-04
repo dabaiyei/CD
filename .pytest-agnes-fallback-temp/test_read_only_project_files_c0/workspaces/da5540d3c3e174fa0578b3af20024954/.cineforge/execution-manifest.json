@@ -1,0 +1,37 @@
+{
+  "contractVersion": "v2",
+  "runtimeType": "agentscope",
+  "tenantId": "tenant-1",
+  "projectId": "project-1",
+  "taskId": "task-1",
+  "sessionId": "session-1",
+  "promptVersions": {
+    "screenplay-agent": "3"
+  },
+  "skillVersions": {
+    "visual/noir": "7"
+  },
+  "skills": [
+    {
+      "path": "visual/noir/README.md",
+      "sha256": "d4d39fc912a6b491ea3d2421e2e8776345aae75a9256263583bb0c0f734ec199",
+      "version": "7"
+    }
+  ],
+  "projectFiles": [
+    {
+      "id": "current-chapter-context",
+      "name": "current-chapter.md",
+      "path": "project-files/current-chapter-context/current-chapter.md",
+      "sha256": "f74688bba8efaed92962aeca218f9c185a97477dda24639f419684658178f331",
+      "editable": false
+    },
+    {
+      "id": "current-chapter-original",
+      "name": "chapter-original.md",
+      "path": "project-files/current-chapter-context/chapter-original.md",
+      "sha256": "b93ac027d11861d90be5688cb273bbf3592c888f5bf92e87a6b199f997876fb5",
+      "editable": false
+    }
+  ]
+}

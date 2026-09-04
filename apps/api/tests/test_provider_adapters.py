@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 
+import httpx
 import pytest
 from pydantic import ValidationError
 
@@ -11,11 +12,14 @@ from app.services.media_gateway import (
     ImageGenerationRequest,
     OpenAICompatibleMediaGateway,
     VideoGenerationRequest,
+    image_prompt_for_provider,
 )
 from app.services.provider_adapters import (
+    AGNES_IMAGE_21_MODEL_ID,
     AGNES_VIDEO_MODEL_ID,
     AUTODL_MINIMAX_H3_MODEL_ID,
     VideoModelCapabilities,
+    agnes_image_21_capabilities,
     agnes_image_capabilities,
     agnes_video_adapter_config,
     agnes_video_capabilities,
@@ -78,6 +82,30 @@ class FakeAdapterClient:
         self.is_closed = True
 
 
+class FakeResilientAdapterClient(FakeAdapterClient):
+    post_attempts = 0
+    get_attempts = 0
+
+    async def request(self, method: str, url: str, **kwargs) -> FakeResponse | httpx.Response:
+        if method == "POST":
+            self.__class__.post_attempts += 1
+            if self.post_attempts == 1:
+                return httpx.Response(
+                    429,
+                    headers={"retry-after": "0"},
+                    json={"error": {"message": "rate limited"}},
+                    request=httpx.Request(method, url),
+                )
+        if method == "GET":
+            self.__class__.get_attempts += 1
+            if self.get_attempts == 1:
+                raise httpx.ConnectError(
+                    "temporary connection failure",
+                    request=httpx.Request(method, url),
+                )
+        return await super().request(method, url, **kwargs)
+
+
 class FakeRetryImageClient:
     attempts = 0
     idempotency_keys: list[str] = []
@@ -104,6 +132,8 @@ class FakeRetryImageClient:
 
 
 class FakeAgnesImageUrlClient:
+    requests: list[dict] = []
+
     def __init__(self, **_kwargs) -> None:
         pass
 
@@ -113,7 +143,8 @@ class FakeAgnesImageUrlClient:
     async def __aexit__(self, *_args) -> None:
         return None
 
-    async def post(self, _url: str, **_kwargs) -> FakeResponse:
+    async def post(self, _url: str, **kwargs) -> FakeResponse:
+        self.__class__.requests.append(kwargs["json"])
         return FakeResponse(
             {
                 "data": [
@@ -280,6 +311,46 @@ def test_declarative_video_adapter_creates_polls_and_extracts_result(monkeypatch
     assert completed.content_type == "video/mp4"
 
 
+def test_declarative_video_adapter_retries_rate_limit_and_poll_network_error(monkeypatch) -> None:
+    async def allow_test_urls(_url: str, *, media_name: str = "图片") -> None:
+        assert media_name
+
+    async def no_sleep(_delay: float) -> None:
+        return None
+
+    FakeResilientAdapterClient.requests.clear()
+    FakeResilientAdapterClient.post_attempts = 0
+    FakeResilientAdapterClient.get_attempts = 0
+    monkeypatch.setattr(media_gateway, "_validate_download_url", allow_test_urls)
+    monkeypatch.setattr(media_gateway.httpx, "AsyncClient", FakeResilientAdapterClient)
+    monkeypatch.setattr(media_gateway.asyncio, "sleep", no_sleep)
+    gateway = OpenAICompatibleMediaGateway(
+        base_url="https://provider.example.test",
+        api_key=None,
+        extra_headers={},
+        adapter_config=adapter_config(),
+        credentials={"token": "secret-token"},
+    )
+    request = VideoGenerationRequest(
+        model="h3-video",
+        prompt="雨夜港口",
+        resolution="768p横",
+        aspect_ratio="16:9",
+        duration_seconds=8,
+        reference_image_url=None,
+        capabilities={},
+        idempotency_key="resilient-video-task",
+    )
+
+    submitted = asyncio.run(gateway.submit_video(request))
+    completed = asyncio.run(gateway.poll_video(request, submitted.provider_job_id or ""))
+
+    assert submitted.provider_job_id == "video-job-1"
+    assert completed.status == "succeeded"
+    assert FakeResilientAdapterClient.post_attempts == 2
+    assert FakeResilientAdapterClient.get_attempts == 2
+
+
 class FakeAgnesClient:
     requests: list[tuple[str, str, dict | None, dict | None]] = []
 
@@ -371,6 +442,25 @@ def test_agnes_image_capabilities_use_nested_response_format() -> None:
     assert capabilities["aspect_ratio_parameter"] == "ratio"
 
 
+def test_agnes_image_21_prompt_is_flattened_without_changing_meaningful_text() -> None:
+    prompt = "第一行\r\n（光氛围：1.6）\t冷白皮肤\x00，保留中文与标点。"
+
+    sanitized = image_prompt_for_provider(
+        AGNES_IMAGE_21_MODEL_ID,
+        prompt,
+        agnes_image_21_capabilities(),
+    )
+
+    assert sanitized == "第一行 光氛围 冷白皮肤 ，保留中文与标点。"
+    assert prompt == "第一行\r\n（光氛围：1.6）\t冷白皮肤\x00，保留中文与标点。"
+
+
+def test_other_image_models_keep_multiline_and_weight_syntax() -> None:
+    prompt = "第一行\n(photorealistic:1.8)"
+
+    assert image_prompt_for_provider("other-image-model", prompt, {}) == prompt
+
+
 def test_agnes_flash_video_capabilities_only_advertise_supported_720p() -> None:
     capabilities = agnes_video_capabilities()
 
@@ -429,6 +519,7 @@ def test_image_generation_falls_back_to_url_when_b64_json_is_empty(monkeypatch) 
 
     monkeypatch.setattr(media_gateway.httpx, "AsyncClient", FakeAgnesImageUrlClient)
     monkeypatch.setattr(media_gateway, "_validate_download_url", allow_test_urls)
+    FakeAgnesImageUrlClient.requests.clear()
     gateway = OpenAICompatibleMediaGateway(
         base_url="https://apihub.agnes-ai.com/v1",
         api_key="secret",
@@ -438,7 +529,7 @@ def test_image_generation_falls_back_to_url_when_b64_json_is_empty(monkeypatch) 
         gateway.generate_image(
             ImageGenerationRequest(
                 model="agnes-image-2.1-flash",
-                prompt="red cup",
+                prompt="第一行\n（真实光影：1.5）\tred cup",
                 resolution="2K",
                 aspect_ratio="16:9",
                 capabilities=agnes_image_capabilities(),
@@ -447,6 +538,7 @@ def test_image_generation_falls_back_to_url_when_b64_json_is_empty(monkeypatch) 
         )
     )
     assert result == b"valid-image-bytes"
+    assert FakeAgnesImageUrlClient.requests[0]["prompt"] == "第一行 真实光影 red cup"
 
 
 def test_autodl_minimax_h3_preset_renders_indexed_data_uri_references(monkeypatch) -> None:

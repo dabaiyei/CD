@@ -1,0 +1,22 @@
+{
+  "contractVersion": "v2",
+  "runtimeType": "agentscope",
+  "tenantId": "tenant-1",
+  "projectId": "project-1",
+  "taskId": "task-1",
+  "sessionId": "session-1",
+  "promptVersions": {
+    "screenplay-agent": "3"
+  },
+  "skillVersions": {
+    "user-skills/skill-1": "3"
+  },
+  "skills": [
+    {
+      "path": "user-skills/skill-1/README.md",
+      "sha256": "0a249c542261527455e556cd5db52281906a23fd3f047993a205d3fe811a3c15",
+      "version": "3"
+    }
+  ],
+  "projectFiles": []
+}

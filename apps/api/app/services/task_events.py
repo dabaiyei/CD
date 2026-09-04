@@ -91,17 +91,23 @@ def record_task_event(
 async def publish_task_event(task: AITask, event: TaskEvent) -> None:
     if task.request_payload.get("internal"):
         return
+    payload: dict[str, Any] = {
+        "type": "task.updated",
+        "task_id": task.id,
+        "project_id": task.project_id,
+        "status": event.status.value,
+        "progress": event.progress,
+        "message": event.message,
+        "created_at": event.created_at,
+    }
+    if task.task_type == "agent_chat_run" and task.request_payload.get("scope") == "personal":
+        payload["task_mode"] = str(task.request_payload.get("mode") or "chat")
+        media_intent = (task.result_payload or {}).get("media_intent")
+        if isinstance(media_intent, dict):
+            payload["media_intent"] = media_intent
     await publish_user_event(
         task.user_id,
-        {
-            "type": "task.updated",
-            "task_id": task.id,
-            "project_id": task.project_id,
-            "status": event.status.value,
-            "progress": event.progress,
-            "message": event.message,
-            "created_at": event.created_at,
-        },
+        payload,
     )
 
 

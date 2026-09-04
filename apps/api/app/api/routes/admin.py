@@ -116,6 +116,7 @@ from app.services.provider_adapters import (
     AUTODL_MINIMAX_H3_MODEL_ID,
     AUTODL_MINIMAX_H3_PROVIDER_CODE,
     ProviderAdapterConfig,
+    agnes_image_21_capabilities,
     agnes_image_capabilities,
     agnes_video_adapter_config,
     agnes_video_capabilities,
@@ -1040,7 +1041,12 @@ async def install_agnes_ai_preset(
 
     definitions = [
         (AGNES_TEXT_MODEL_ID, "Agnes 2.5 Flash", ModelType.TEXT, {}),
-        (AGNES_IMAGE_21_MODEL_ID, "Agnes Image 2.1 Flash", ModelType.IMAGE, agnes_image_capabilities()),
+        (
+            AGNES_IMAGE_21_MODEL_ID,
+            "Agnes Image 2.1 Flash",
+            ModelType.IMAGE,
+            agnes_image_21_capabilities(),
+        ),
         (AGNES_IMAGE_MODEL_ID, "Agnes Image 2.5 Flash", ModelType.IMAGE, agnes_image_capabilities()),
         (AGNES_VIDEO_MODEL_ID, "Agnes Video 2.5 Flash", ModelType.VIDEO, agnes_video_capabilities()),
     ]
@@ -1064,7 +1070,7 @@ async def install_agnes_ai_preset(
                 is_default=False,
             )
             session.add(model)
-        elif model_type == ModelType.VIDEO:
+        elif model_type in {ModelType.IMAGE, ModelType.VIDEO}:
             model.capabilities = capabilities
         installed.append(model)
     await session.commit()

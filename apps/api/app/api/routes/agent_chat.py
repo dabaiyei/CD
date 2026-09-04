@@ -2625,6 +2625,17 @@ async def send_personal_message(
                 skill.id: skill.version for skill in selected_skills
             },
             "media_options": payload.media_options.model_dump(exclude_none=True),
+            "media_generation_mode": (
+                "image_to_image"
+                if payload.mode == "image" and attachments
+                else "image_to_video"
+                if payload.mode == "video" and attachments
+                else "text_to_image"
+                if payload.mode == "image"
+                else "text_to_video"
+                if payload.mode == "video"
+                else None
+            ),
             "prompt_hash": hashlib.sha256(payload.content.encode("utf-8")).hexdigest(),
             "attachment_ids": [item.id for item in attachments],
             "pricing": pricing.as_payload(),

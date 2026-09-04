@@ -72,9 +72,9 @@ class Settings(BaseSettings):
     task_event_channel: str = "cineforge:events"
     task_poll_interval_seconds: float = 1.5
     worker_concurrency: int = Field(default=8, ge=1, le=64)
-    task_recovery_interval_seconds: float = 60.0
-    task_lease_timeout_seconds: float = 15 * 60
-    task_heartbeat_seconds: float = 20.0
+    task_recovery_interval_seconds: float = Field(default=15.0, ge=5.0, le=300.0)
+    task_lease_timeout_seconds: float = Field(default=90.0, ge=30.0, le=3600.0)
+    task_heartbeat_seconds: float = Field(default=20.0, ge=5.0, le=300.0)
     agent_chat_task_timeout_seconds: float = Field(default=300.0, gt=0, le=300.0)
     media_request_timeout_seconds: float = 300.0
     allow_private_media_urls: bool = False

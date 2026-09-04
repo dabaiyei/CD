@@ -1,6 +1,5 @@
 <script setup lang="ts">
 import { computed, onMounted, onUnmounted, ref } from 'vue'
-import { gsap } from 'gsap'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ChevronDown,
@@ -40,7 +39,6 @@ const { theme } = useTheme()
 const pwa = usePwaInstall()
 const accountMenuOpen = ref(false)
 const avatarEditorOpen = ref(false)
-const topbarRef = ref<HTMLElement | null>(null)
 
 const currentSectionImage = computed(() => {
   const light = theme.value === 'light'
@@ -69,34 +67,7 @@ onMounted(() => {
 
 onUnmounted(() => {
   activity.stop()
-  if (topbarRef.value) gsap.killTweensOf(topbarRef.value)
 })
-
-function moveTopbarScene(event: PointerEvent): void {
-  const topbar = topbarRef.value
-  if (!topbar || window.matchMedia('(prefers-reduced-motion: reduce), (pointer: coarse)').matches) return
-  const bounds = topbar.getBoundingClientRect()
-  const x = ((event.clientX - bounds.left) / bounds.width - 0.5) * 20
-  const y = ((event.clientY - bounds.top) / bounds.height - 0.5) * 10
-  gsap.to(topbar, {
-    '--masthead-x': `${x}px`,
-    '--masthead-y': `${y}px`,
-    duration: 0.72,
-    ease: 'power3.out',
-    overwrite: 'auto',
-  })
-}
-
-function resetTopbarScene(): void {
-  if (!topbarRef.value) return
-  gsap.to(topbarRef.value, {
-    '--masthead-x': '0px',
-    '--masthead-y': '0px',
-    duration: 0.9,
-    ease: 'power3.out',
-    overwrite: 'auto',
-  })
-}
 
 async function logout(): Promise<void> {
   accountMenuOpen.value = false
@@ -120,15 +91,12 @@ async function installApp(): Promise<void> {
 </script>
 
 <template>
-  <div class="app-shell app-shell--top-navigation">
+  <div
+    class="app-shell app-shell--top-navigation"
+    :class="{ 'app-shell--agent-home': route.name === 'workspace' }"
+  >
     <section class="shell-main">
-      <header
-        ref="topbarRef"
-        class="topbar topbar--scene"
-        :style="{ '--topbar-image': `url(${currentSectionImage})` }"
-        @pointermove="moveTopbarScene"
-        @pointerleave="resetTopbarScene"
-      >
+      <header class="topbar topbar--scene">
         <div class="topbar__navigation">
           <RouterLink class="topbar-brand" to="/workspace" aria-label="CineForge 创作台">
             <span class="topbar-brand__mark"><Clapperboard :size="19" /></span>

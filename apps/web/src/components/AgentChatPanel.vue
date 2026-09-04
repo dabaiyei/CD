@@ -42,6 +42,7 @@ import { useStreamTypewriter } from '@/lib/useStreamTypewriter'
 import AgentExecutionPanel from '@/components/AgentExecutionPanel.vue'
 import BaseDialog from '@/components/BaseDialog.vue'
 import DirectorAgentWorkflowCard from '@/components/DirectorAgentWorkflowCard.vue'
+import MediaPreviewDialog from '@/components/MediaPreviewDialog.vue'
 import UiSelect from '@/components/UiSelect.vue'
 import { useActivityStore } from '@/stores/activity'
 import { useToastStore } from '@/stores/toast'
@@ -124,6 +125,7 @@ const selectedVideoModelId = ref('')
 const skillCommandIndex = ref(0)
 const deleteSessionTarget = ref<AgentChatSession | null>(null)
 const deletingSession = ref(false)
+const previewMedia = ref<AgentGeneratedMedia | null>(null)
 const directorWorkflow = ref<DirectorWorkflowDetail | null>(null)
 const directorDecisionAction = ref('')
 const supportedAttachmentTypes = new Set(['image/jpeg', 'image/png', 'image/webp'])
@@ -140,6 +142,7 @@ let directorWorkflowPollTimer: ReturnType<typeof setTimeout> | undefined
 let directorWorkflowSignature = ''
 let directorWorkflowDiscoveryUntil = 0
 let streamScrollFrame: number | undefined
+let textareaResizeFrame: number | undefined
 let copiedResetTimer: ReturnType<typeof setTimeout> | undefined
 const settlingTaskIds = new Set<string>()
 const dropdownSelector = '.agent-mode-dropdown, .agent-context-switcher, .agent-inline-select'
@@ -171,14 +174,19 @@ const emptyGuideDescription = computed(() => props.scene === 'director'
   : personalMode.value
     ? {
         chat: '直接交流，或输入 / 为本轮显式调用一个或多个个人 Skill。',
-        image: '描述想要的画面，也可以上传或粘贴图片作为视觉参考。',
-        video: '描述镜头运动和内容；上传图片时会作为视频参考图使用。',
+        image: '描述新画面，或继续追问并修改上一张；上传或粘贴图片可作为视觉参考。',
+        video: '描述新镜头，或继续追问并修改上一段；上传图片时会作为视频参考图使用。',
         skill: '粘贴规则或描述想学会的能力，确认后由 Agent 保存到你的 Skill 池。',
       }[personalAgentMode.value]
     : 'Agent 可读取当前项目资料，并将获准的结果同步回项目文件。')
 const trackedTask = computed(() => activity.tasks.find((item) => item.id === runTaskId.value) ?? null)
 const currentRunMode = computed<PersonalAgentMode>(() => {
-  const value = String(trackedTask.value?.request_payload.mode || personalAgentMode.value)
+  const mediaIntent = trackedTask.value?.request_payload.media_intent
+    || trackedTask.value?.result_payload?.media_intent
+  const intentType = mediaIntent && typeof mediaIntent === 'object'
+    ? String((mediaIntent as Record<string, unknown>).type || '')
+    : ''
+  const value = String(intentType || trackedTask.value?.request_payload.mode || personalAgentMode.value)
   return ['chat', 'image', 'video', 'skill'].includes(value) ? value as PersonalAgentMode : 'chat'
 })
 const liveStream = computed(() => activity.agentStreams[runTaskId.value] ?? null)
@@ -281,12 +289,6 @@ const videoModelDurations = computed(() => {
   }
   return [5, 10]
 })
-const activeModelOptions = computed(() => activeModelList.value.map((model) => ({
-  value: model.id,
-  label: model.name,
-  description: model.is_default ? '系统默认模型' : model.model_id,
-  icon: personalAgentMode.value === 'image' ? ImageIcon : personalAgentMode.value === 'video' ? Video : Bot,
-})))
 const mediaProgressDisplay = computed(() => (
   trackedTask.value?.status === 'queued' ? '排队中' : `${mediaProgressValue.value}%`
 ))
@@ -326,8 +328,8 @@ const filteredSlashSkills = computed(() => enabledUserSkills.value.filter((skill
 const skillCommandOpen = computed(() => personalMode.value && Boolean(slashCommandMatch.value))
 const personalPlaceholder = computed(() => ({
   chat: '聊聊你的想法，输入 / 调用 Skill',
-  image: '描述想生成的画面，或上传参考图片',
-  video: '描述视频内容、动作与镜头，或上传参考图',
+  image: '描述新画面，或继续修改上一张图片',
+  video: '描述新镜头，或继续修改上一段视频',
   skill: '描述想让 AI 学会的能力，或粘贴一份 Skill 规则',
 }[personalAgentMode.value]))
 const personalStarters = computed(() => ({
@@ -407,6 +409,11 @@ watch(runTaskId, () => {
   if (runTaskId.value && props.scene === 'director') requestDirectorWorkflowSync()
 })
 
+watch(currentRunMode, (mode, previousMode) => {
+  if (mode === previousMode || !['image', 'video'].includes(mode) || !runTaskId.value) return
+  void scrollToLatest(false)
+})
+
 watch(filteredSlashSkills, (skills) => {
   if (!skills.length) skillCommandIndex.value = 0
   else skillCommandIndex.value = Math.min(skillCommandIndex.value, skills.length - 1)
@@ -447,6 +454,7 @@ onUnmounted(() => {
   if (runPollTimer) clearTimeout(runPollTimer)
   if (directorWorkflowPollTimer) clearTimeout(directorWorkflowPollTimer)
   if (streamScrollFrame !== undefined) cancelAnimationFrame(streamScrollFrame)
+  if (textareaResizeFrame !== undefined) cancelAnimationFrame(textareaResizeFrame)
   if (copiedResetTimer) clearTimeout(copiedResetTimer)
   document.body.classList.remove('agent-focus-open')
 })
@@ -678,11 +686,19 @@ async function applySessionDetail(
   if (version !== loadVersion) return false
   selectedSessionId.value = detail.session.id
   messages.value = detail.messages
+  await nextTick()
+  messageVirtualizer.value.measure()
   if (personalMode.value) {
+    const activeTaskMode = String(
+      detail.active_task?.request_payload.original_mode
+      || detail.active_task?.request_payload.mode
+      || '',
+    )
     const storedMode = String(
-      detail.active_task?.request_payload.mode
-      || detail.session.runtime_manifest?.mode
+      activeTaskMode
+      || detail.session.runtime_manifest?.requested_mode
       || detail.session.runtime_manifest?.last_mode
+      || detail.session.runtime_manifest?.mode
       || '',
     )
     if (['chat', 'image', 'video', 'skill'].includes(storedMode)) {
@@ -929,7 +945,10 @@ function messageSelectedSkills(message: AgentChatMessage): Array<{ id: string; n
 
 function mediaModeLabel(mode: string | null): string {
   return {
+    text_to_image: '文生图',
+    image_to_image: '参考生图',
     text_to_video: '文生视频',
+    image_to_video: '图生视频',
     first_frame: '首帧参考',
     first_last_frame: '首尾帧参考',
     full_reference: '全参考生成',
@@ -1067,9 +1086,15 @@ function useStarter(content: string): void {
 }
 
 function resizeTextarea(): void {
-  if (!textarea.value) return
-  textarea.value.style.height = 'auto'
-  textarea.value.style.height = `${Math.min(textarea.value.scrollHeight, 176)}px`
+  if (textareaResizeFrame !== undefined) cancelAnimationFrame(textareaResizeFrame)
+  textareaResizeFrame = requestAnimationFrame(() => {
+    textareaResizeFrame = undefined
+    const target = textarea.value
+    if (!target) return
+    target.style.removeProperty('height')
+    const maximum = window.matchMedia('(max-width: 760px)').matches ? 144 : 176
+    target.style.height = `${Math.min(target.scrollHeight, maximum)}px`
+  })
 }
 
 function measureMessageRow(element: Element | ComponentPublicInstance | null): void {
@@ -1080,8 +1105,6 @@ function measureMessageRow(element: Element | ComponentPublicInstance | null): v
 async function scrollToLatest(force = true): Promise<void> {
   await nextTick()
   if (!thread.value || (!force && !stickToLatest.value)) return
-  messageVirtualizer.value.measure()
-  await nextTick()
   if (messages.value.length) {
     messageVirtualizer.value.scrollToIndex(messages.value.length - 1, { align: 'end' })
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()))
@@ -1151,6 +1174,10 @@ function formatSessionTime(value: string): string {
 }
 
 function fileChanges(message: AgentChatMessage): AgentProjectFileChangeOutcome[] {
+  if (
+    message.runtime_manifest?.scope === 'personal'
+    && message.runtime_manifest?.skill_change_requested !== true
+  ) return []
   const value = message.runtime_manifest?.project_file_changes
   if (!Array.isArray(value)) return []
   return value.filter((item): item is AgentProjectFileChangeOutcome => {
@@ -1168,11 +1195,20 @@ function fileChangeCount(message: AgentChatMessage, status: AgentProjectFileChan
 
 function fileSyncTitle(message: AgentChatMessage): string {
   const changes = fileChanges(message)
+  if (message.runtime_manifest?.scope === 'personal') return '个人 Skill 已更新'
   if (changes.some((item) => item.operation.startsWith('queue_asset_'))) return '平台任务已安排'
   if (changes.some((item) => item.operation === 'queue_storyboard_workflow')) return '导演工作流已启动'
   if (changes.some((item) => item.operation === 'publish_storyboard_version')) return '分镜已同步'
   if (changes.some((item) => item.operation === 'publish_script_version')) return '剧本已同步'
   return '项目文件已同步'
+}
+
+function openMediaPreview(media: AgentGeneratedMedia): void {
+  previewMedia.value = media
+}
+
+function closeMediaPreview(): void {
+  previewMedia.value = null
 }
 
 function fileSyncSummary(message: AgentChatMessage): string {
@@ -1212,6 +1248,30 @@ function scheduleRunPoll(delay = 1400): void {
   runPollTimer = setTimeout(() => void pollRunTask(), delay)
 }
 
+async function fetchSettledSessionDetail(task: AITask, sessionId: string): Promise<AgentChatSessionDetail> {
+  const retryDelays = [0, 120, 280, 520]
+  let latestDetail: AgentChatSessionDetail | null = null
+  let latestError: unknown
+
+  for (const delay of retryDelays) {
+    if (delay) await new Promise<void>((resolve) => setTimeout(resolve, delay))
+    try {
+      latestDetail = await fetchSessionDetail(sessionId)
+      const assistant = latestDetail.messages.find((item) => (
+        item.role === 'assistant' && item.run_id === task.id
+      ))
+      if (task.status !== 'succeeded' || assistant) return latestDetail
+    } catch (error) {
+      latestError = error
+    }
+  }
+
+  if (latestDetail && task.status !== 'succeeded') return latestDetail
+  if (latestDetail) throw new Error('生成结果暂未完成同步')
+  if (latestError instanceof Error) throw latestError
+  throw new Error('生成结果暂未完成同步')
+}
+
 async function pollRunTask(): Promise<void> {
   const taskId = runTaskId.value
   if (!taskId) return
@@ -1229,9 +1289,10 @@ async function settleRunTask(task: AITask): Promise<void> {
   if (settlingTaskIds.has(task.id)) return
   settlingTaskIds.add(task.id)
   const taskSessionId = String(task.request_payload.agent_chat_session_id ?? '')
+  let shouldClearTask = true
   try {
     if (taskSessionId && taskSessionId === selectedSessionId.value) {
-      const detail = await fetchSessionDetail(taskSessionId)
+      const detail = await fetchSettledSessionDetail(task, taskSessionId)
       const assistant = detail.messages.find((item) => item.role === 'assistant' && item.run_id === task.id)
       if (task.status === 'succeeded' && assistant?.content) {
         activity.reconcileAgentStreamText(task.id, assistant.content)
@@ -1273,14 +1334,19 @@ async function settleRunTask(task: AITask): Promise<void> {
       trackRunTask(null)
     }
   } catch (error) {
+    shouldClearTask = false
     toast.show('Agent 结果同步失败', {
       message: error instanceof Error ? error.message : undefined,
       tone: 'error',
     })
+    if (runTaskId.value === task.id) scheduleRunPoll(1800)
   } finally {
+    settlingTaskIds.delete(task.id)
     streamHandoff.value = false
-    activity.clearAgentStream(task.id)
-    if (runTaskId.value === task.id) trackRunTask(null)
+    if (shouldClearTask) {
+      activity.clearAgentStream(task.id)
+      if (runTaskId.value === task.id) trackRunTask(null)
+    }
   }
 }
 
@@ -1463,10 +1529,6 @@ async function sendMessage(): Promise<void> {
                     <Check v-if="personalAgentMode === mode.value" :size="15" />
                   </button>
                 </div>
-                <div v-if="activeModelOptions.length" class="agent-mode-dropdown__section">
-                  <span class="agent-mode-dropdown__label">{{ currentPersonalMode.label }}模型</span>
-                  <UiSelect :model-value="activeModelId" :options="activeModelOptions" :disabled="sending" placeholder="选择模型" @update:model-value="selectActiveModel" />
-                </div>
               </div>
             </details>
           </div>
@@ -1621,18 +1683,28 @@ async function sendMessage(): Promise<void> {
                   class="agent-generated-media"
                   :data-kind="media.mime_type.startsWith('video/') ? 'video' : 'image'"
                 >
-                  <figure>
+                  <button
+                    class="agent-generated-media__preview"
+                    type="button"
+                    :aria-label="`放大预览${media.mime_type.startsWith('video/') ? '视频' : '图片'} ${media.name}`"
+                    @click="openMediaPreview(media)"
+                  >
                     <video
                       v-if="media.mime_type.startsWith('video/')"
                       :src="media.media_url"
-                      controls
                       preload="metadata"
                       playsinline
+                      muted
                     ></video>
-                    <a v-else :href="media.media_url" target="_blank" rel="noopener" title="查看原图">
-                      <img :src="media.media_url" :alt="media.name" />
-                    </a>
-                  </figure>
+                    <img v-else :src="media.media_url" :alt="media.name" />
+                    <span class="agent-generated-media__preview-action">
+                      <Maximize2 :size="15" />
+                      <span>放大预览</span>
+                    </span>
+                    <span v-if="media.mime_type.startsWith('video/')" class="agent-generated-media__play">
+                      <Video :size="20" />
+                    </span>
+                  </button>
                   <div class="agent-generated-media__info">
                     <div>
                       <span class="agent-generated-media__kind">
@@ -1710,7 +1782,7 @@ async function sendMessage(): Promise<void> {
                       <i class="agent-stream-caret" aria-hidden="true"></i>
                     </div>
                     <section
-                      v-else-if="personalMode && ['image', 'video'].includes(currentRunMode)"
+                      v-if="personalMode && ['image', 'video'].includes(currentRunMode)"
                       class="agent-generated-media agent-generated-media--pending"
                       :data-kind="currentRunMode"
                       role="status"
@@ -1897,49 +1969,51 @@ async function sendMessage(): Promise<void> {
                 </div>
               </details>
             </div>
-            <details
-              v-if="personalMode && activeModel"
-              class="agent-inline-select agent-inline-model-select"
-              @toggle="handleDetailsToggle"
-            >
-              <summary
-                :title="`当前模型：${activeModel.name}`"
-                :aria-disabled="sending"
-                @click="sending && $event.preventDefault()"
+            <div class="agent-composer__submit-group">
+              <details
+                v-if="personalMode && activeModel"
+                class="agent-inline-select agent-inline-model-select"
+                @toggle="handleDetailsToggle"
               >
-                <span>{{ activeModel.name }}</span><ChevronDown :size="13" />
-              </summary>
-              <div class="agent-inline-select__menu agent-inline-model-select__menu">
-                <button
-                  v-for="model in activeModelList"
-                  :key="model.id"
-                  type="button"
-                  :aria-pressed="activeModelId === model.id"
-                  :disabled="sending"
-                  @click="selectActiveModel(model.id); closeDropdownFromEvent($event)"
+                <summary
+                  :title="`当前模型：${activeModel.name}`"
+                  :aria-disabled="sending"
+                  @click="sending && $event.preventDefault()"
                 >
-                  <span><strong>{{ model.name }}</strong><small>{{ model.is_default ? '系统默认' : model.model_id }}</small></span>
-                  <Check v-if="activeModelId === model.id" :size="13" />
-                </button>
-              </div>
-            </details>
-            <button
-              class="agent-send-button"
-              :class="[
-                { 'is-stopping': sending },
-                personalMode && !sending ? `agent-send-button--${personalAgentMode}` : '',
-              ]"
-              type="button"
-              :disabled="sending ? !trackedTask || cancelling : !canSend"
-              :title="sending ? '停止生成' : '发送'"
-              @click="sending ? stopCurrentRun() : sendMessage()"
-            >
-              <span class="agent-send-button__icons" :class="{ active: sending }">
-                <Square class="agent-send-button__stop" :size="16" fill="currentColor" />
-                <Send class="agent-send-button__send" :size="18" />
-              </span>
-              <span>{{ sending ? (cancelling ? '停止中' : '停止') : (personalMode ? sendButtonLabel : '发送') }}</span>
-            </button>
+                  <span>{{ activeModel.name }}</span><ChevronDown :size="13" />
+                </summary>
+                <div class="agent-inline-select__menu agent-inline-model-select__menu">
+                  <button
+                    v-for="model in activeModelList"
+                    :key="model.id"
+                    type="button"
+                    :aria-pressed="activeModelId === model.id"
+                    :disabled="sending"
+                    @click="selectActiveModel(model.id); closeDropdownFromEvent($event)"
+                  >
+                    <span><strong>{{ model.name }}</strong><small>{{ model.is_default ? '系统默认' : model.model_id }}</small></span>
+                    <Check v-if="activeModelId === model.id" :size="13" />
+                  </button>
+                </div>
+              </details>
+              <button
+                class="agent-send-button"
+                :class="[
+                  { 'is-stopping': sending },
+                  personalMode && !sending ? `agent-send-button--${personalAgentMode}` : '',
+                ]"
+                type="button"
+                :disabled="sending ? !trackedTask || cancelling : !canSend"
+                :title="sending ? '停止生成' : '发送'"
+                @click="sending ? stopCurrentRun() : sendMessage()"
+              >
+                <span class="agent-send-button__icons" :class="{ active: sending }">
+                  <Square class="agent-send-button__stop" :size="16" fill="currentColor" />
+                  <Send class="agent-send-button__send" :size="18" />
+                </span>
+                <span>{{ sending ? (cancelling ? '停止中' : '停止') : (personalMode ? sendButtonLabel : '发送') }}</span>
+              </button>
+            </div>
           </div>
         </div>
       </div>
@@ -1965,6 +2039,11 @@ async function sendMessage(): Promise<void> {
         </button>
       </template>
     </BaseDialog>
+    <MediaPreviewDialog
+      :open="Boolean(previewMedia)"
+      :media="previewMedia"
+      @update:open="!$event && closeMediaPreview()"
+    />
     </section>
   </Teleport>
 </template>

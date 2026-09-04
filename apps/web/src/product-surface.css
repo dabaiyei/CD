@@ -1,0 +1,2328 @@
+/*
+ * Unified product surfaces
+ *
+ * The Agent home is the visual baseline: quiet canvas, compact controls,
+ * coral emphasis, low-boundary surfaces and content-led imagery.
+ */
+
+:root {
+  --product-canvas: var(--bg);
+  --product-panel: color-mix(in srgb, var(--surface) 96%, transparent);
+  --product-panel-muted: color-mix(in srgb, var(--surface-strong) 58%, var(--surface));
+  --product-panel-hover: color-mix(in srgb, var(--surface-strong) 76%, var(--surface));
+  --product-ring: rgb(0 0 0 / 6%);
+  --product-ring-strong: rgb(0 0 0 / 10%);
+  --product-shadow:
+    0 0 0 1px var(--product-ring),
+    0 1px 2px -1px rgb(0 0 0 / 7%),
+    0 8px 24px rgb(0 0 0 / 4%);
+  --product-shadow-hover:
+    0 0 0 1px var(--product-ring-strong),
+    0 2px 4px -2px rgb(0 0 0 / 10%),
+    0 16px 36px rgb(0 0 0 / 8%);
+  --product-shadow-float:
+    0 0 0 1px var(--product-ring),
+    0 24px 72px rgb(0 0 0 / 16%);
+  --product-page-inline: clamp(16px, 3vw, 44px);
+  --product-page-block: clamp(24px, 3vw, 42px);
+  --product-radius: 8px;
+  --product-radius-inner: 6px;
+}
+
+:root[data-theme='dark'] {
+  --product-panel: color-mix(in srgb, var(--surface) 97%, transparent);
+  --product-panel-muted: color-mix(in srgb, var(--surface-strong) 70%, var(--surface));
+  --product-panel-hover: color-mix(in srgb, var(--surface-strong) 88%, var(--surface));
+  --product-ring: rgb(255 255 255 / 8%);
+  --product-ring-strong: rgb(255 255 255 / 13%);
+  --product-shadow: 0 0 0 1px var(--product-ring);
+  --product-shadow-hover:
+    0 0 0 1px var(--product-ring-strong),
+    0 18px 42px rgb(0 0 0 / 24%);
+  --product-shadow-float:
+    0 0 0 1px var(--product-ring-strong),
+    0 28px 84px rgb(0 0 0 / 42%);
+}
+
+/* Shared page rhythm */
+.app-shell .workspace-page:has(.workspace-command-grid--projects),
+.app-shell .user-skills-page,
+.app-shell .marketplace-page,
+.app-shell .admin-page {
+  width: 100%;
+  max-width: none;
+  min-height: calc(100dvh - var(--topbar-height));
+  margin: 0;
+  padding: var(--product-page-block) var(--product-page-inline) 56px;
+  color: var(--ink);
+  background: var(--product-canvas);
+  -webkit-font-smoothing: antialiased;
+}
+
+.app-shell .workspace-page:has(.workspace-command-grid--projects) > *,
+.app-shell .user-skills-page > *,
+.app-shell .marketplace-page > *,
+.app-shell .admin-page > * {
+  width: min(100%, 1480px);
+  margin-inline: auto;
+}
+
+.app-shell :is(.project-library__title, .skills-hero__content, .marketplace-hero__content) h1,
+.app-shell .admin-page .section-heading h2 {
+  color: var(--ink);
+  font-weight: 660;
+  letter-spacing: 0;
+  text-wrap: balance;
+}
+
+.app-shell :is(.project-library__title, .skills-hero__content, .marketplace-hero__content) p,
+.app-shell .admin-page .section-heading p {
+  color: var(--ink-tertiary);
+  line-height: 1.65;
+  text-wrap: pretty;
+}
+
+.app-shell .button,
+.app-shell .icon-button {
+  min-height: 40px;
+  border: 0;
+  border-radius: var(--product-radius-inner);
+  transition-property: color, background-color, box-shadow, opacity, scale, transform;
+  transition-duration: 160ms;
+  transition-timing-function: cubic-bezier(.2, 0, 0, 1);
+}
+
+.app-shell .button:active:not(:disabled),
+.app-shell .icon-button:active:not(:disabled) {
+  scale: .96;
+}
+
+.app-shell .button--primary {
+  color: #fff;
+  background: var(--brand);
+  box-shadow: 0 7px 18px color-mix(in srgb, var(--brand) 22%, transparent);
+}
+
+.app-shell .button--primary:hover:not(:disabled) {
+  background: var(--brand-strong);
+  box-shadow: 0 10px 24px color-mix(in srgb, var(--brand) 28%, transparent);
+  transform: translateY(-1px);
+}
+
+.app-shell .button--secondary,
+.app-shell .button--ghost,
+.app-shell .icon-button {
+  color: var(--ink-secondary);
+  background: var(--product-panel);
+  box-shadow: 0 0 0 1px var(--product-ring);
+}
+
+.app-shell .button--secondary:hover:not(:disabled),
+.app-shell .button--ghost:hover:not(:disabled),
+.app-shell .icon-button:hover:not(:disabled) {
+  color: var(--ink);
+  background: var(--product-panel-hover);
+  box-shadow: 0 0 0 1px var(--product-ring-strong);
+}
+
+/* Projects */
+.app-shell .workspace-command-grid--projects {
+  display: block;
+  min-height: 0;
+}
+
+.app-shell .workspace-command-grid--projects .project-library {
+  display: grid;
+  gap: 24px;
+}
+
+.app-shell .workspace-command-grid--projects .project-library__header {
+  display: grid;
+  min-height: 72px;
+  grid-template-columns: minmax(240px, 1fr) auto;
+  align-items: end;
+  gap: 24px;
+  padding: 0 0 18px;
+  border-bottom: 1px solid var(--line);
+}
+
+.app-shell .project-library__title {
+  display: grid;
+  gap: 4px;
+}
+
+.app-shell .project-library__title > span,
+.app-shell .skills-hero .eyebrow,
+.app-shell .marketplace-hero__eyebrow {
+  display: inline-flex;
+  width: max-content;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+  color: var(--brand);
+  font-size: 10px;
+  font-weight: 720;
+  line-height: 1;
+  text-transform: none;
+}
+
+.app-shell .project-library__title h1 {
+  margin-top: 3px;
+  font-size: clamp(26px, 2.2vw, 34px);
+  line-height: 1.12;
+}
+
+.app-shell .project-library__title p {
+  margin-top: 3px;
+  font-size: 12px;
+}
+
+.app-shell .workspace-command-grid--projects .workspace-toolbar {
+  display: grid;
+  min-height: 44px;
+  grid-template-columns: minmax(220px, 320px) auto auto;
+  align-items: center;
+  gap: 9px;
+  padding: 0;
+  border: 0;
+  background: transparent;
+}
+
+.app-shell .workspace-command-grid--projects .search-field,
+.app-shell .marketplace-page .marketplace-search,
+.app-shell .admin-page :is(.search-control, .user-search) {
+  min-height: 42px;
+  border: 0;
+  border-radius: var(--product-radius-inner);
+  color: var(--ink-tertiary);
+  background: var(--product-panel);
+  box-shadow: 0 0 0 1px var(--product-ring);
+  transition-property: color, background-color, box-shadow;
+  transition-duration: 160ms;
+  transition-timing-function: ease-out;
+}
+
+.app-shell .workspace-command-grid--projects .search-field:focus-within,
+.app-shell .marketplace-page .marketplace-search:focus-within,
+.app-shell .admin-page :is(.search-control, .user-search):focus-within {
+  color: var(--brand);
+  background: var(--surface);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--brand) 68%, transparent),
+    0 0 0 4px color-mix(in srgb, var(--brand) 10%, transparent);
+}
+
+.app-shell .workspace-command-grid--projects .search-field input {
+  color: var(--ink);
+  background: transparent;
+}
+
+.app-shell .workspace-command-grid--projects .result-count {
+  min-width: max-content;
+  color: var(--ink-tertiary);
+  font-size: 11px;
+}
+
+.app-shell .workspace-command-grid--projects .project-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 272px), 1fr));
+  gap: 16px;
+}
+
+.app-shell .workspace-page .project-card,
+.app-shell .workspace-page .new-project-tile,
+.app-shell .workspace-page .project-skeleton {
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--product-radius);
+  background: var(--product-panel);
+  box-shadow: var(--product-shadow);
+  transition-property: transform, box-shadow, opacity;
+  transition-duration: 200ms;
+  transition-timing-function: cubic-bezier(.2, 0, 0, 1);
+}
+
+.app-shell .workspace-page .project-card {
+  display: grid;
+  min-height: 292px;
+  grid-template-rows: auto 1fr;
+  cursor: pointer;
+}
+
+.app-shell .workspace-page .project-card:hover {
+  border: 0;
+  box-shadow: var(--product-shadow-hover);
+  transform: translateY(-3px);
+}
+
+.app-shell .workspace-page .project-card__media {
+  position: relative;
+  aspect-ratio: 16 / 9;
+  overflow: hidden;
+  background: var(--product-panel-muted);
+}
+
+.app-shell .workspace-page .project-card__media img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  outline: 1px solid rgb(0 0 0 / 10%);
+  outline-offset: -1px;
+  transition-property: transform, filter;
+  transition-duration: 360ms;
+  transition-timing-function: cubic-bezier(.2, 0, 0, 1);
+}
+
+:root[data-theme='dark'] .app-shell .workspace-page .project-card__media img {
+  outline-color: rgb(255 255 255 / 10%);
+}
+
+.app-shell .workspace-page .project-card:hover .project-card__media img {
+  transform: scale(1.025);
+}
+
+.app-shell .workspace-page .project-card__actions {
+  top: 10px;
+  right: 10px;
+}
+
+.app-shell .workspace-page .media-action {
+  width: 40px;
+  height: 40px;
+  border: 0;
+  border-radius: var(--product-radius-inner);
+  color: #fff;
+  background: rgb(16 18 20 / 54%);
+  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 12%);
+  backdrop-filter: blur(12px);
+}
+
+.app-shell .workspace-page .project-card__ratio {
+  right: 10px;
+  bottom: 10px;
+  min-height: 26px;
+  padding: 0 9px;
+  border-radius: 13px;
+  color: #fff;
+  background: rgb(16 18 20 / 52%);
+  backdrop-filter: blur(10px);
+}
+
+.app-shell .workspace-page .project-card__body {
+  display: grid;
+  align-content: start;
+  gap: 8px;
+  padding: 15px 16px 14px;
+}
+
+.app-shell .workspace-page .project-card__heading h2 {
+  color: var(--ink);
+  font-size: 15px;
+  font-weight: 660;
+}
+
+.app-shell .workspace-page .project-card__body > p {
+  min-height: 39px;
+  margin: 0;
+  color: var(--ink-tertiary);
+  font-size: 11px;
+  line-height: 1.7;
+}
+
+.app-shell .workspace-page .project-card__meta {
+  margin-top: 3px;
+}
+
+.app-shell .workspace-page .project-card__meta span {
+  border: 0;
+  color: var(--ink-secondary);
+  background: var(--product-panel-muted);
+  box-shadow: none;
+}
+
+.app-shell .workspace-page .new-project-tile {
+  min-height: 292px;
+  border: 1px dashed var(--line-strong);
+  color: var(--ink-tertiary);
+  background: transparent;
+  box-shadow: none;
+}
+
+.app-shell .workspace-page .new-project-tile:hover {
+  border-color: color-mix(in srgb, var(--brand) 48%, var(--line));
+  color: var(--brand-strong);
+  background: color-mix(in srgb, var(--brand-soft) 48%, transparent);
+  box-shadow: none;
+  transform: translateY(-2px);
+}
+
+/* Personal Skills */
+.app-shell .user-skills-page {
+  display: grid;
+  gap: 22px;
+}
+
+.app-shell .user-skills-page .skills-hero {
+  display: flex;
+  min-height: 76px;
+  align-items: end;
+  justify-content: space-between;
+  gap: 20px;
+  overflow: visible;
+  padding: 0 0 18px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  color: var(--ink);
+  background: transparent;
+  box-shadow: none;
+}
+
+.app-shell .user-skills-page .skills-hero::before,
+.app-shell .user-skills-page .skills-hero::after {
+  display: none;
+}
+
+.app-shell .user-skills-page .skills-hero__content {
+  display: grid;
+  gap: 5px;
+}
+
+.app-shell .user-skills-page .skills-hero__content h1 {
+  margin: 2px 0 0;
+  font-size: clamp(26px, 2.2vw, 34px);
+  line-height: 1.12;
+}
+
+.app-shell .user-skills-page .skills-hero__content p {
+  max-width: 660px;
+  margin: 0;
+  font-size: 12px;
+}
+
+.app-shell .user-skills-page .skills-hero__action {
+  color: #fff;
+  background: var(--brand);
+  box-shadow: 0 7px 18px color-mix(in srgb, var(--brand) 22%, transparent);
+}
+
+.app-shell .user-skills-page .skill-overview {
+  display: grid;
+  min-height: 70px;
+  grid-template-columns: repeat(3, max-content) minmax(240px, 1fr);
+  align-items: center;
+  gap: clamp(22px, 4vw, 52px);
+  padding: 0 2px 18px;
+  border-bottom: 1px solid var(--line);
+  background: transparent;
+  box-shadow: none;
+}
+
+.app-shell .user-skills-page .skill-overview > div {
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.app-shell .user-skills-page .skill-overview strong {
+  color: var(--ink);
+  font-size: 23px;
+  font-weight: 640;
+}
+
+.app-shell .user-skills-page .skills-workspace-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  align-items: start;
+  gap: 18px;
+}
+
+.app-shell .user-skills-page .skills-stage-rail {
+  position: sticky;
+  z-index: 17;
+  top: calc(var(--topbar-height) + 8px);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  min-width: 0;
+  overflow: hidden;
+  padding: 6px 7px 6px 14px;
+  border-radius: var(--product-radius);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  box-shadow: var(--product-shadow);
+  backdrop-filter: blur(18px) saturate(120%);
+}
+
+.app-shell .user-skills-page .skills-stage-rail__label {
+  min-width: max-content;
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 720;
+}
+
+.app-shell .user-skills-page .skills-stage-rail__label::after {
+  display: inline-block;
+  width: 1px;
+  height: 16px;
+  margin-left: 14px;
+  vertical-align: middle;
+  background: var(--line);
+  content: '';
+}
+
+.app-shell .user-skills-page .skill-filter-bar {
+  display: flex;
+  min-width: 0;
+  gap: 2px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  scrollbar-width: none;
+}
+
+.app-shell .user-skills-page .skill-filter-bar::-webkit-scrollbar {
+  display: none;
+}
+
+.app-shell .user-skills-page .skill-filter-bar button {
+  display: inline-flex;
+  min-width: max-content;
+  min-height: 40px;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+  border: 0;
+  border-radius: var(--product-radius-inner);
+  color: var(--ink-tertiary);
+  background: transparent;
+  box-shadow: none;
+  font-size: 11px;
+  text-align: center;
+  transition-property: color, background-color, scale;
+  transition-duration: 160ms;
+  transition-timing-function: cubic-bezier(.2, 0, 0, 1);
+}
+
+.app-shell .user-skills-page .skill-filter-bar button small {
+  min-width: 14px;
+  color: currentColor;
+  opacity: .7;
+}
+
+.app-shell .user-skills-page .skill-filter-bar button:hover {
+  color: var(--ink);
+  background: var(--product-panel-hover);
+  box-shadow: none;
+}
+
+.app-shell .user-skills-page .skill-filter-bar button.active {
+  color: var(--brand-strong);
+  background: var(--brand-soft);
+  box-shadow: none;
+}
+
+.app-shell .user-skills-page .skills-catalog {
+  min-width: 0;
+}
+
+.app-shell .user-skills-page .skills-catalog > header {
+  min-height: 48px;
+  margin-bottom: 14px;
+  padding: 0 2px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.app-shell .user-skills-page .user-skill-grid {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 292px), 1fr));
+  gap: 14px;
+}
+
+.app-shell .user-skills-page .user-skill-card,
+.app-shell .user-skills-page .user-skill-skeleton {
+  min-height: 246px;
+  border: 0;
+  border-radius: var(--product-radius);
+  background: var(--product-panel);
+  box-shadow: var(--product-shadow);
+}
+
+.app-shell .user-skills-page .user-skill-card:hover {
+  box-shadow: var(--product-shadow-hover);
+  transform: translateY(-2px);
+}
+
+.app-shell .user-skills-page .user-skill-card > header,
+.app-shell .user-skills-page .user-skill-card > footer {
+  border-color: var(--line);
+}
+
+.app-shell .user-skills-page .user-skill-card__mark {
+  color: var(--brand);
+  background: var(--brand-soft);
+}
+
+.app-shell .user-skills-page .user-skill-card__stages span,
+.app-shell .user-skills-page .user-skill-card__stages span[data-tone] {
+  color: var(--ink-secondary);
+  background: var(--product-panel-muted);
+}
+
+/* Marketplace */
+.app-shell .marketplace-page {
+  display: grid;
+  gap: 0;
+}
+
+.app-shell .marketplace-page .marketplace-hero {
+  position: relative;
+  display: grid;
+  min-height: 92px;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  gap: 22px;
+  overflow: visible;
+  padding: 0 0 18px;
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  color: var(--ink);
+  background: transparent;
+  box-shadow: none;
+  isolation: auto;
+}
+
+.app-shell .marketplace-page .marketplace-hero__veil {
+  display: none;
+}
+
+.app-shell .marketplace-page .marketplace-hero__content {
+  display: grid;
+  max-width: 720px;
+  gap: 5px;
+}
+
+.app-shell .marketplace-page .marketplace-hero h1 {
+  margin: 2px 0 0;
+  color: var(--ink);
+  font-size: clamp(26px, 2.2vw, 34px);
+  line-height: 1.12;
+}
+
+.app-shell .marketplace-page .marketplace-hero p {
+  margin: 0;
+  color: var(--ink-tertiary);
+  font-size: 12px;
+}
+
+.app-shell .marketplace-page .marketplace-hero__actions {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.app-shell .marketplace-page .marketplace-hero .button {
+  min-height: 40px;
+  border: 0;
+  border-radius: var(--product-radius-inner);
+}
+
+.app-shell .marketplace-page .marketplace-button--glass {
+  color: var(--ink-secondary);
+  background: var(--product-panel);
+  box-shadow: 0 0 0 1px var(--product-ring);
+  backdrop-filter: none;
+}
+
+.app-shell .marketplace-page .marketplace-button--bright {
+  color: #fff;
+  background: var(--brand);
+  box-shadow: 0 7px 18px color-mix(in srgb, var(--brand) 22%, transparent);
+}
+
+.app-shell .marketplace-page .marketplace-hero__count {
+  position: absolute;
+  right: 0;
+  bottom: -32px;
+  color: var(--ink-tertiary);
+  font-size: 9px;
+}
+
+.app-shell .marketplace-page .marketplace-hero__count strong {
+  color: var(--ink-secondary);
+}
+
+.app-shell .marketplace-page .marketplace-workspace {
+  gap: 14px;
+  padding-top: 20px;
+}
+
+.app-shell .marketplace-page .marketplace-toolbar {
+  grid-template-columns: minmax(260px, 1fr) auto 40px;
+}
+
+.app-shell .marketplace-page .marketplace-sort {
+  padding: 3px;
+  border-radius: var(--product-radius-inner);
+  background: var(--product-panel);
+  box-shadow: 0 0 0 1px var(--product-ring);
+}
+
+.app-shell .marketplace-page .marketplace-sort button {
+  min-height: 34px;
+  border-radius: 4px;
+}
+
+.app-shell .marketplace-page .marketplace-sort button[aria-pressed='true'] {
+  color: var(--ink);
+  background: var(--product-panel-hover);
+  box-shadow: none;
+}
+
+.app-shell .marketplace-page .marketplace-categories {
+  display: flex;
+  width: max-content;
+  max-width: 100%;
+  height: 42px;
+  min-height: 42px;
+  align-items: center;
+  gap: 2px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 4px;
+  border-radius: var(--product-radius);
+  background: var(--product-panel);
+  box-shadow: 0 0 0 1px var(--product-ring);
+  scrollbar-width: none;
+}
+
+.app-shell .marketplace-page .marketplace-categories::-webkit-scrollbar {
+  display: none;
+}
+
+.app-shell .marketplace-page .marketplace-categories button {
+  display: inline-flex;
+  width: auto;
+  min-width: max-content;
+  height: 34px;
+  min-height: 34px;
+  flex: 0 0 auto;
+  align-self: center;
+  align-items: center;
+  justify-content: center;
+  padding: 0 12px;
+  border: 0;
+  border-radius: var(--product-radius-inner);
+  color: var(--ink-tertiary);
+  background: transparent;
+  box-shadow: none;
+  font-size: 10px;
+  font-weight: 620;
+  line-height: 1;
+  white-space: nowrap;
+  transition-property: color, background-color, scale;
+  transition-duration: 150ms;
+}
+
+.app-shell .marketplace-page .marketplace-categories button:hover {
+  color: var(--ink);
+  background: var(--product-panel-hover);
+}
+
+.app-shell .marketplace-page .marketplace-categories button[aria-pressed='true'] {
+  color: var(--brand-strong);
+  background: var(--brand-soft);
+}
+
+.app-shell .marketplace-page .marketplace-grid {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 270px), 1fr));
+  gap: 14px;
+}
+
+.app-shell .marketplace-page .marketplace-card,
+.app-shell .marketplace-page .marketplace-skeleton {
+  border: 0;
+  border-radius: var(--product-radius);
+  background: var(--product-panel);
+  box-shadow: var(--product-shadow);
+}
+
+.app-shell .marketplace-page .marketplace-card {
+  grid-template-rows: 154px minmax(88px, 1fr) 54px;
+  transition-property: transform, box-shadow;
+  transition-duration: 200ms;
+}
+
+.app-shell .marketplace-page .marketplace-card:hover {
+  box-shadow: var(--product-shadow-hover);
+  transform: translateY(-3px);
+}
+
+.app-shell .marketplace-page .marketplace-card__visual {
+  outline: 1px solid rgb(0 0 0 / 10%);
+  outline-offset: -1px;
+}
+
+:root[data-theme='dark'] .app-shell .marketplace-page .marketplace-card__visual {
+  outline-color: rgb(255 255 255 / 10%);
+}
+
+.app-shell .marketplace-page .marketplace-card__body {
+  padding: 13px 14px;
+}
+
+.app-shell .marketplace-page .marketplace-card > footer {
+  box-shadow: inset 0 1px var(--line);
+}
+
+.app-shell .marketplace-page .marketplace-card__acquire {
+  color: var(--brand-strong);
+  background: var(--brand-soft);
+}
+
+/* Admin shell: a compact second-level navigation instead of a competing sidebar. */
+.app-shell .admin-page {
+  display: block;
+}
+
+.app-shell .admin-page .admin-workspace-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 20px;
+}
+
+.app-shell .admin-page .admin-settings-rail {
+  position: sticky;
+  z-index: 18;
+  top: calc(var(--topbar-height) + 8px);
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr);
+  align-items: center;
+  gap: 14px;
+  overflow: hidden;
+  padding: 6px 7px 6px 14px;
+  border: 0;
+  border-radius: var(--product-radius);
+  background: color-mix(in srgb, var(--surface) 88%, transparent);
+  box-shadow: var(--product-shadow);
+  backdrop-filter: blur(18px) saturate(120%);
+}
+
+.app-shell .admin-page .admin-settings-rail::before {
+  display: none;
+}
+
+.app-shell .admin-page .admin-settings-rail > span {
+  min-width: max-content;
+  padding: 0;
+  color: var(--ink);
+  font-size: 11px;
+  font-weight: 720;
+  text-transform: none;
+}
+
+.app-shell .admin-page .admin-settings-rail > span::after {
+  display: inline-block;
+  width: 1px;
+  height: 16px;
+  margin-left: 14px;
+  vertical-align: middle;
+  background: var(--line);
+  content: '';
+}
+
+.app-shell .admin-page .admin-tabs-shell {
+  display: grid;
+  min-width: 0;
+  grid-template-columns: 40px minmax(0, 1fr) 40px;
+  align-items: center;
+  gap: 2px;
+}
+
+.app-shell .admin-page .admin-tab-scroll {
+  position: relative;
+  z-index: 2;
+  display: inline-flex;
+  width: 40px;
+  min-width: 40px;
+  height: 40px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: var(--product-radius-inner);
+  color: var(--ink-secondary);
+  background: var(--product-panel);
+  box-shadow: 0 0 0 1px var(--product-ring);
+  cursor: pointer;
+  transition-property: color, background-color, box-shadow, opacity, scale;
+  transition-duration: 150ms;
+  transition-timing-function: cubic-bezier(.2, 0, 0, 1);
+}
+
+.app-shell .admin-page .admin-tab-scroll:hover:not(:disabled) {
+  color: var(--brand-strong);
+  background: var(--brand-soft);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand) 24%, transparent);
+}
+
+.app-shell .admin-page .admin-tab-scroll:active:not(:disabled) {
+  scale: .96;
+}
+
+.app-shell .admin-page .admin-tab-scroll:disabled {
+  pointer-events: none;
+  opacity: 0;
+}
+
+.app-shell .admin-page .admin-settings-rail .admin-tabs {
+  display: flex;
+  min-width: 0;
+  max-width: 100%;
+  gap: 2px;
+  overflow-x: auto;
+  overflow-y: hidden;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  overscroll-behavior-inline: contain;
+  scroll-behavior: smooth;
+  scroll-padding-inline: 8px;
+  touch-action: pan-x;
+  scrollbar-width: none;
+}
+
+.app-shell .admin-page .admin-settings-rail .admin-tabs::-webkit-scrollbar {
+  display: none;
+}
+
+.app-shell .admin-page .admin-settings-rail .admin-tabs a {
+  display: inline-flex;
+  min-width: max-content;
+  min-height: 40px;
+  align-items: center;
+  gap: 7px;
+  padding: 0 11px;
+  border-radius: var(--product-radius-inner);
+  color: var(--ink-tertiary);
+  background: transparent;
+  box-shadow: none;
+  font-size: 11px;
+  transition-property: color, background-color, scale;
+  transition-duration: 160ms;
+}
+
+.app-shell .admin-page .admin-settings-rail .admin-tabs a:active {
+  scale: .96;
+}
+
+.app-shell .admin-page .admin-settings-rail .admin-tabs a:hover {
+  color: var(--ink);
+  background: var(--product-panel-hover);
+}
+
+.app-shell .admin-page .admin-settings-rail .admin-tabs a.active {
+  color: var(--brand-strong);
+  background: var(--brand-soft);
+  box-shadow: none;
+}
+
+.app-shell .admin-page .admin-settings-rail .admin-tabs a > svg:last-child {
+  display: none;
+}
+
+.app-shell .admin-page .admin-workspace-content {
+  min-width: 0;
+}
+
+.app-shell .admin-page :is(.admin-section, .admin-overview, .admin-users-section, .invite-admin) {
+  display: grid;
+  min-width: 0;
+  gap: 16px;
+}
+
+.app-shell .admin-page .section-heading {
+  display: flex;
+  min-height: 62px;
+  align-items: end;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 0 2px 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.app-shell .admin-page .section-heading h2 {
+  font-size: 22px;
+  line-height: 1.2;
+}
+
+.app-shell .admin-page .section-heading p {
+  margin-top: 5px;
+  font-size: 11px;
+}
+
+.app-shell .admin-page .section-actions,
+.app-shell .admin-page .handbook-heading > div:last-child {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 7px;
+}
+
+.app-shell .admin-page .metric-grid,
+.app-shell .admin-page .user-metrics,
+.app-shell .admin-page .invite-metrics {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 10px;
+}
+
+.app-shell .admin-page .metric,
+.app-shell .admin-page .user-metrics article,
+.app-shell .admin-page .invite-metrics article,
+.app-shell .admin-page .security-summary article {
+  min-height: 92px;
+  border: 0;
+  border-radius: var(--product-radius);
+  color: var(--ink);
+  background: var(--product-panel);
+  box-shadow: var(--product-shadow);
+  transition-property: transform, box-shadow;
+  transition-duration: 180ms;
+}
+
+.app-shell .admin-page :is(.metric, .user-metrics article, .invite-metrics article):hover {
+  box-shadow: var(--product-shadow-hover);
+  transform: translateY(-2px);
+}
+
+.app-shell .admin-page .metric strong,
+.app-shell .admin-page .user-metrics strong,
+.app-shell .admin-page .invite-metrics strong {
+  color: var(--ink);
+  font-variant-numeric: tabular-nums;
+}
+
+.app-shell .admin-page .metric > svg,
+.app-shell .admin-page :is(.user-metrics, .invite-metrics) article > span {
+  color: var(--brand);
+  background: var(--brand-soft);
+}
+
+.app-shell .admin-page :is(.readiness-panel, .global-defaults, .pricing-policy, .invite-origin) {
+  border: 0;
+  border-radius: var(--product-radius);
+  background: var(--product-panel);
+  box-shadow: var(--product-shadow);
+}
+
+.app-shell .admin-page .readiness-panel {
+  padding: 18px;
+}
+
+.app-shell .admin-page .readiness-panel .section-heading {
+  min-height: 0;
+  padding: 0;
+  border: 0;
+}
+
+.app-shell .admin-page .readiness-list {
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+}
+
+.app-shell .admin-page .readiness-list > div {
+  min-height: 52px;
+  border: 0;
+  border-radius: var(--product-radius-inner);
+  background: var(--product-panel-muted);
+  box-shadow: none;
+}
+
+.app-shell .admin-page .global-defaults {
+  padding: 16px;
+}
+
+.app-shell .admin-page .global-defaults__header {
+  padding-bottom: 14px;
+  border-bottom: 1px solid var(--line);
+}
+
+.app-shell .admin-page .global-defaults__grid {
+  gap: 10px;
+  padding-top: 14px;
+}
+
+.app-shell .admin-page :is(
+  .default-model-slot,
+  .provider-model-card,
+  .pricing-rule,
+  .settings-row,
+  .prompt-item,
+  .handbook-item,
+  .security-event,
+  .invite-card
+) {
+  border: 0;
+  border-radius: var(--product-radius);
+  color: var(--ink);
+  background: var(--product-panel);
+  box-shadow: var(--product-shadow);
+  transition-property: transform, box-shadow, opacity, background-color;
+  transition-duration: 180ms;
+  transition-timing-function: ease-out;
+}
+
+.app-shell .admin-page :is(
+  .default-model-slot,
+  .provider-model-card,
+  .pricing-rule,
+  .settings-row,
+  .prompt-item,
+  .handbook-item,
+  .invite-card
+):hover {
+  border: 0;
+  box-shadow: var(--product-shadow-hover);
+  transform: translateY(-2px);
+}
+
+.app-shell .admin-page .model-service-workbench {
+  display: grid;
+  min-height: 590px;
+  grid-template-columns: 230px minmax(0, 1fr);
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--product-radius);
+  background: var(--product-panel);
+  box-shadow: var(--product-shadow);
+}
+
+.app-shell .admin-page .provider-directory {
+  padding: 10px 8px;
+  border-right: 1px solid var(--line);
+  background: var(--product-panel-muted);
+}
+
+.app-shell .admin-page .provider-directory__list > button,
+.app-shell .admin-page .provider-directory__add {
+  min-height: 50px;
+  border: 0;
+  border-radius: var(--product-radius-inner);
+  color: var(--ink-secondary);
+  background: transparent;
+  box-shadow: none;
+}
+
+.app-shell .admin-page .provider-directory__list > button:hover,
+.app-shell .admin-page .provider-directory__add:hover {
+  color: var(--ink);
+  background: var(--product-panel-hover);
+}
+
+.app-shell .admin-page .provider-directory__list > button.active {
+  color: var(--brand-strong);
+  background: var(--brand-soft);
+  box-shadow: inset 3px 0 var(--brand);
+}
+
+.app-shell .admin-page .provider-console {
+  background: var(--product-panel);
+}
+
+.app-shell .admin-page :is(.provider-console__header, .provider-console__meta, .provider-models-heading) {
+  border-color: var(--line);
+}
+
+.app-shell .admin-page .provider-model-grid {
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, 270px), 1fr));
+  gap: 10px;
+}
+
+.app-shell .admin-page .provider-model-card__health,
+.app-shell .admin-page .provider-console__meta span,
+.app-shell .admin-page .default-model-slot__current,
+.app-shell .admin-page .image-resolution-route {
+  border: 0;
+  border-radius: var(--product-radius-inner);
+  background: var(--product-panel-muted);
+  box-shadow: none;
+}
+
+.app-shell .admin-page .pricing-policy {
+  color: var(--ink-secondary);
+}
+
+.app-shell .admin-page .pricing-grid,
+.app-shell .admin-page .prompt-grid,
+.app-shell .admin-page .handbook-grid,
+.app-shell .admin-page .invite-grid {
+  gap: 12px;
+}
+
+.app-shell .admin-page .settings-row,
+.app-shell .admin-page .pricing-rule,
+.app-shell .admin-page .prompt-item {
+  min-height: 70px;
+}
+
+.app-shell .admin-page .handbook-item__cover img,
+.app-shell .admin-page .branding-preview__video,
+.app-shell .admin-page .invite-qr img {
+  outline: 1px solid rgb(0 0 0 / 10%);
+  outline-offset: -1px;
+}
+
+:root[data-theme='dark'] .app-shell .admin-page .handbook-item__cover img,
+:root[data-theme='dark'] .app-shell .admin-page .branding-preview__video,
+:root[data-theme='dark'] .app-shell .admin-page .invite-qr img {
+  outline-color: rgb(255 255 255 / 10%);
+}
+
+/* Users and invitations */
+.app-shell .admin-page .user-toolbar {
+  display: grid;
+  grid-template-columns: minmax(240px, 1fr) auto;
+  gap: 10px;
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.app-shell .admin-page .user-directory {
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--product-radius);
+  background: var(--product-panel);
+  box-shadow: var(--product-shadow);
+}
+
+.app-shell .admin-page .user-directory__labels {
+  color: var(--ink-tertiary);
+  background: var(--product-panel-muted);
+}
+
+.app-shell .admin-page .user-row {
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  color: var(--ink-secondary);
+  background: transparent;
+  box-shadow: none;
+  transition-property: background-color;
+  transition-duration: 150ms;
+}
+
+.app-shell .admin-page .user-row:last-child {
+  border-bottom: 0;
+}
+
+.app-shell .admin-page .user-row:hover {
+  background: var(--product-panel-muted);
+  box-shadow: none;
+  transform: none;
+}
+
+.app-shell .admin-page .invite-origin {
+  padding: 14px;
+}
+
+.app-shell .admin-page .invite-origin label,
+.app-shell .admin-page .invite-code,
+.app-shell .admin-page .invite-card footer button,
+.app-shell .admin-page .invite-form__hero,
+.app-shell .admin-page .invite-number,
+.app-shell .admin-page .invite-enabled-toggle {
+  border: 0;
+  border-radius: var(--product-radius-inner);
+  background: var(--product-panel-muted);
+  box-shadow: none;
+}
+
+.app-shell .admin-page .invite-card {
+  padding: 14px;
+}
+
+/* Branding, handbooks and skills editor */
+.app-shell .admin-page .branding-layout {
+  grid-template-columns: minmax(0, 1.35fr) minmax(320px, .65fr);
+  gap: 14px;
+}
+
+.app-shell .admin-page .branding-preview,
+.app-shell .admin-page .branding-editor {
+  border: 0;
+  border-radius: var(--product-radius);
+  box-shadow: var(--product-shadow);
+}
+
+.app-shell .admin-page .branding-preview {
+  min-height: 480px;
+}
+
+.app-shell .admin-page .branding-editor {
+  background: var(--product-panel);
+}
+
+.app-shell .admin-page .branding-source-tabs,
+.app-shell .admin-page .branding-url-field > div,
+.app-shell .admin-page .branding-dropzone {
+  border-radius: var(--product-radius-inner);
+  background: var(--product-panel-muted);
+  box-shadow: none;
+}
+
+.app-shell .admin-page .branding-source-tabs button[aria-selected='true'] {
+  color: var(--ink);
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--product-ring);
+}
+
+.app-shell .admin-page .skills-workbench {
+  display: grid;
+  min-height: 650px;
+  grid-template-columns: minmax(220px, 280px) minmax(0, 1fr);
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--product-radius);
+  background: var(--product-panel);
+  box-shadow: var(--product-shadow);
+}
+
+.app-shell .admin-page .skills-workbench > aside {
+  border-right: 1px solid var(--line);
+  background: var(--product-panel-muted);
+}
+
+.app-shell .admin-page .skill-node {
+  min-height: 40px;
+  border-radius: var(--product-radius-inner);
+  color: var(--ink-secondary);
+  transition-property: color, background-color, scale;
+  transition-duration: 150ms;
+}
+
+.app-shell .admin-page .skill-node:hover {
+  color: var(--ink);
+  background: var(--product-panel-hover);
+}
+
+.app-shell .admin-page .skill-node--active {
+  color: var(--brand-strong);
+  background: var(--brand-soft);
+}
+
+.app-shell .admin-page .skill-editor,
+.app-shell .admin-page .skill-editor textarea {
+  color: var(--ink);
+  background: var(--product-panel);
+}
+
+.app-shell .admin-page .skill-editor > header {
+  border-color: var(--line);
+  background: var(--product-panel-muted);
+}
+
+/* Security audit */
+.app-shell .admin-page .security-toolbar {
+  border: 0;
+  border-radius: var(--product-radius);
+  background: var(--product-panel);
+  box-shadow: var(--product-shadow);
+}
+
+.app-shell .admin-page .security-event-list {
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--product-radius);
+  background: var(--product-panel);
+  box-shadow: var(--product-shadow);
+}
+
+.app-shell .admin-page .security-event {
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.app-shell .admin-page .security-event:hover {
+  background: var(--product-panel-muted);
+  box-shadow: none;
+  transform: none;
+}
+
+/* Admin editor sections and all nested form surfaces */
+.app-shell .admin-page :is(.provider-editor-section, .capability-section) {
+  border: 0;
+  border-radius: var(--product-radius);
+  background: var(--product-panel-muted);
+  box-shadow: none;
+}
+
+.app-shell .admin-page :is(.capability-switch, .mode-option-grid > button, .audio-policy > button, .reference-limit__toggle) {
+  border: 0;
+  border-radius: var(--product-radius-inner);
+  color: var(--ink-secondary);
+  background: var(--product-panel);
+  box-shadow: 0 0 0 1px var(--product-ring);
+}
+
+.app-shell .admin-page :is(.capability-switch, .mode-option-grid > button, .audio-policy > button)[aria-pressed='true'],
+.app-shell .admin-page :is(.mode-option-grid > button, .audio-policy > button).active {
+  color: var(--brand-strong);
+  background: var(--brand-soft);
+  box-shadow: inset 3px 0 var(--brand);
+}
+
+.app-shell .admin-page :is(input, textarea, select),
+.dialog-content :is(input, textarea, select) {
+  color: var(--ink);
+}
+
+.app-shell .admin-page .field > :is(input, textarea),
+.dialog-content .field > :is(input, textarea),
+.app-shell .admin-page :is(.project-text-control, .pricing-input-control, .credit-amount-input) {
+  border: 0;
+  border-radius: var(--product-radius-inner);
+  background: var(--product-panel-muted);
+  box-shadow: 0 0 0 1px var(--product-ring);
+  transition-property: background-color, box-shadow;
+  transition-duration: 160ms;
+}
+
+.app-shell .admin-page .field > :is(input, textarea):focus,
+.dialog-content .field > :is(input, textarea):focus,
+.app-shell .admin-page :is(.project-text-control, .pricing-input-control, .credit-amount-input):focus-within {
+  background: var(--surface);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--brand) 68%, transparent),
+    0 0 0 4px color-mix(in srgb, var(--brand) 10%, transparent);
+}
+
+/* Shared dialogs and custom selects */
+.dialog-overlay {
+  background: rgb(5 7 8 / 54%);
+  backdrop-filter: blur(7px);
+}
+
+.dialog-content {
+  overflow: hidden;
+  border: 0;
+  border-radius: 10px;
+  color: var(--ink);
+  background: var(--surface);
+  box-shadow: var(--product-shadow-float);
+}
+
+.dialog-header,
+.dialog-footer {
+  border-color: var(--line);
+  background: var(--surface);
+}
+
+.dialog-header {
+  min-height: 66px;
+}
+
+.dialog-title {
+  font-size: 16px;
+  font-weight: 660;
+}
+
+.dialog-description {
+  color: var(--ink-tertiary);
+}
+
+.ui-select {
+  min-height: 42px;
+  border: 0;
+  border-radius: var(--product-radius-inner);
+  color: var(--ink-secondary);
+  background: var(--product-panel-muted);
+  box-shadow: 0 0 0 1px var(--product-ring);
+  transition-property: color, background-color, box-shadow;
+  transition-duration: 160ms;
+}
+
+.ui-select:hover:not([data-disabled]),
+.ui-select[data-state='open'] {
+  color: var(--ink);
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--product-ring-strong);
+}
+
+.ui-select[data-state='open'] .ui-select__chevron {
+  transform: rotate(180deg);
+}
+
+.ui-select__chevron {
+  transition-property: transform;
+  transition-duration: 180ms;
+  transition-timing-function: cubic-bezier(.2, 0, 0, 1);
+}
+
+.ui-select-menu {
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--product-radius);
+  color: var(--ink);
+  background: var(--surface);
+  box-shadow: var(--product-shadow-float);
+}
+
+.ui-select-option {
+  min-height: 44px;
+  border-radius: var(--product-radius-inner);
+  transition-property: color, background-color;
+  transition-duration: 120ms;
+}
+
+.ui-select-option[data-highlighted] {
+  color: var(--ink);
+  background: var(--product-panel-hover);
+}
+
+.ui-select-option[data-state='checked'] {
+  color: var(--brand-strong);
+  background: var(--brand-soft);
+}
+
+/* Project, Skill and marketplace editing surfaces */
+.dialog-content .project-form {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 238px;
+  gap: 18px;
+}
+
+.dialog-content .project-form__main {
+  gap: 14px;
+}
+
+.dialog-content .project-text-control,
+.dialog-content .skill-form-field > div,
+.dialog-content .marketplace-publish__fields label > div,
+.dialog-content .personal-template-form label > div {
+  border: 0;
+  border-radius: var(--product-radius-inner);
+  color: var(--ink-secondary);
+  background: var(--product-panel-muted);
+  box-shadow: 0 0 0 1px var(--product-ring);
+  transition-property: color, background-color, box-shadow;
+  transition-duration: 160ms;
+}
+
+.dialog-content .project-text-control:focus-within,
+.dialog-content .skill-form-field > div:focus-within,
+.dialog-content .marketplace-publish__fields label > div:focus-within,
+.dialog-content .personal-template-form label > div:focus-within {
+  color: var(--brand);
+  background: var(--surface);
+  box-shadow:
+    0 0 0 1px color-mix(in srgb, var(--brand) 68%, transparent),
+    0 0 0 4px color-mix(in srgb, var(--brand) 10%, transparent);
+}
+
+.dialog-content .project-handbook-picker {
+  padding-top: 2px;
+}
+
+.dialog-content .handbook-choice {
+  border: 0;
+  border-radius: var(--product-radius);
+  background: var(--product-panel-muted);
+  box-shadow: 0 0 0 1px var(--product-ring);
+}
+
+.dialog-content .handbook-choice:hover {
+  background: var(--product-panel-hover);
+  box-shadow: 0 0 0 1px var(--product-ring-strong);
+}
+
+.dialog-content .handbook-choice.selected {
+  background: var(--brand-soft);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand) 38%, transparent);
+}
+
+.dialog-content .handbook-choice__cover img,
+.dialog-content .cover-preview img,
+.dialog-content .marketplace-detail__media,
+.dialog-content .marketplace-source-grid img {
+  outline: 1px solid rgb(0 0 0 / 10%);
+  outline-offset: -1px;
+}
+
+:root[data-theme='dark'] .dialog-content .handbook-choice__cover img,
+:root[data-theme='dark'] .dialog-content .cover-preview img,
+:root[data-theme='dark'] .dialog-content .marketplace-detail__media,
+:root[data-theme='dark'] .dialog-content .marketplace-source-grid img {
+  outline-color: rgb(255 255 255 / 10%);
+}
+
+.dialog-content .cover-panel {
+  padding: 12px;
+  border: 0;
+  border-radius: var(--product-radius);
+  background: var(--product-panel-muted);
+  box-shadow: none;
+}
+
+.dialog-content .cover-preview {
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--product-radius-inner);
+  box-shadow: none;
+}
+
+.dialog-content .project-config-status,
+.dialog-content .skill-enable-row,
+.dialog-content .marketplace-publish aside,
+.dialog-content .marketplace-source-grid > button,
+.dialog-content .personal-template-list article,
+.dialog-content .marketplace-detail__publisher,
+.dialog-content .marketplace-detail__block pre {
+  border: 0;
+  border-radius: var(--product-radius-inner);
+  background: var(--product-panel-muted);
+  box-shadow: none;
+}
+
+.dialog-content .skill-stage-picker button,
+.dialog-content .marketplace-source-grid > button {
+  border: 0;
+  border-radius: var(--product-radius);
+  background: var(--product-panel-muted);
+  box-shadow: 0 0 0 1px var(--product-ring);
+}
+
+.dialog-content .skill-stage-picker button.active,
+.dialog-content .marketplace-source-grid > button[aria-pressed='true'] {
+  color: var(--brand-strong);
+  background: var(--brand-soft);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand) 34%, transparent);
+}
+
+.dialog-content .marketplace-detail__media {
+  border-radius: var(--product-radius);
+}
+
+/* Deep admin editors live in portals, so they cannot inherit .admin-page. */
+.dialog-content .admin-form {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.dialog-content .admin-form .field {
+  min-width: 0;
+}
+
+.dialog-content .admin-form .field > span,
+.dialog-content :is(.admin-user-form, .admin-credit-form, .admin-password-form) .field > span {
+  color: var(--ink-secondary);
+  font-size: 10px;
+  font-weight: 680;
+}
+
+.dialog-content .provider-editor-shell,
+.dialog-content .handbook-editor-shell {
+  display: grid;
+  gap: 12px;
+}
+
+.dialog-content :is(.provider-editor-section, .capability-section) {
+  border: 0;
+  border-radius: var(--product-radius);
+  background: var(--product-panel-muted);
+  box-shadow: none;
+}
+
+.dialog-content .provider-editor-section > header,
+.dialog-content .capability-section > header {
+  border-color: var(--line);
+}
+
+.dialog-content .provider-editor-section > header > span,
+.dialog-content .model-editor-identity > span:first-child,
+.dialog-content .prompt-editor-identity > span:first-child,
+.dialog-content .pricing-edit-summary > span {
+  color: var(--brand);
+  background: var(--brand-soft);
+}
+
+.dialog-content .provider-concurrency-control,
+.dialog-content .adapter-editor-collapsed,
+.dialog-content .model-editor-identity,
+.dialog-content .model-publish-controls,
+.dialog-content .prompt-editor-identity,
+.dialog-content .pricing-edit-summary,
+.dialog-content .config-protection-note,
+.dialog-content .credential-clear-control,
+.dialog-content :is(.capability-switch, .mode-option-grid > button, .audio-policy > button, .reference-limit__toggle),
+.dialog-content .duration-map-list > article {
+  border: 0;
+  border-radius: var(--product-radius-inner);
+  color: var(--ink-secondary);
+  background: var(--product-panel);
+  box-shadow: 0 0 0 1px var(--product-ring);
+}
+
+.dialog-content .provider-concurrency-stepper,
+.dialog-content .reference-steppers,
+.dialog-content .duration-map-list input {
+  border: 0;
+  border-radius: var(--product-radius-inner);
+  background: var(--product-panel-muted);
+  box-shadow: none;
+}
+
+.dialog-content :is(.capability-switch, .mode-option-grid > button, .audio-policy > button)[aria-pressed='true'],
+.dialog-content :is(.mode-option-grid > button, .audio-policy > button).active {
+  color: var(--brand-strong);
+  background: var(--brand-soft);
+  box-shadow: inset 3px 0 var(--brand);
+}
+
+.dialog-content .adapter-editor {
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--product-radius-inner);
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--product-ring);
+}
+
+.dialog-content .adapter-editor__toolbar,
+.dialog-content .adapter-variable-list {
+  border-color: var(--line);
+  background: var(--product-panel-muted);
+}
+
+.dialog-content .adapter-editor textarea,
+.dialog-content .prompt-content-field textarea,
+.dialog-content .handbook-source-editor textarea {
+  color: var(--ink);
+  background: var(--surface);
+}
+
+.dialog-content .handbook-editor-meta,
+.dialog-content .handbook-files-heading,
+.dialog-content .handbook-file-workspace {
+  border: 0;
+  border-radius: var(--product-radius);
+  background: var(--product-panel-muted);
+  box-shadow: none;
+}
+
+.dialog-content .handbook-cover-preview,
+.dialog-content .handbook-source-editor,
+.dialog-content .handbook-preview {
+  overflow: hidden;
+  border: 0;
+  border-radius: var(--product-radius-inner);
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--product-ring);
+}
+
+.dialog-content .handbook-cover-preview img {
+  outline: 1px solid rgb(0 0 0 / 10%);
+  outline-offset: -1px;
+}
+
+:root[data-theme='dark'] .dialog-content .handbook-cover-preview img {
+  outline-color: rgb(255 255 255 / 10%);
+}
+
+.dialog-content .handbook-file-tabs button {
+  min-height: 38px;
+  border: 0;
+  border-radius: 19px;
+  color: var(--ink-secondary);
+  background: var(--product-panel);
+  box-shadow: 0 0 0 1px var(--product-ring);
+}
+
+.dialog-content .handbook-file-tabs button.active {
+  color: var(--brand-strong);
+  background: var(--brand-soft);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--brand) 32%, transparent);
+}
+
+.dialog-content .discovery-toolbar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 10px;
+}
+
+.dialog-content .discovery-toolbar .search-control,
+.dialog-content .select-all-control {
+  min-height: 42px;
+  border: 0;
+  border-radius: var(--product-radius-inner);
+  color: var(--ink-secondary);
+  background: var(--product-panel-muted);
+  box-shadow: 0 0 0 1px var(--product-ring);
+}
+
+.dialog-content .discovery-list {
+  display: grid;
+  gap: 5px;
+  margin-top: 12px;
+}
+
+.dialog-content .discovery-row {
+  border: 0;
+  border-radius: var(--product-radius-inner);
+  color: var(--ink-secondary);
+  background: var(--product-panel-muted);
+  box-shadow: none;
+}
+
+.dialog-content .discovery-row:hover {
+  background: var(--product-panel-hover);
+}
+
+.dialog-content :is(.admin-user-form, .admin-credit-form, .admin-password-form) {
+  display: grid;
+  gap: 14px;
+}
+
+.dialog-content :is(.user-form-identity, .credit-user-summary, .password-reset-hero, .credit-audit-note) {
+  border: 0;
+  border-radius: var(--product-radius);
+  background: var(--product-panel-muted);
+  box-shadow: none;
+}
+
+.dialog-content .credit-mode {
+  padding: 4px;
+  border-radius: var(--product-radius);
+  background: var(--product-panel-muted);
+}
+
+.dialog-content .credit-mode button {
+  min-height: 40px;
+  border: 0;
+  border-radius: var(--product-radius-inner);
+  background: transparent;
+}
+
+.dialog-content .credit-mode button.active {
+  color: var(--brand-strong);
+  background: var(--surface);
+  box-shadow: 0 0 0 1px var(--product-ring);
+}
+
+.dialog-content .ledger-list article {
+  border: 0;
+  border-bottom: 1px solid var(--line);
+  border-radius: 0;
+  background: transparent;
+}
+
+.dialog-content .ledger-list article:last-child {
+  border-bottom: 0;
+}
+
+/* Lightweight staged page entrance. */
+@media (prefers-reduced-motion: no-preference) {
+  .app-shell .user-skills-page > .skill-overview,
+  .app-shell .user-skills-page > .skills-workspace-layout,
+  .app-shell .marketplace-page > .marketplace-workspace,
+  .app-shell .admin-page .admin-workspace-content {
+    animation: product-enter 360ms cubic-bezier(.2, 0, 0, 1) both;
+  }
+
+  .app-shell .user-skills-page > .skills-workspace-layout,
+  .app-shell .marketplace-page > .marketplace-workspace {
+    animation-delay: 60ms;
+  }
+}
+
+@keyframes product-enter {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+    filter: blur(3px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    filter: blur(0);
+  }
+}
+
+/* Responsive layout */
+@media (max-width: 1100px) {
+  .app-shell .admin-page .metric-grid,
+  .app-shell .admin-page .user-metrics,
+  .app-shell .admin-page .invite-metrics,
+  .app-shell .admin-page .readiness-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .app-shell .admin-page .branding-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-shell .admin-page .branding-preview {
+    min-height: min(52vw, 460px);
+  }
+}
+
+@media (max-width: 900px) {
+  .app-shell .workspace-command-grid--projects .project-library__header,
+  .app-shell .marketplace-page .marketplace-hero {
+    grid-template-columns: minmax(0, 1fr);
+    align-items: start;
+  }
+
+  .app-shell .workspace-command-grid--projects .workspace-toolbar {
+    grid-template-columns: minmax(0, 1fr) auto auto;
+  }
+
+  .app-shell .marketplace-page .marketplace-hero__actions {
+    justify-content: flex-start;
+  }
+
+  .app-shell .marketplace-page .marketplace-hero__count {
+    right: 0;
+    bottom: 18px;
+  }
+
+  .app-shell .user-skills-page .skills-workspace-layout {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-shell .user-skills-page .skills-stage-rail {
+    position: static;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 0;
+    padding: 7px;
+  }
+
+  .app-shell .user-skills-page .skills-stage-rail__label {
+    display: none;
+  }
+
+  .app-shell .user-skills-page .skill-filter-bar {
+    display: flex;
+    gap: 4px;
+    overflow-x: auto;
+    scrollbar-width: none;
+  }
+
+  .app-shell .user-skills-page .skill-filter-bar::-webkit-scrollbar {
+    display: none;
+  }
+
+  .app-shell .user-skills-page .skill-filter-bar button {
+    display: inline-flex;
+    min-width: max-content;
+  }
+
+  .app-shell .user-skills-page .skill-filter-bar button.active {
+    box-shadow: none;
+  }
+
+  .app-shell .admin-page .admin-settings-rail {
+    position: static;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 5px;
+    padding: 7px;
+  }
+
+  .app-shell .admin-page .admin-settings-rail > span {
+    display: none;
+  }
+
+  .app-shell .admin-page .model-service-workbench {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-shell .admin-page .provider-directory {
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .app-shell .admin-page .provider-directory__list {
+    display: flex;
+    overflow-x: auto;
+  }
+
+  .app-shell .admin-page .provider-directory__list > button {
+    min-width: 200px;
+  }
+}
+
+@media (max-width: 680px) {
+  :root {
+    --product-page-inline: 12px;
+    --product-page-block: 16px;
+  }
+
+  .app-shell .workspace-page:has(.workspace-command-grid--projects),
+  .app-shell .user-skills-page,
+  .app-shell .marketplace-page,
+  .app-shell .admin-page {
+    padding-bottom: calc(86px + env(safe-area-inset-bottom));
+  }
+
+  .app-shell .workspace-command-grid--projects .project-library__header,
+  .app-shell .user-skills-page .skills-hero,
+  .app-shell .marketplace-page .marketplace-hero {
+    min-height: 0;
+    gap: 14px;
+    align-items: stretch;
+    padding-bottom: 14px;
+  }
+
+  .app-shell .project-library__title h1,
+  .app-shell .user-skills-page .skills-hero__content h1,
+  .app-shell .marketplace-page .marketplace-hero h1 {
+    font-size: 26px;
+  }
+
+  .app-shell .workspace-command-grid--projects .workspace-toolbar {
+    grid-template-columns: minmax(0, 1fr) auto;
+  }
+
+  .app-shell .workspace-command-grid--projects .result-count {
+    display: none;
+  }
+
+  .app-shell .workspace-command-grid--projects .workspace-create-button {
+    width: 42px;
+    padding: 0;
+  }
+
+  .app-shell .workspace-command-grid--projects .workspace-create-button span {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+  }
+
+  .app-shell .workspace-command-grid--projects .project-grid,
+  .app-shell .user-skills-page .user-skill-grid,
+  .app-shell .marketplace-page .marketplace-grid {
+    grid-template-columns: minmax(0, 1fr);
+    gap: 11px;
+  }
+
+  .app-shell .workspace-page .project-card,
+  .app-shell .workspace-page .new-project-tile {
+    min-height: 0;
+  }
+
+  .app-shell .workspace-page .new-project-tile {
+    min-height: 116px;
+  }
+
+  .app-shell .user-skills-page .skills-hero {
+    display: grid;
+  }
+
+  .app-shell .user-skills-page .skills-hero__action {
+    width: 100%;
+  }
+
+  .app-shell .user-skills-page .skill-overview {
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 10px;
+  }
+
+  .app-shell .user-skills-page .skill-overview p {
+    grid-column: 1 / -1;
+    justify-self: start;
+  }
+
+  .app-shell .marketplace-page .marketplace-hero__actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .app-shell .marketplace-page .marketplace-hero__actions .button:only-child {
+    grid-column: 1 / -1;
+  }
+
+  .app-shell .marketplace-page .marketplace-hero__count {
+    display: none;
+  }
+
+  .app-shell .marketplace-page .marketplace-toolbar {
+    grid-template-columns: minmax(0, 1fr) 40px;
+  }
+
+  .app-shell .marketplace-page .marketplace-sort {
+    grid-column: 1 / -1;
+    grid-row: 2;
+  }
+
+  .app-shell .marketplace-page .marketplace-sort button {
+    flex: 1;
+    justify-content: center;
+  }
+
+  .app-shell .admin-page .section-heading {
+    display: grid;
+    align-items: start;
+  }
+
+  .app-shell .admin-page .section-actions,
+  .app-shell .admin-page .handbook-heading > div:last-child {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-shell .admin-page .section-actions .button,
+  .app-shell .admin-page .handbook-heading .button {
+    width: 100%;
+  }
+
+  .app-shell .admin-page .metric-grid,
+  .app-shell .admin-page .user-metrics,
+  .app-shell .admin-page .invite-metrics,
+  .app-shell .admin-page .readiness-list {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px;
+  }
+
+  .app-shell .admin-page .metric,
+  .app-shell .admin-page .user-metrics article,
+  .app-shell .admin-page .invite-metrics article {
+    min-height: 78px;
+  }
+
+  .app-shell .admin-page .global-defaults,
+  .app-shell .admin-page .readiness-panel {
+    padding: 12px;
+  }
+
+  .app-shell .admin-page .user-toolbar {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .app-shell .admin-page .skills-workbench {
+    min-height: 620px;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(160px, 220px) minmax(390px, 1fr);
+  }
+
+  .app-shell .admin-page .skills-workbench > aside {
+    overflow: auto;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .app-shell .admin-page .branding-preview {
+    min-height: 240px;
+  }
+
+  .dialog-content {
+    max-width: calc(100vw - 20px);
+    max-height: calc(100dvh - 20px);
+    border-radius: var(--product-radius);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .app-shell .workspace-page .project-card,
+  .app-shell .workspace-page .project-card__media img,
+  .app-shell .user-skills-page .user-skill-card,
+  .app-shell .marketplace-page .marketplace-card,
+  .app-shell .admin-page :is(.metric, .default-model-slot, .provider-model-card, .pricing-rule, .settings-row, .prompt-item, .handbook-item, .invite-card),
+  .ui-select,
+  .ui-select__chevron {
+    transition-duration: .01ms;
+  }
+}
+
+/*
+ * Page scrolling contract
+ *
+ * The personal Agent is the only route that owns a viewport-locked shell.
+ * Content pages must be allowed to grow past the viewport so the document
+ * scrollbar can reach every admin, project, skill and marketplace section.
+ */
+.app-shell.app-shell--top-navigation {
+  width: 100%;
+  height: auto;
+  min-height: 100dvh;
+  overflow-x: clip;
+  overflow-y: visible;
+}
+
+.app-shell.app-shell--top-navigation .shell-main {
+  height: auto;
+  min-height: 100dvh;
+  overflow: visible;
+}
+
+.app-shell.app-shell--top-navigation .page-content {
+  height: auto;
+  min-height: calc(100dvh - var(--topbar-height));
+  overflow: visible;
+}
+
+.app-shell.app-shell--top-navigation.app-shell--agent-home {
+  height: 100dvh;
+  min-height: 100dvh;
+  overflow: hidden;
+}
+
+.app-shell.app-shell--top-navigation.app-shell--agent-home .shell-main {
+  height: 100%;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.app-shell.app-shell--top-navigation.app-shell--agent-home .page-content {
+  min-height: 0;
+  overflow: hidden;
+}
+
+/* Stable home Agent layout. Dynamic messages only resize the virtual thread;
+   the composer remains a fixed flex sibling and never inherits media height. */
+.app-shell.app-shell--agent-home .shell-main {
+  display: flex;
+  flex-direction: column;
+}
+
+.app-shell.app-shell--agent-home .page-content:has(.workspace-agent-stage--home) {
+  position: relative;
+  inset: auto;
+  display: flex;
+  height: auto !important;
+  min-height: 0 !important;
+  flex: 1 1 0 !important;
+}
+
+.app-shell--agent-home .workspace-page:has(.workspace-agent-stage--home),
+.app-shell--agent-home .workspace-agent-stage--home,
+.app-shell--agent-home .workspace-agent-stage--home > .agent-studio,
+.app-shell--agent-home .workspace-agent-stage--home .agent-composer-shell {
+  height: 100% !important;
+  min-height: 0 !important;
+}
+
+.app-shell--agent-home .workspace-agent-stage--home .agent-composer-shell,
+.app-shell--agent-home .workspace-agent-stage--home .agent-workspace-body,
+.app-shell--agent-home .workspace-agent-stage--home .agent-conversation {
+  flex: 1 1 0;
+  overflow: hidden;
+}
+
+.app-shell--agent-home .workspace-agent-stage--home .agent-workspace-body,
+.app-shell--agent-home .workspace-agent-stage--home .agent-conversation {
+  height: auto !important;
+  min-height: 0;
+}
+
+.app-shell--agent-home .workspace-agent-stage--home .agent-thread {
+  min-height: 0;
+  flex: 1 1 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+}
+
+.app-shell--agent-home .workspace-agent-stage--home .agent-composer {
+  position: relative;
+  bottom: auto;
+  flex: 0 0 auto;
+}
+
+.app-shell--agent-home .workspace-agent-stage--home .agent-composer textarea {
+  height: 52px;
+  min-height: 52px;
+  max-height: 176px;
+  flex: 0 0 auto;
+  overflow-y: auto;
+}
+
+@media (max-width: 760px) {
+  .app-shell.app-shell--agent-home .shell-main {
+    padding-bottom: 0;
+  }
+
+  .app-shell.app-shell--agent-home .page-content:has(.workspace-agent-stage--home) {
+    margin-bottom: calc(60px + env(safe-area-inset-bottom));
+  }
+
+  .app-shell--agent-home .workspace-agent-stage--home {
+    padding-bottom: 0;
+  }
+
+  .app-shell--agent-home .workspace-agent-stage--home .agent-workbench-header {
+    flex: 0 0 48px;
+    min-height: 48px;
+  }
+
+  .app-shell--agent-home .workspace-agent-stage--home .agent-thread {
+    padding: 8px 10px 12px;
+  }
+
+  .app-shell--agent-home .workspace-agent-stage--home .agent-composer {
+    width: calc(100% - 16px);
+    margin: 4px 8px 0;
+    padding: 7px 8px;
+  }
+
+  .app-shell--agent-home .workspace-agent-stage--home .agent-composer__actions {
+    flex-wrap: nowrap;
+  }
+
+  .app-shell--agent-home .workspace-agent-stage--home .agent-attach-button {
+    width: 42px;
+    min-width: 42px;
+    height: 42px;
+    min-height: 42px;
+    border-radius: 11px;
+  }
+
+  .app-shell--agent-home .workspace-agent-stage--home .agent-attach-button svg {
+    width: 20px;
+    height: 20px;
+  }
+
+  .app-shell--agent-home .workspace-agent-stage--home .agent-inline-parameters {
+    min-width: 0;
+    flex: 1 1 0;
+  }
+
+  .app-shell--agent-home .workspace-agent-stage--home .agent-inline-parameters .agent-inline-select {
+    min-width: 0;
+    flex: 1 1 auto;
+  }
+
+  .app-shell--agent-home .workspace-agent-stage--home .agent-inline-parameters .agent-inline-select > summary {
+    max-width: 100%;
+    overflow: hidden;
+    padding-inline: 4px;
+    text-overflow: ellipsis;
+  }
+
+  .app-shell--agent-home .workspace-agent-stage--home .agent-composer__submit-group {
+    max-width: 44%;
+  }
+
+  .app-shell--agent-home .workspace-agent-stage--home .agent-inline-model-select,
+  .app-shell--agent-home .workspace-agent-stage--home .agent-inline-model-select > summary {
+    max-width: min(104px, 29vw);
+  }
+
+  .app-shell--agent-home .workspace-agent-stage--home .agent-composer textarea {
+    height: 48px;
+    min-height: 48px;
+    max-height: 144px;
+  }
+
+  .app-shell--agent-home .workspace-agent-stage--home .agent-generated-media__preview {
+    height: 180px;
+  }
+}

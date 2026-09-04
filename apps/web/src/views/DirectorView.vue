@@ -24,7 +24,7 @@ import {
   Film,
   FolderOpen,
   GitBranchPlus,
-  GripHorizontal,
+  GripVertical,
   Headphones,
   History,
   Image,
@@ -110,7 +110,7 @@ const selectedAnalysisId = ref('')
 const files = ref<ProjectFileItem[]>([])
 const selectedChapterId = ref('')
 const directorWorkspace = ref<HTMLElement | null>(null)
-const directorSplitRatio = ref(0.36)
+const directorAgentWidth = ref(360)
 const directorSplitDragging = ref(false)
 const loading = ref(true)
 const importOpen = ref(false)
@@ -189,12 +189,12 @@ const playingLineId = ref('')
 const legacyWorkspaceVisible = false
 let audioPlayer: HTMLAudioElement | null = null
 let directorSplitPointerId: number | null = null
-let directorSplitStartY = 0
-let directorSplitStartRatio = 0.36
-const directorSplitDefault = 0.36
-const directorSplitHandleHeight = 40
-const directorCanvasMinHeight = 148
-const directorAgentMinHeight = 220
+let directorSplitStartX = 0
+let directorSplitStartWidth = 360
+const directorAgentDefaultWidth = 360
+const directorAgentMinWidth = 280
+const directorAgentMaxWidth = 720
+const directorSplitHandleWidth = 12
 const voiceForm = reactive({
   tts_model_id: '',
   provider_voice_id: '',
@@ -225,9 +225,8 @@ const scriptForm = reactive({
 
 const projectId = computed(() => String(route.params.id))
 const directorWorkspaceStyle = computed(() => ({
-  '--director-chapter-height': `${(directorSplitRatio.value * 100).toFixed(2)}%`,
+  '--director-agent-width': `${directorAgentWidth.value}px`,
 }))
-const directorSplitPercent = computed(() => Math.round(directorSplitRatio.value * 100))
 const selectedChapter = computed(
   () => chapters.value.find((item) => item.id === selectedChapterId.value) ?? chapters.value[0],
 )
@@ -441,10 +440,11 @@ const selectedVideoShots = computed(() => {
     : shots
 })
 const videoPromptEligibleShots = computed(() => selectedVideoShots.value.filter(
-  (shot) => !busyVideoPromptShotIds.value.has(shot.id),
+  (shot) => !busyVideoPromptShotIds.value.has(shot.id) && !busyShotIds.value.has(shot.id),
 ))
 const videoEligibleShots = computed(() => selectedVideoShots.value.filter(
   (shot) => !busyShotIds.value.has(shot.id)
+    && !busyVideoPromptShotIds.value.has(shot.id)
     && Boolean(shot.video_prompt.trim())
     && !(activeClips.value.get(shot.id)?.is_active && activeClips.value.get(shot.id)?.status === 'ready'),
 ))
@@ -557,18 +557,16 @@ const assetRevisionChangeLabel: Record<string, string> = {
 const assetTypeIcon = { character: UsersRound, scene: MapPinned, prop: PackageSearch, material: Image, audio: Headphones }
 
 function directorSplitStorageKey(): string {
-  return `cineforge:director-split:v2:${projectId.value}`
+  return `cineforge:director-agent-width:v1:${projectId.value}`
 }
 
-function directorSplitBounds(): { available: number; min: number; max: number } {
+function directorSplitBounds(): { min: number; max: number } {
   const workspace = directorWorkspace.value
-  if (!workspace) return { available: 1, min: 0.2, max: 0.68 }
-  const style = window.getComputedStyle(workspace)
-  const verticalPadding = Number.parseFloat(style.paddingTop) + Number.parseFloat(style.paddingBottom)
-  const available = Math.max(1, workspace.clientHeight - verticalPadding)
-  const min = Math.min(0.45, directorCanvasMinHeight / available)
-  const max = Math.max(min, Math.min(0.72, (available - directorSplitHandleHeight - directorAgentMinHeight) / available))
-  return { available, min, max }
+  if (!workspace) return { min: directorAgentMinWidth, max: directorAgentMaxWidth }
+  const available = Math.max(1, workspace.clientWidth - directorSplitHandleWidth)
+  const min = Math.min(directorAgentMinWidth, Math.max(240, available * 0.4))
+  const max = Math.max(min, Math.min(directorAgentMaxWidth, available * 0.52))
+  return { min, max }
 }
 
 function clampDirectorSplit(value: number): number {
@@ -578,20 +576,23 @@ function clampDirectorSplit(value: number): number {
 
 function loadDirectorSplit(): void {
   const stored = Number(window.localStorage.getItem(directorSplitStorageKey()))
-  directorSplitRatio.value = Number.isFinite(stored) && stored > 0
-    ? Math.min(0.72, Math.max(0.18, stored))
-    : directorSplitDefault
+  directorAgentWidth.value = Number.isFinite(stored) && stored > 0
+    ? Math.min(directorAgentMaxWidth, Math.max(directorAgentMinWidth, stored))
+    : directorAgentDefaultWidth
 }
 
 function saveDirectorSplit(): void {
-  window.localStorage.setItem(directorSplitStorageKey(), directorSplitRatio.value.toFixed(4))
+  window.localStorage.setItem(directorSplitStorageKey(), String(Math.round(directorAgentWidth.value)))
 }
 
 function startDirectorSplit(event: PointerEvent): void {
   if (event.pointerType === 'mouse' && event.button !== 0) return
   directorSplitPointerId = event.pointerId
-  directorSplitStartY = event.clientY
-  directorSplitStartRatio = directorSplitRatio.value
+  directorSplitStartX = event.clientX
+  directorSplitStartWidth = directorWorkspace.value
+    ?.querySelector<HTMLElement>('.director-agent-workspace')
+    ?.getBoundingClientRect().width ?? directorAgentWidth.value
+  directorAgentWidth.value = directorSplitStartWidth
   directorSplitDragging.value = true
   ;(event.currentTarget as HTMLElement).setPointerCapture(event.pointerId)
   document.body.classList.add('director-resizing')
@@ -600,9 +601,8 @@ function startDirectorSplit(event: PointerEvent): void {
 
 function moveDirectorSplit(event: PointerEvent): void {
   if (!directorSplitDragging.value || directorSplitPointerId !== event.pointerId) return
-  const { available } = directorSplitBounds()
-  directorSplitRatio.value = clampDirectorSplit(
-    directorSplitStartRatio + (event.clientY - directorSplitStartY) / available,
+  directorAgentWidth.value = clampDirectorSplit(
+    directorSplitStartWidth + directorSplitStartX - event.clientX,
   )
   event.preventDefault()
 }
@@ -616,17 +616,17 @@ function finishDirectorSplit(event?: PointerEvent): void {
 }
 
 function resetDirectorSplit(): void {
-  directorSplitRatio.value = clampDirectorSplit(directorSplitDefault)
+  directorAgentWidth.value = clampDirectorSplit(directorAgentDefaultWidth)
   saveDirectorSplit()
 }
 
 function adjustDirectorSplit(event: KeyboardEvent): void {
-  const { available, min, max } = directorSplitBounds()
-  const step = (event.shiftKey ? 40 : 12) / available
-  if (event.key === 'ArrowUp') directorSplitRatio.value = Math.max(min, directorSplitRatio.value - step)
-  else if (event.key === 'ArrowDown') directorSplitRatio.value = Math.min(max, directorSplitRatio.value + step)
-  else if (event.key === 'Home') directorSplitRatio.value = min
-  else if (event.key === 'End') directorSplitRatio.value = max
+  const { min, max } = directorSplitBounds()
+  const step = event.shiftKey ? 40 : 12
+  if (event.key === 'ArrowLeft') directorAgentWidth.value = Math.min(max, directorAgentWidth.value + step)
+  else if (event.key === 'ArrowRight') directorAgentWidth.value = Math.max(min, directorAgentWidth.value - step)
+  else if (event.key === 'Home') directorAgentWidth.value = min
+  else if (event.key === 'End') directorAgentWidth.value = max
   else if (event.key === 'Enter') resetDirectorSplit()
   else return
   saveDirectorSplit()
@@ -1289,7 +1289,7 @@ async function queueVideoPrompts(overwrite = true, shotIdsOverride?: string[]): 
       {
         method: 'POST',
         body: JSON.stringify({
-          shot_ids: selectedVideoShotIds.value,
+          shot_ids: videoPromptEligibleShots.value.map((shot) => shot.id),
           overwrite,
         }),
       },
@@ -1956,13 +1956,13 @@ function fileSize(bytes: number): string {
         <div
           class="director-pane-resizer"
           role="separator"
-          aria-label="调整章节内容与 AI 对话区域高度"
-          aria-orientation="horizontal"
-          aria-valuemin="18"
-          aria-valuemax="72"
-          :aria-valuenow="directorSplitPercent"
+          aria-label="调整 AI 对话窗口宽度"
+          aria-orientation="vertical"
+          :aria-valuemin="directorAgentMinWidth"
+          :aria-valuemax="directorAgentMaxWidth"
+          :aria-valuenow="Math.round(directorAgentWidth)"
           tabindex="0"
-          title="拖动调整高度，双击恢复默认"
+          title="左右拖动调整 AI 对话宽度，双击恢复默认"
           @pointerdown="startDirectorSplit"
           @pointermove="moveDirectorSplit"
           @pointerup="finishDirectorSplit"
@@ -1971,7 +1971,7 @@ function fileSize(bytes: number): string {
           @dblclick="resetDirectorSplit"
           @keydown="adjustDirectorSplit"
         >
-          <span><GripHorizontal :size="17" /></span>
+          <span><GripVertical :size="17" /></span>
         </div>
 
         <section class="director-agent-workspace" aria-label="AI 剧本创作助手">
@@ -2116,7 +2116,7 @@ function fileSize(bytes: number): string {
                 <i v-else-if="activeClips.get(shot.id)?.status === 'failed'" class="shot-card__status shot-card__status--failed">生成失败</i>
               </div>
               <div class="shot-card__content">
-                <header><div><strong>{{ shot.title }}</strong><small>镜头稿 v{{ shot.version }}</small></div><button class="icon-button icon-button--small" type="button" title="编辑镜头" :disabled="!storyboardDetail.version.is_active" @click="openShotEditor(shot)"><Pencil :size="14" /></button></header>
+                <header><div><strong>{{ shot.title }}</strong><small>镜头稿 v{{ shot.version }}</small></div><button class="icon-button icon-button--small" type="button" title="编辑镜头" :disabled="!storyboardDetail.version.is_active || busyShotIds.has(shot.id) || busyVideoPromptShotIds.has(shot.id)" @click="openShotEditor(shot)"><Pencil :size="14" /></button></header>
                 <div class="shot-card__meta"><span><Camera :size="13" />{{ shot.shot_type }}</span><span><Clock3 :size="13" /><b class="tabular-nums">{{ shot.duration_seconds }}</b> 秒</span></div>
                 <p>{{ shot.scene_description }}</p><p class="shot-card__action">{{ shot.action_description }}</p>
                 <blockquote v-if="shot.dialogue"><MessageSquareText :size="14" />{{ shot.dialogue }}</blockquote>
@@ -2152,7 +2152,7 @@ function fileSize(bytes: number): string {
               <article class="video-prompt-panel">
                 <header>
                   <div><span class="tabular-nums">#{{ selectedVideoShot?.order_index || 0 }}</span><strong>生成提示词</strong></div>
-                  <button class="button button--primary" type="button" :disabled="!selectedVideoShot || busyVideoPromptShotIds.has(selectedVideoShot.id) || storyboardAction === 'videoPrompt'" @click="selectedVideoShot && queueVideoPrompts(true, [selectedVideoShot.id])">
+                  <button class="button button--primary" type="button" :disabled="!selectedVideoShot || busyVideoPromptShotIds.has(selectedVideoShot.id) || busyShotIds.has(selectedVideoShot.id) || storyboardAction === 'videoPrompt'" @click="selectedVideoShot && queueVideoPrompts(true, [selectedVideoShot.id])">
                     <LoaderCircle v-if="selectedVideoShot && busyVideoPromptShotIds.has(selectedVideoShot.id)" class="spin" :size="15" />
                     <WandSparkles v-else :size="15" />
                     生成提示词

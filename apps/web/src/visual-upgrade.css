@@ -2051,41 +2051,17 @@ body,
 }
 
 .topbar--scene {
-  --masthead-x: 0px;
-  --masthead-y: 0px;
-  isolation: isolate;
-  overflow: hidden;
-  padding-inline: 24px 18px;
-  border-bottom: 1px solid rgb(255 255 255 / 8%);
-  background: #101512;
-  box-shadow: 0 10px 30px rgb(5 9 7 / 16%);
-  backdrop-filter: none;
+  overflow: visible;
+  padding-inline: 18px;
+  border-bottom: 0;
+  background: color-mix(in srgb, var(--canvas) 94%, transparent);
+  box-shadow: none;
+  backdrop-filter: blur(18px) saturate(1.08);
 }
 
 .topbar--scene::before,
 .topbar--scene::after {
-  position: absolute;
-  z-index: -2;
-  inset: -14px;
-  content: '';
-  pointer-events: none;
-}
-
-.topbar--scene::before {
-  background-image: var(--topbar-image);
-  background-position: center 48%;
-  background-size: cover;
-  filter: saturate(.88) contrast(1.04);
-  transform: translate3d(var(--masthead-x), var(--masthead-y), 0) scale(1.06);
-  will-change: transform;
-}
-
-.topbar--scene::after {
-  z-index: -1;
-  background:
-    linear-gradient(90deg, rgb(8 13 10 / 87%) 0%, rgb(8 13 10 / 56%) 46%, rgb(8 13 10 / 73%) 100%),
-    linear-gradient(180deg, rgb(7 11 9 / 22%), rgb(7 11 9 / 56%));
-  backdrop-filter: blur(1.5px);
+  display: none;
 }
 
 .topbar--scene .topbar__context {
@@ -2126,15 +2102,15 @@ body,
 }
 
 .topbar--scene .topbar__actions {
-  min-height: 52px;
-  gap: 3px;
-  padding: 5px 6px;
-  border: 1px solid rgb(255 255 255 / 11%);
-  border-radius: 8px;
-  color: rgb(255 255 255 / 78%);
-  background: rgb(8 13 11 / 47%);
-  box-shadow: 0 14px 34px rgb(0 0 0 / 18%), inset 0 1px rgb(255 255 255 / 5%);
-  backdrop-filter: blur(18px) saturate(1.18);
+  min-height: 44px;
+  gap: 2px;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  color: var(--ink-secondary);
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
 }
 
 .topbar-tool {
@@ -2152,7 +2128,7 @@ body,
   padding: 0;
   border: 0;
   border-radius: 7px;
-  color: rgb(255 255 255 / 76%);
+  color: var(--ink-secondary);
   background: transparent;
   box-shadow: none;
 }
@@ -2160,8 +2136,8 @@ body,
 .topbar--scene .topbar-tool .theme-toggle:hover,
 .topbar--scene .topbar-tool .activity-trigger:hover,
 .topbar--scene .topbar-tool .activity-trigger[data-state='open'] {
-  color: #fff;
-  background: rgb(255 255 255 / 10%);
+  color: var(--ink);
+  background: var(--surface-subtle);
 }
 
 .topbar--scene .credit-pill {
@@ -2170,7 +2146,7 @@ body,
   gap: 8px;
   padding: 0 10px;
   border: 0;
-  color: rgb(255 255 255 / 78%);
+  color: var(--ink-secondary);
   background: transparent;
   box-shadow: none;
 }
@@ -2189,7 +2165,7 @@ body,
 
 .credit-pill__copy small,
 .account-menu__copy small {
-  color: rgb(255 255 255 / 44%);
+  color: var(--ink-tertiary);
   font-size: 8px;
   font-weight: 600;
 }
@@ -2197,7 +2173,7 @@ body,
 .credit-pill__copy strong,
 .account-menu__copy strong {
   overflow: hidden;
-  color: #fff;
+  color: var(--ink);
   font-size: 11px;
   line-height: 1.25;
   text-overflow: ellipsis;
@@ -2208,7 +2184,7 @@ body,
   width: 1px;
   height: 26px;
   margin: 0 4px;
-  background: rgb(255 255 255 / 12%);
+  background: color-mix(in srgb, var(--line) 76%, transparent);
 }
 
 .topbar--scene .account-menu {
@@ -2224,28 +2200,28 @@ body,
   gap: 8px;
   padding: 4px 7px 4px 4px;
   border: 0;
-  color: rgb(255 255 255 / 78%);
+  color: var(--ink-secondary);
   background: transparent;
   box-shadow: none;
 }
 
 .topbar--scene .account-menu__trigger:hover,
 .topbar--scene .account-menu__trigger[data-state='open'] {
-  color: #fff;
-  background: rgb(255 255 255 / 10%);
+  color: var(--ink);
+  background: var(--surface-subtle);
 }
 
 .topbar--scene .avatar {
   width: 32px;
   height: 32px;
-  border: 1px solid rgb(255 255 255 / 28%);
+  border: 0;
   color: #fff;
   background: #bd513d;
-  box-shadow: 0 4px 12px rgb(0 0 0 / 18%);
+  box-shadow: 0 0 0 1px color-mix(in srgb, var(--line) 72%, transparent);
 }
 
 .topbar--scene .account-menu__chevron {
-  color: rgb(255 255 255 / 48%);
+  color: var(--ink-tertiary);
 }
 
 .account-popover--scene {
@@ -2377,10 +2353,6 @@ body,
     padding-inline: 12px 8px;
   }
 
-  .topbar--scene::before {
-    transform: scale(1.06);
-  }
-
   .topbar--scene .topbar__actions {
     min-height: 48px;
     padding: 3px 4px;
@@ -2419,17 +2391,10 @@ body,
   }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .topbar--scene::before {
-    transform: scale(1.06);
-    will-change: auto;
-  }
-}
-
 /* Top navigation replaces the desktop sidebar. */
 .app-shell--top-navigation {
   --sidebar-width: 0px;
-  --topbar-height: 82px;
+  --topbar-height: 68px;
 }
 
 .app-shell--top-navigation .shell-main {
@@ -2458,7 +2423,7 @@ body,
   flex: 0 0 auto;
   align-items: center;
   gap: 9px;
-  color: #fff;
+  color: var(--ink);
 }
 
 .topbar-brand__mark {
@@ -2468,11 +2433,11 @@ body,
   flex: 0 0 36px;
   align-items: center;
   justify-content: center;
-  border: 1px solid rgb(255 255 255 / 60%);
+  border: 0;
   border-radius: 7px;
-  color: #17201c;
-  background: rgb(250 248 241 / 94%);
-  box-shadow: 0 8px 22px rgb(0 0 0 / 20%);
+  color: var(--brand-strong);
+  background: var(--brand-soft);
+  box-shadow: none;
 }
 
 .topbar-brand__copy {
@@ -2482,12 +2447,12 @@ body,
 }
 
 .topbar-brand__copy strong {
-  color: #fff;
+  color: var(--ink);
   font-size: 13px;
 }
 
 .topbar-brand__copy small {
-  color: rgb(255 255 255 / 44%);
+  color: var(--ink-tertiary);
   font-size: 8px;
   font-weight: 700;
   text-transform: uppercase;
@@ -2508,7 +2473,7 @@ body,
   gap: 7px;
   padding: 0 11px;
   border-radius: 7px;
-  color: rgb(255 255 255 / 62%);
+  color: var(--ink-secondary);
   font-size: 11px;
   font-weight: 600;
   white-space: nowrap;
@@ -2516,8 +2481,8 @@ body,
 }
 
 .topbar-nav__item:hover {
-  color: #fff;
-  background: rgb(255 255 255 / 9%);
+  color: var(--ink);
+  background: var(--surface-subtle);
   transform: translateY(-1px);
 }
 
@@ -2526,9 +2491,9 @@ body,
 }
 
 .topbar-nav__item--active {
-  color: #fff;
-  background: rgb(255 255 255 / 12%);
-  box-shadow: inset 0 0 0 1px rgb(255 255 255 / 9%);
+  color: var(--brand-strong);
+  background: transparent;
+  box-shadow: none;
 }
 
 .topbar-nav__item--active::after {
@@ -4257,6 +4222,14 @@ body,
 .workspace-agent-stage--home .agent-inline-model-select {
   min-width: 0;
   max-width: 180px;
+}
+
+.workspace-agent-stage--home .agent-composer__submit-group {
+  display: flex;
+  min-width: 0;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 4px;
   margin-left: auto;
 }
 
@@ -4709,6 +4682,158 @@ body,
   }
 }
 
+/* Immersive top navigation: controls live directly on the application canvas
+   instead of forming a separate masthead or account dock. */
+.app-shell--top-navigation {
+  --topbar-height: 60px;
+  background: var(--canvas);
+}
+
+.app-shell--top-navigation .shell-main,
+.app-shell--top-navigation .topbar--scene {
+  background: var(--canvas);
+}
+
+.app-shell--top-navigation .topbar--scene {
+  min-height: var(--topbar-height);
+  padding-inline: 18px 14px;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.app-shell--top-navigation .topbar__navigation {
+  gap: 14px;
+}
+
+.app-shell--top-navigation .topbar-brand {
+  min-height: 40px;
+  gap: 7px;
+}
+
+.app-shell--top-navigation .topbar-brand__mark {
+  width: 28px;
+  height: 28px;
+  flex-basis: 28px;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.app-shell--top-navigation .topbar-brand__copy strong {
+  font-size: 12px;
+  font-weight: 650;
+}
+
+.app-shell--top-navigation .topbar-brand__copy small {
+  font-size: 7px;
+  font-weight: 600;
+}
+
+.app-shell--top-navigation .topbar-nav {
+  gap: 0;
+}
+
+.app-shell--top-navigation .topbar-nav__item {
+  min-height: 40px;
+  padding-inline: 10px;
+  border-radius: 8px;
+  font-weight: 500;
+  transition-property: color, background-color, scale;
+  transition-duration: var(--duration-quick, 150ms);
+  transition-timing-function: var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
+}
+
+.app-shell--top-navigation .topbar-nav__item:hover {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+  transform: none;
+}
+
+.app-shell--top-navigation .topbar-nav__item--active,
+.app-shell--top-navigation .topbar-nav__item--active:hover {
+  color: var(--brand-strong);
+  background: transparent;
+}
+
+.app-shell--top-navigation .topbar-nav__item--active::after {
+  right: 10px;
+  bottom: 2px;
+  left: 10px;
+  height: 2px;
+  background: var(--brand);
+  box-shadow: none;
+}
+
+.app-shell--top-navigation .topbar--scene .topbar__actions {
+  min-height: 40px;
+  gap: 0;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+  backdrop-filter: none;
+}
+
+.app-shell--top-navigation .topbar--scene .topbar-tool .theme-toggle,
+.app-shell--top-navigation .topbar--scene .topbar-tool .activity-trigger,
+.app-shell--top-navigation .topbar--scene .credit-pill,
+.app-shell--top-navigation .topbar--scene .account-menu__trigger {
+  min-height: 40px;
+  border: 0;
+  background: transparent;
+  box-shadow: none;
+  transition-property: color, background-color, scale;
+  transition-duration: var(--duration-quick, 150ms);
+  transition-timing-function: var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
+}
+
+.app-shell--top-navigation .topbar--scene .topbar-tool .theme-toggle:hover,
+.app-shell--top-navigation .topbar--scene .topbar-tool .activity-trigger:hover,
+.app-shell--top-navigation .topbar--scene .topbar-tool .activity-trigger[data-state='open'],
+.app-shell--top-navigation .topbar--scene .account-menu__trigger:hover,
+.app-shell--top-navigation .topbar--scene .account-menu__trigger[data-state='open'] {
+  color: var(--ink);
+  background: color-mix(in srgb, var(--ink) 4%, transparent);
+}
+
+.app-shell--top-navigation .topbar--scene .credit-pill {
+  gap: 6px;
+  padding-inline: 7px;
+}
+
+.app-shell--top-navigation .credit-pill__copy small {
+  display: none;
+}
+
+.app-shell--top-navigation .topbar__divider {
+  display: none;
+}
+
+.app-shell--top-navigation .topbar--scene .account-menu__trigger {
+  min-width: 132px;
+  gap: 7px;
+  padding: 4px 5px 4px 4px;
+}
+
+@media (max-width: 760px) {
+  .app-shell--top-navigation {
+    --topbar-height: 58px;
+  }
+
+  .app-shell--top-navigation .topbar--scene {
+    padding-inline: 9px 6px;
+  }
+
+  .app-shell--top-navigation .topbar--scene .topbar__actions {
+    min-height: 40px;
+    padding: 0;
+  }
+}
+
 /* Final mobile contract: keep the top controls on one responsive row and
    keep the composer visibly separated from the canvas and mobile nav. */
 @media (max-width: 760px) {
@@ -4787,13 +4912,18 @@ body,
     flex-wrap: wrap;
   }
 
-  .workspace-agent-stage--home .agent-inline-model-select {
-    display: none;
+  .workspace-agent-stage--home .agent-composer__submit-group {
+    max-width: calc(100% - 42px);
+  }
+
+  .workspace-agent-stage--home .agent-inline-model-select,
+  .workspace-agent-stage--home .agent-inline-model-select > summary {
+    max-width: min(142px, 40vw);
   }
 }
 
-/* Desktop home alignment: messages and composer share one readable content
-   rail instead of stretching the conversation to the viewport edges. */
+/* Let the viewport own scrolling while messages and composer stay on the
+   same readable rail. This keeps the scrollbar at the browser edge. */
 @media (min-width: 761px) {
   .app-shell--top-navigation .page-content:has(.workspace-agent-stage--home),
   .workspace-agent-stage--home,
@@ -4807,8 +4937,20 @@ body,
     background: var(--canvas) !important;
   }
 
-  .workspace-agent-stage--home .agent-conversation,
   .workspace-agent-stage--home .agent-composer {
+    width: min(1040px, calc(100% - 32px));
+    max-width: 1040px;
+    margin-inline: auto;
+  }
+
+  .workspace-agent-stage--home .agent-conversation,
+  .workspace-agent-stage--home .agent-thread {
+    width: 100%;
+    max-width: none;
+  }
+
+  .workspace-agent-stage--home .agent-thread__virtual,
+  .workspace-agent-stage--home .agent-thread > .agent-message--thinking {
     width: min(1040px, calc(100% - 32px));
     max-width: 1040px;
     margin-inline: auto;

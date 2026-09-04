@@ -23,6 +23,8 @@ interface ActivityEvent {
   progress?: number
   message?: string
   created_at?: string
+  task_mode?: 'chat' | 'image' | 'video' | 'skill'
+  media_intent?: Record<string, unknown>
   session_id?: string
   event?: 'text.delta' | 'phase' | 'model.start' | 'model.end' | 'tool.start' | 'tool.end' | 'snapshot'
   delta?: string
@@ -268,6 +270,12 @@ export const useActivityStore = defineStore('activity', {
       if (typeof event.progress === 'number') task.progress = Math.max(0, Math.min(100, event.progress))
       if (event.message) task.latest_message = event.message
       if (event.created_at) task.latest_event_at = event.created_at
+      if (event.task_mode) {
+        task.request_payload = { ...task.request_payload, mode: event.task_mode }
+      }
+      if (event.media_intent) {
+        task.result_payload = { ...(task.result_payload || {}), media_intent: event.media_intent }
+      }
       if (['succeeded', 'failed', 'cancelled'].includes(event.status)) this.scheduleRefresh()
     },
     async connectStream(signal: AbortSignal): Promise<void> {

@@ -8,6 +8,7 @@ import {
   BookOpen,
   Check,
   CircleAlert,
+  ChevronLeft,
   ChevronRight,
   Code2,
   Coins,
@@ -105,6 +106,8 @@ const importing = ref(false)
 const deleteTarget = ref<DeleteTarget | null>(null)
 const deleting = ref(false)
 const adminTabs = ref<HTMLElement | null>(null)
+const adminTabsCanScrollLeft = ref(false)
+const adminTabsCanScrollRight = ref(false)
 const editingRequiredDefault = ref(false)
 const securityLoading = ref(false)
 const securityLoadingMore = ref(false)
@@ -136,6 +139,7 @@ const skillDirty = ref(false)
 const handbookCoverInput = ref<HTMLInputElement | null>(null)
 const pendingHandbookCover = ref<File | null>(null)
 const pendingHandbookCoverPreview = ref<string | null>(null)
+let adminTabsResizeObserver: ResizeObserver | null = null
 
 const validSections = ['overview', 'users', 'invitations', 'branding', 'models', 'pricing', 'agents', 'prompts', 'handbooks', 'skills', 'security'] as const
 const section = computed(() => {
@@ -468,6 +472,11 @@ onMounted(async () => {
   await loadAll()
   if (section.value === 'security') await loadSecurityEvents(true)
   await revealActiveTab(false)
+  if (adminTabs.value) {
+    adminTabsResizeObserver = new ResizeObserver(updateAdminTabScrollState)
+    adminTabsResizeObserver.observe(adminTabs.value)
+    updateAdminTabScrollState()
+  }
 })
 watch(section, async (value) => {
   window.scrollTo({ top: 0, behavior: 'smooth' })
@@ -514,11 +523,36 @@ function securityQuery(before?: string | null, beforeId?: string | null): string
 
 async function revealActiveTab(smooth: boolean): Promise<void> {
   await nextTick()
-  adminTabs.value?.querySelector<HTMLElement>('a.active')?.scrollIntoView({
-    behavior: smooth ? 'smooth' : 'instant',
-    block: 'nearest',
-    inline: 'center',
-  })
+  const container = adminTabs.value
+  const activeTab = container?.querySelector<HTMLElement>('a.active')
+  if (!container || !activeTab) return
+  const targetLeft = activeTab.offsetLeft - (container.clientWidth - activeTab.offsetWidth) / 2
+  container.scrollTo({ left: Math.max(0, targetLeft), behavior: smooth ? 'smooth' : 'auto' })
+  requestAnimationFrame(updateAdminTabScrollState)
+}
+
+function updateAdminTabScrollState(): void {
+  const container = adminTabs.value
+  if (!container) return
+  const maxScroll = Math.max(0, container.scrollWidth - container.clientWidth)
+  adminTabsCanScrollLeft.value = container.scrollLeft > 2
+  adminTabsCanScrollRight.value = container.scrollLeft < maxScroll - 2
+}
+
+function scrollAdminTabs(direction: -1 | 1): void {
+  const container = adminTabs.value
+  if (!container) return
+  container.scrollBy({ left: direction * Math.max(220, container.clientWidth * .66), behavior: 'smooth' })
+}
+
+function handleAdminTabsWheel(event: WheelEvent): void {
+  const container = adminTabs.value
+  if (!container || container.scrollWidth <= container.clientWidth) return
+  const delta = Math.abs(event.deltaX) > Math.abs(event.deltaY) ? event.deltaX : event.deltaY
+  if (!delta) return
+  event.preventDefault()
+  container.scrollLeft += delta
+  updateAdminTabScrollState()
 }
 
 async function loadSecurityEvents(reset = false): Promise<void> {
@@ -1121,7 +1155,10 @@ async function saveDialog(): Promise<void> {
   }
 }
 
-onBeforeUnmount(clearPendingHandbookCover)
+onBeforeUnmount(() => {
+  clearPendingHandbookCover()
+  adminTabsResizeObserver?.disconnect()
+})
 
 async function testProvider(provider: Provider): Promise<void> {
   testingProviderId.value = provider.id
@@ -1270,14 +1307,18 @@ async function saveSkill(): Promise<void> {
   <div class="admin-page page-stack">
     <div class="admin-workspace-layout">
       <aside class="admin-settings-rail">
-        <span>SETTINGS</span>
-        <nav ref="adminTabs" class="admin-tabs" aria-label="管理模块">
-          <RouterLink v-for="item in tabs" :key="item.id" :to="`/admin/${item.id}`" :class="{ active: section === item.id }">
-            <component :is="item.icon" :size="17" />
-            <span>{{ item.label }}</span>
-            <ChevronRight :size="14" />
-          </RouterLink>
-        </nav>
+        <span>管理控制台</span>
+        <div class="admin-tabs-shell">
+          <button class="admin-tab-scroll admin-tab-scroll--previous" type="button" aria-label="向左滚动管理菜单" :disabled="!adminTabsCanScrollLeft" @click="scrollAdminTabs(-1)"><ChevronLeft :size="16" /></button>
+          <nav ref="adminTabs" class="admin-tabs" aria-label="管理模块" @scroll.passive="updateAdminTabScrollState" @wheel="handleAdminTabsWheel">
+            <RouterLink v-for="item in tabs" :key="item.id" :to="`/admin/${item.id}`" :class="{ active: section === item.id }">
+              <component :is="item.icon" :size="17" />
+              <span>{{ item.label }}</span>
+              <ChevronRight :size="14" />
+            </RouterLink>
+          </nav>
+          <button class="admin-tab-scroll admin-tab-scroll--next" type="button" aria-label="向右滚动管理菜单" :disabled="!adminTabsCanScrollRight" @click="scrollAdminTabs(1)"><ChevronRight :size="16" /></button>
+        </div>
       </aside>
 
       <main class="admin-workspace-content">

@@ -364,7 +364,7 @@ async function deleteTemplate(): Promise<void> {
 
 <template>
   <div class="marketplace-page page-stack">
-    <section class="marketplace-hero" :style="{ '--marketplace-cover': `url(${heroCover})` }">
+    <section class="marketplace-hero">
       <div class="marketplace-hero__veil" aria-hidden="true"></div>
       <div class="marketplace-hero__content t-stagger is-shown">
         <span class="marketplace-hero__eyebrow t-stagger-line t-stagger-line--1"><component :is="config.icon" :size="15" />{{ config.eyebrow }}</span>
@@ -376,7 +376,7 @@ async function deleteTemplate(): Promise<void> {
         <button v-if="kind === 'template'" class="button marketplace-button--glass" type="button" @click="openTemplates"><BookOpenText :size="16" />我的模板</button>
         <button class="button marketplace-button--bright" type="button" @click="openPublish()"><UploadCloud :size="16" />{{ config.action }}</button>
       </div>
-      <span class="marketplace-hero__count"><strong class="tabular-nums">{{ total }}</strong> PUBLIC RESOURCES</span>
+      <span class="marketplace-hero__count"><strong class="tabular-nums">{{ total }}</strong> 项公开资源</span>
     </section>
 
     <main class="marketplace-workspace">

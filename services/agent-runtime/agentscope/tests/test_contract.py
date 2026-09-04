@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 import json
 from pathlib import Path
@@ -9,7 +10,12 @@ import pytest
 from fastapi.testclient import TestClient
 
 from runtime import AGENTSCOPE_VERSION, CONTRACT_VERSION, RUNTIME_VERSION
-from runtime.adapter import AgentScopeAdapter
+from runtime.adapter import (
+    AgentScopeAdapter,
+    call_responses_with_chat_fallback,
+    is_transient_response_input_parse_error,
+    retry_transient_response_input_errors,
+)
 from runtime.config import get_settings
 from runtime.context import (
     collect_project_file_changes,
@@ -19,7 +25,7 @@ from runtime.context import (
     scoped_workspace_path,
 )
 from runtime.contracts import AgentRunRequest, AgentRunResponse, ExecutionManifest
-from runtime.main import app
+from runtime.main import _runtime_error_message, app
 
 
 class FakeAdapter:
@@ -72,6 +78,84 @@ class FailingAdapter:
         error = RuntimeError("sensitive-upstream-response")
         error.status_code = 400  # type: ignore[attr-defined]
         raise error
+
+
+class FakeResponseError(RuntimeError):
+    def __init__(self, message: str, *, status_code: int = 400) -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.body = {"error": {"message": message}}
+
+
+def test_responses_input_deserialization_error_is_retried() -> None:
+    attempts = 0
+
+    async def flaky_operation() -> str:
+        nonlocal attempts
+        attempts += 1
+        if attempts < 3:
+            raise FakeResponseError(
+                "Invalid JSON data: Failed to deserialize the JSON body into "
+                "the target type: input did not match ResponseInput (json_parse_error)"
+            )
+        return "ok"
+
+    assert asyncio.run(retry_transient_response_input_errors(flaky_operation)) == "ok"
+    assert attempts == 3
+
+
+def test_other_bad_requests_are_not_retried() -> None:
+    attempts = 0
+
+    async def invalid_operation() -> str:
+        nonlocal attempts
+        attempts += 1
+        raise FakeResponseError("unsupported model parameter")
+
+    with pytest.raises(FakeResponseError, match="unsupported model parameter"):
+        asyncio.run(retry_transient_response_input_errors(invalid_operation))
+    assert attempts == 1
+    assert not is_transient_response_input_parse_error(
+        FakeResponseError(
+            "Failed to deserialize ResponseInput (json_parse_error)",
+            status_code=422,
+        )
+    )
+
+
+def test_responses_parser_failure_has_specific_public_message() -> None:
+    error = FakeResponseError(
+        "Failed to deserialize ResponseInput (json_parse_error)",
+    )
+
+    assert _runtime_error_message(error) == (
+        "模型的 Responses 接口连续无法解析请求，系统已自动重试 (HTTP 400)"
+    )
+
+
+def test_responses_parser_failure_falls_back_to_chat_completions() -> None:
+    response_attempts = 0
+    chat_attempts = 0
+
+    async def broken_responses() -> str:
+        nonlocal response_attempts
+        response_attempts += 1
+        raise FakeResponseError(
+            "Failed to deserialize ResponseInput (json_parse_error)"
+        )
+
+    async def working_chat() -> str:
+        nonlocal chat_attempts
+        chat_attempts += 1
+        return "chat-result"
+
+    result = asyncio.run(
+        call_responses_with_chat_fallback(broken_responses, working_chat)
+    )
+
+    assert result == "chat-result"
+    assert response_attempts == 3
+    assert chat_attempts == 1
 
 
 def request_payload() -> dict[str, object]:
@@ -195,7 +279,7 @@ def test_stream_logs_runtime_failure_and_returns_sanitized_error(
     envelope = json.loads(response.text)
     assert envelope == {
         "type": "error",
-        "message": "模型与 OpenAI Chat Completions/工具调用格式不兼容 (HTTP 400)",
+        "message": "模型与所选 OpenAI 接口或工具调用格式不兼容 (HTTP 400)",
     }
     assert "task_id=task-1" in caplog.text
     assert "exception_type=RuntimeError" in caplog.text

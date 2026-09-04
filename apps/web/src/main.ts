@@ -12,6 +12,7 @@ import "@/studio-ui.css";
 import "@/visual-upgrade.css";
 import "@/light-theme.css";
 import "@/transitions.css";
+import "@/product-surface.css";
 
 initializeTheme();
 initializePwaInstall();

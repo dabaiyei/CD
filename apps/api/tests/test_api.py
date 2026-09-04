@@ -305,8 +305,9 @@ class FakePersonalMediaRuntime:
 
 
 class FakePersonalChatMediaActionRuntime:
-    def __init__(self, *, response: str) -> None:
+    def __init__(self, *, response: str, project_file_changes: list[dict] | None = None) -> None:
         self.response = response
+        self.project_file_changes = project_file_changes or []
         self.requests: list[AgentRuntimeRequest] = []
 
     async def run(self, request: AgentRuntimeRequest) -> AgentRuntimeResponse:
@@ -323,6 +324,7 @@ class FakePersonalChatMediaActionRuntime:
                 "provider": request.model_binding["provider"],
                 "model": request.model_binding["model"],
             },
+            project_file_changes=self.project_file_changes,
         )
 
 
@@ -2548,6 +2550,48 @@ def test_activity_stream_requires_auth_and_supports_redis_or_polling(
     assert '"transport":"redis"' in redis_ready
     assert activity == ('event: activity\ndata: {"type":"task.updated","task_id":"task-7","progress":35}\n\n')
     assert fake_pubsub.subscribed_channel.endswith(":creator-7")
+
+
+def test_personal_agent_task_event_includes_runtime_media_mode(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from types import SimpleNamespace
+
+    from app.services.task_events import publish_task_event
+
+    published: list[tuple[str, dict[str, object]]] = []
+
+    async def capture_event(user_id: str, payload: dict[str, object]) -> bool:
+        published.append((user_id, payload))
+        return True
+
+    monkeypatch.setattr("app.services.task_events.publish_user_event", capture_event)
+    task = SimpleNamespace(
+        id="task-media-chat",
+        user_id="user-media-chat",
+        project_id=None,
+        task_type="agent_chat_run",
+        request_payload={"scope": "personal", "original_mode": "chat", "mode": "image"},
+        result_payload={
+            "media_intent": {
+                "type": "image",
+                "generation_mode": "text_to_image",
+                "model_id": "image-model-1",
+            }
+        },
+    )
+    event = SimpleNamespace(
+        status=TaskStatus.RUNNING,
+        progress=52,
+        message="Agent 已理解需求，正在整理最终媒体提示词",
+        created_at=datetime.now(UTC),
+    )
+
+    asyncio.run(publish_task_event(task, event))
+
+    assert published[0][0] == "user-media-chat"
+    assert published[0][1]["task_mode"] == "image"
+    assert published[0][1]["media_intent"] == task.result_payload["media_intent"]
 
 
 def test_failed_task_refunds_and_can_be_retried_then_cancelled(
@@ -4862,6 +4906,21 @@ def test_storyboard_batch_video_prompt_and_video_queue(
     assert video_tasks.status_code == 202
     assert len(video_tasks.json()) == 2
     assert {task["task_type"] for task in video_tasks.json()} == {"shot_video_generation"}
+    busy_shot = prompted_storyboard["shots"][0]
+    prompt_conflict = client.post(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/storyboards/{storyboard_id}/video-prompts/generate",
+        headers=creator_headers,
+        json={"shot_ids": [busy_shot["id"]], "overwrite": True},
+    )
+    assert prompt_conflict.status_code == 409
+    assert "正在生成视频" in prompt_conflict.json()["detail"]
+    edit_conflict = client.patch(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/storyboards/{storyboard_id}/shots/{busy_shot['id']}",
+        headers=creator_headers,
+        json={"title": "不应覆盖生成中的镜头"},
+    )
+    assert edit_conflict.status_code == 409
+    assert "正在生成视频" in edit_conflict.json()["detail"]
 
 
 def test_dialogue_voice_binding_and_restart_safe_tts_pipeline(
@@ -6296,12 +6355,16 @@ def test_agent_chat_recovers_stale_run_with_new_runtime_attempt(
 
     async def make_stale() -> None:
         async with SessionLocal() as session:
+            now = datetime.now(UTC)
             await session.execute(
                 update(AITask)
                 .where(AITask.id == task_id)
                 .values(
                     status=TaskStatus.RUNNING,
-                    updated_at=datetime.now(UTC) - timedelta(hours=1),
+                    worker_id="stopped-worker:42",
+                    heartbeat_at=now - timedelta(hours=1),
+                    lease_expires_at=now + timedelta(minutes=15),
+                    updated_at=now - timedelta(hours=1),
                 )
             )
             await session.commit()
@@ -6531,7 +6594,8 @@ def test_personal_agent_has_no_project_context_and_can_save_user_skill(
     assert request.project_id.startswith("personal-")
     assert request.project_files == []
     assert "不能读取、修改、选择或操作项目" in request.system_prompt
-    assert any(path.startswith("user-skills/") for path in request.skill_versions)
+    assert not any(path.startswith("user-skills/") for path in request.skill_versions)
+    assert not request.skills
     assert request.attachments[0].name == "personal-reference.webp"
 
     detail = client.get(
@@ -6605,8 +6669,9 @@ def test_personal_agent_image_mode_binds_selected_skill_and_persists_media(
     assert len(runtime.requests) == 1
     request = runtime.requests[0]
     assert request.model_binding["model"] == "story-pro"
-    assert "本轮是生成图片模式" in request.system_prompt
+    assert "连续对话式的生成图片模式" in request.system_prompt
     assert f"user-skills/{skill['id']}/README.md" in request.system_prompt
+    assert gateway.requests[0].prompt == runtime.prompt
     assert gateway.requests[0].resolution == "2K"
     assert gateway.requests[0].aspect_ratio == "16:9"
     detail = client.get(
@@ -6665,10 +6730,11 @@ def test_personal_chat_can_upgrade_to_real_image_generation(
         )
     )
     gateway = FakeAssetImageGateway()
+    original_prompt = "生成一张未来城市雨夜的图片，16:9，2K"
     sent = client.post(
         f"/api/v1/agent/sessions/{session_id}/messages",
         headers=creator_headers,
-        json={"content": "生成一张未来城市雨夜的图片，16:9，2K"},
+        json={"content": original_prompt},
     )
     assert sent.status_code == 202
     task_id = sent.json()["task"]["id"]
@@ -6683,6 +6749,7 @@ def test_personal_chat_can_upgrade_to_real_image_generation(
 
     assert "平台当前可调用的媒体模型目录" in runtime.requests[0].system_prompt
     assert len(gateway.requests) == 1
+    assert gateway.requests[0].prompt == original_prompt
     assert gateway.requests[0].resolution == "2K"
     assert gateway.requests[0].aspect_ratio == "16:9"
     detail = client.get(
@@ -6706,6 +6773,204 @@ def test_personal_chat_can_upgrade_to_real_image_generation(
     source_task, memory_task = asyncio.run(load_task_pair())
     assert source_task.request_payload["original_mode"] == "chat"
     assert memory_task.model_id == source_task.request_payload["text_model_id"]
+
+
+def test_personal_image_mode_can_modify_previous_generated_image(
+    client: TestClient,
+    creator_headers: dict[str, str],
+    admin_headers: dict[str, str],
+) -> None:
+    provider_id = client.get("/api/v1/admin/providers", headers=admin_headers).json()[0]["id"]
+    client.patch(
+        f"/api/v1/admin/providers/{provider_id}",
+        headers=admin_headers,
+        json={"api_key": "personal-image-follow-up-key"},
+    )
+    session_id = client.post(
+        "/api/v1/agent/sessions",
+        headers=creator_headers,
+        json={"scene": "workspace"},
+    ).json()["id"]
+    first_runtime = FakePersonalMediaRuntime(
+        message="首张拳击训练照已经整理完成。",
+        prompt="纪实摄影，两名拳击手在明亮训练馆中对练，横向构图。",
+    )
+    second_runtime = FakePersonalMediaRuntime(
+        message="我会保留人物和构图，把环境调整为夜间赛场。",
+        prompt="纪实摄影，同一对拳击手保持原有位置对练，夜间赛场，聚光灯和观众席暗部，横向构图。",
+    )
+    gateway = FakeAssetImageGateway()
+    first = client.post(
+        f"/api/v1/agent/sessions/{session_id}/messages",
+        headers=creator_headers,
+        json={"content": "生成两名拳击手训练的照片", "mode": "image"},
+    )
+    assert first.status_code == 202
+    assert asyncio.run(
+        process_task(
+            first.json()["task"]["id"],
+            runtime_factory=lambda: first_runtime,
+            gateway_factory=lambda _provider: gateway,
+        )
+    ) is True
+    assert gateway.requests[0].prompt == "生成两名拳击手训练的照片"
+
+    second = client.post(
+        f"/api/v1/agent/sessions/{session_id}/messages",
+        headers=creator_headers,
+        json={"content": "把上一张改成夜间赛场，人物位置不要变", "mode": "image"},
+    )
+    assert second.status_code == 202
+    assert asyncio.run(
+        process_task(
+            second.json()["task"]["id"],
+            runtime_factory=lambda: second_runtime,
+            gateway_factory=lambda _provider: gateway,
+        )
+    ) is True
+
+    follow_up_request = second_runtime.requests[0]
+    assert follow_up_request.attachments[0].name.startswith("AI图片-")
+    assert any(
+        "上一轮图片结果" in item["content"]
+        and "生成两名拳击手训练的照片" in item["content"]
+        for item in follow_up_request.recent_messages
+    )
+    assert gateway.requests[-1].generation_mode == "image_to_image"
+    assert gateway.requests[-1].reference_image_url
+
+    detail = client.get(
+        f"/api/v1/agent/sessions/{session_id}",
+        headers=creator_headers,
+    ).json()
+    latest_media = detail["messages"][-1]["runtime_manifest"]["generated_media"][0]
+    assert latest_media["generation_mode"] == "image_to_image"
+
+
+def test_personal_agent_loads_skills_only_when_selected_and_honors_rewrite_opt_in(
+    client: TestClient,
+    creator_headers: dict[str, str],
+    admin_headers: dict[str, str],
+) -> None:
+    provider_id = client.get("/api/v1/admin/providers", headers=admin_headers).json()[0]["id"]
+    client.patch(
+        f"/api/v1/admin/providers/{provider_id}",
+        headers=admin_headers,
+        json={"api_key": "personal-prompt-policy-key"},
+    )
+    skill = client.post(
+        "/api/v1/user-skills",
+        headers=creator_headers,
+        json={
+            "name": "未主动选择的电影感增强",
+            "trigger_stages": ["asset_prompt_generation"],
+            "description": "自动补充电影光影和镜头语言。",
+            "enabled": True,
+        },
+    ).json()
+    session_id = client.post(
+        "/api/v1/agent/sessions",
+        headers=creator_headers,
+        json={"scene": "workspace"},
+    ).json()["id"]
+    preference_runtime = FakeAgentRuntime()
+    preference = client.post(
+        f"/api/v1/agent/sessions/{session_id}/messages",
+        headers=creator_headers,
+        json={"content": "以后遇到媒体任务时，请先帮我优化和完善提示词。"},
+    )
+    assert preference.status_code == 202
+    assert asyncio.run(
+        process_task(
+            preference.json()["task"]["id"],
+            runtime_factory=lambda: preference_runtime,
+        )
+    ) is True
+    first_request = preference_runtime.requests[0]
+    assert f"user-skills/{skill['id']}/README.md" not in first_request.skill_versions
+    assert not first_request.skills
+
+    action = {
+        "type": "image",
+        "generation_mode": "text_to_image",
+        "prompt": "电影摄影，一座雨夜城市，湿润街道映出霓虹灯光，宽银幕构图。",
+        "reference_attachment_ids": [],
+    }
+    generation_runtime = FakePersonalChatMediaActionRuntime(
+        response=(
+            "我会按你前面约定的方式整理提示词。\n"
+            f"<CINEFORGE_MEDIA>{json.dumps(action, ensure_ascii=False)}</CINEFORGE_MEDIA>"
+        )
+    )
+    gateway = FakeAssetImageGateway()
+    generated = client.post(
+        f"/api/v1/agent/sessions/{session_id}/messages",
+        headers=creator_headers,
+        json={"content": "生成一张雨夜城市图片"},
+    )
+    assert generated.status_code == 202
+    assert asyncio.run(
+        process_task(
+            generated.json()["task"]["id"],
+            runtime_factory=lambda: generation_runtime,
+            gateway_factory=lambda _provider: gateway,
+        )
+    ) is True
+    second_request = generation_runtime.requests[0]
+    assert f"user-skills/{skill['id']}/README.md" not in second_request.skill_versions
+    assert not second_request.skills
+    assert gateway.requests[0].prompt == action["prompt"]
+
+
+def test_personal_video_mode_follow_up_receives_previous_video_prompt(
+    client: TestClient,
+    creator_headers: dict[str, str],
+    admin_headers: dict[str, str],
+) -> None:
+    provider_id = client.get("/api/v1/admin/providers", headers=admin_headers).json()[0]["id"]
+    client.patch(
+        f"/api/v1/admin/providers/{provider_id}",
+        headers=admin_headers,
+        json={"api_key": "personal-video-follow-up-key"},
+    )
+    session_id = client.post(
+        "/api/v1/agent/sessions",
+        headers=creator_headers,
+        json={"scene": "workspace"},
+    ).json()["id"]
+    first_runtime = FakePersonalMediaRuntime(
+        message="首版镜头已整理完成。",
+        prompt="日出云海，镜头快速向山脊推进，金色晨光逐渐增强。",
+    )
+    second_runtime = FakePersonalMediaRuntime(
+        message="我会保留日出云海，把推进速度放慢。",
+        prompt="日出云海，镜头缓慢稳定地向同一山脊推进，金色晨光逐渐增强。",
+    )
+    gateway = FakeVideoGateway()
+    for content, runtime in (
+        ("生成一个日出云海的推进镜头", first_runtime),
+        ("镜头再慢一点，其它内容保持不变", second_runtime),
+    ):
+        sent = client.post(
+            f"/api/v1/agent/sessions/{session_id}/messages",
+            headers=creator_headers,
+            json={"content": content, "mode": "video"},
+        )
+        assert sent.status_code == 202
+        assert asyncio.run(
+            process_task(
+                sent.json()["task"]["id"],
+                runtime_factory=lambda runtime=runtime: runtime,
+                gateway_factory=lambda _provider: gateway,
+            )
+        ) is True
+
+    assert any(
+        "上一轮视频结果" in item["content"]
+        and "生成一个日出云海的推进镜头" in item["content"]
+        for item in second_runtime.requests[0].recent_messages
+    )
+    assert gateway.requests[-1].prompt == second_runtime.prompt
 
 
 def test_personal_chat_reuses_historical_image_when_model_omits_action_marker(
@@ -6773,6 +7038,124 @@ def test_personal_chat_reuses_historical_image_when_model_omits_action_marker(
     ).json()
     generated = detail["messages"][-1]["runtime_manifest"]["generated_media"][0]
     assert generated["generation_mode"] == "image_to_image"
+
+
+def test_personal_chat_additive_image_edit_reuses_reference_and_does_not_save_skill(
+    client: TestClient,
+    creator_headers: dict[str, str],
+    admin_headers: dict[str, str],
+) -> None:
+    provider_id = client.get("/api/v1/admin/providers", headers=admin_headers).json()[0]["id"]
+    client.patch(
+        f"/api/v1/admin/providers/{provider_id}",
+        headers=admin_headers,
+        json={"api_key": "personal-chat-additive-reference-key"},
+    )
+    session_id = client.post(
+        "/api/v1/agent/sessions",
+        headers=creator_headers,
+        json={"scene": "workspace"},
+    ).json()["id"]
+    image = BytesIO()
+    Image.new("RGB", (192, 108), "#34284a").save(image, format="PNG")
+    attachment = client.post(
+        "/api/v1/agent/attachments",
+        headers=creator_headers,
+        files={"file": ("character-reference.png", image.getvalue(), "image/png")},
+    ).json()
+    described = client.post(
+        f"/api/v1/agent/sessions/{session_id}/messages",
+        headers=creator_headers,
+        json={
+            "content": "你能看到这张图片吗？先分析人物和构图。",
+            "attachment_ids": [attachment["id"]],
+        },
+    )
+    assert described.status_code == 202
+    assert asyncio.run(
+        process_task(described.json()["task"]["id"], runtime_factory=FakeAgentRuntime)
+    ) is True
+
+    media_prompt = "沿用参考图人物与构图，加入三位神话女子，巨物美学，完整电影场景。"
+    action = {
+        "type": "image",
+        # Simulate a model that overlooked the historical reference. The server
+        # must reconcile the action with the user's additive edit intent.
+        "generation_mode": "text_to_image",
+        "prompt": media_prompt,
+        "reference_attachment_ids": [],
+    }
+    unauthorized_skill_command = json.dumps(
+        {
+            "operation": "upsert_user_skill",
+            "skill_id": None,
+            "name": "巨物美学",
+            "trigger_stages": ["asset_prompt_generation"],
+            "description": "强调人物与宏大巨物的尺度对比。",
+            "enabled": True,
+        },
+        ensure_ascii=False,
+    )
+    runtime = FakePersonalChatMediaActionRuntime(
+        response=(
+            "已保存技能，现在开始生成图片。\n"
+            f"<CINEFORGE_MEDIA>{json.dumps(action, ensure_ascii=False)}</CINEFORGE_MEDIA>"
+        ),
+        project_file_changes=[
+            {
+                "operation": "create",
+                "name": "cineforge-user-skill.json",
+                "content": unauthorized_skill_command,
+            }
+        ],
+    )
+    gateway = FakeAssetImageGateway()
+    generated = client.post(
+        f"/api/v1/agent/sessions/{session_id}/messages",
+        headers=creator_headers,
+        json={
+            "content": "再加上这三人，生成应该适合她们的提示词并生成图片，也使用这个巨物美学",
+        },
+    )
+    assert generated.status_code == 202
+    assert asyncio.run(
+        process_task(
+            generated.json()["task"]["id"],
+            runtime_factory=lambda: runtime,
+            gateway_factory=lambda _provider: gateway,
+        )
+    ) is True
+
+    assert [item.id for item in runtime.requests[0].attachments] == [attachment["id"]]
+    assert gateway.requests[0].prompt == media_prompt
+    assert gateway.requests[0].generation_mode == "image_to_image"
+    assert gateway.requests[0].reference_image_url
+    detail = client.get(
+        f"/api/v1/agent/sessions/{session_id}",
+        headers=creator_headers,
+    ).json()
+    assistant = detail["messages"][-1]
+    assert assistant["runtime_manifest"]["project_file_changes"] == []
+    assert assistant["runtime_manifest"]["skill_change_requested"] is False
+    assert "没有修改或保存个人 Skill" in assistant["content"]
+    learned = client.get("/api/v1/user-skills", headers=creator_headers).json()
+    assert all(item["name"] != "巨物美学" for item in learned)
+
+
+def test_personal_media_fallback_treats_prompt_creation_plus_generation_as_an_action() -> None:
+    content = "生成应该适合她们的提示词并生成图片，也使用这个巨物美学"
+    action = task_worker.infer_explicit_media_action(
+        content,
+        available_attachments=[],
+        available_models=[],
+    )
+    assert action is not None
+    assert action.type == "image"
+    assert task_worker.media_prompt_rewrite_allowed(
+        content,
+        recent_messages=[],
+        has_selected_skills=False,
+    ) is True
 
 
 def test_personal_chat_can_upgrade_to_video_with_requested_duration(

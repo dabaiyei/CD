@@ -371,6 +371,16 @@ async def queue_shot_video_task(
     for pending in await active_tasks(
         session,
         project_id=project.id,
+        task_type="shot_video_prompt_generation",
+    ):
+        if shot.id in (pending.request_payload.get("shot_ids") or []):
+            raise HTTPException(
+                status_code=409,
+                detail=f"镜头 {shot.order_index:02d} 的视频提示词正在生成，请完成后再生成视频",
+            )
+    for pending in await active_tasks(
+        session,
+        project_id=project.id,
         task_type="shot_video_generation",
     ):
         if pending.request_payload.get("shot_id") == shot.id:
@@ -653,6 +663,20 @@ async def update_storyboard_shot(
         or shot.user_id != user.id
     ):
         raise HTTPException(status_code=404, detail="镜头不存在")
+    for pending in await active_tasks(
+        session,
+        project_id=project_id,
+        task_type="shot_video_generation",
+    ):
+        if pending.request_payload.get("shot_id") == shot.id:
+            raise HTTPException(status_code=409, detail="该镜头正在生成视频，完成后才能编辑")
+    for pending in await active_tasks(
+        session,
+        project_id=project_id,
+        task_type="shot_video_prompt_generation",
+    ):
+        if shot.id in (pending.request_payload.get("shot_ids") or []):
+            raise HTTPException(status_code=409, detail="该镜头正在生成视频提示词，完成后才能编辑")
     values = payload.model_dump(exclude_unset=True)
     if "asset_ids" in values:
         await validate_shot_assets(
@@ -737,6 +761,18 @@ async def generate_storyboard_video_prompts(
         shots = [shot for shot in shots if not shot.video_prompt.strip()]
     if not shots:
         raise HTTPException(status_code=409, detail="没有需要生成视频提示词的镜头")
+    active_video_shot_ids = {
+        str(pending.request_payload.get("shot_id"))
+        for pending in await active_tasks(
+            session,
+            project_id=project_id,
+            task_type="shot_video_generation",
+        )
+        if pending.request_payload.get("shot_id")
+    }
+    shots = [shot for shot in shots if shot.id not in active_video_shot_ids]
+    if not shots:
+        raise HTTPException(status_code=409, detail="所选镜头正在生成视频，暂时不能重写提示词")
     selected_ids = {shot.id for shot in shots}
     for pending in await active_tasks(
         session,

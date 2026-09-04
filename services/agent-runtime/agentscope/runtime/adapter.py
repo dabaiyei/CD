@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 import os
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
@@ -30,6 +31,63 @@ Existing project files may be edited only when the platform authorizes them.
 Create requested text artifacts only under project-files/new.
 Do not create repositories, dependency files, scratch projects or unrelated documentation.
 </workspace>"""
+
+RESPONSE_INPUT_PARSE_ATTEMPTS = 3
+logger = logging.getLogger(__name__)
+
+
+def is_transient_response_input_parse_error(exc: Exception) -> bool:
+    """Identify an upstream Responses parser failure that is safe to retry."""
+    if getattr(exc, "status_code", None) != 400:
+        return False
+    detail = f"{exc} {getattr(exc, 'body', None)}".lower()
+    return (
+        "json_parse_error" in detail
+        and "failed to deserialize" in detail
+        and "responseinput" in detail
+    )
+
+
+async def retry_transient_response_input_errors(
+    operation: Callable[[], Awaitable[Any]],
+) -> Any:
+    """Retry only the known transient upstream Responses JSON parser failure."""
+    for attempt in range(RESPONSE_INPUT_PARSE_ATTEMPTS):
+        try:
+            return await operation()
+        except Exception as exc:
+            if (
+                not is_transient_response_input_parse_error(exc)
+                or attempt + 1 >= RESPONSE_INPUT_PARSE_ATTEMPTS
+            ):
+                raise
+            delay = float(2**attempt)
+            logger.warning(
+                "Responses upstream rejected a valid input payload; retrying attempt %d/%d in %.1fs",
+                attempt + 2,
+                RESPONSE_INPUT_PARSE_ATTEMPTS,
+                delay,
+            )
+            await asyncio.sleep(delay)
+
+    raise RuntimeError("unreachable Responses retry state")
+
+
+async def call_responses_with_chat_fallback(
+    response_operation: Callable[[], Awaitable[Any]],
+    chat_operation: Callable[[], Awaitable[Any]],
+) -> Any:
+    """Use Chat Completions only after the Responses parser rejects valid input."""
+    try:
+        return await retry_transient_response_input_errors(response_operation)
+    except Exception as exc:
+        if not is_transient_response_input_parse_error(exc):
+            raise
+        logger.warning(
+            "Responses input parsing failed after %d attempts; falling back to Chat Completions",
+            RESPONSE_INPUT_PARSE_ATTEMPTS,
+        )
+        return await chat_operation()
 
 
 class RuntimeAdapter(Protocol):
@@ -115,19 +173,38 @@ class AgentScopeAdapter:
                 context_size=self.settings.model_context_size,
             )
         elif binding.api_mode == "responses":
-            model = OpenAIResponseModel(
-                credential=OpenAICredential(
-                    api_key=binding.api_key.get_secret_value(),
-                    base_url=str(binding.base_url).rstrip("/") if binding.base_url else None,
-                ),
+            credential = OpenAICredential(
+                api_key=binding.api_key.get_secret_value(),
+                base_url=str(binding.base_url).rstrip("/") if binding.base_url else None,
+            )
+            client_kwargs = {
+                "timeout": self.settings.request_timeout_seconds,
+                "default_headers": binding.extra_headers or None,
+            }
+            chat_fallback = OpenAIChatModel(
+                credential=credential,
                 model=binding.model,
-                parameters=OpenAIResponseModel.Parameters(**parameters),
+                parameters=OpenAIChatModel.Parameters(**parameters),
                 stream=True,
                 context_size=self.settings.model_context_size,
-                client_kwargs={
-                    "timeout": self.settings.request_timeout_seconds,
-                    "default_headers": binding.extra_headers or None,
-                },
+                client_kwargs=client_kwargs,
+            )
+
+            class CineForgeOpenAIResponseModel(OpenAIResponseModel):
+                async def _call_api(self, *args: Any, **kwargs: Any) -> Any:
+                    parent = super()
+                    return await call_responses_with_chat_fallback(
+                        lambda: parent._call_api(*args, **kwargs),
+                        lambda: chat_fallback._call_api(*args, **kwargs),
+                    )
+
+            model = CineForgeOpenAIResponseModel(
+                credential=credential,
+                model=binding.model,
+                parameters=CineForgeOpenAIResponseModel.Parameters(**parameters),
+                stream=True,
+                context_size=self.settings.model_context_size,
+                client_kwargs=client_kwargs,
             )
         else:
             credential = OpenAICredential(

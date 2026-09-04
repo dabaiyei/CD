@@ -398,6 +398,11 @@
   background: #f4f6f7;
 }
 
+:root[data-theme='light'] .director-pane-resizer>span {
+  background: #fff;
+  box-shadow: 0 0 0 1px rgb(0 0 0 / 10%), 0 5px 14px rgb(27 35 39 / 10%);
+}
+
 :root[data-theme='light'] .chapter-list button:hover {
   background: #eef1f2;
 }
@@ -1185,21 +1190,16 @@
   box-shadow: 0 3px 12px rgb(0 0 0 / 28%);
 }
 
-/* Light scene masthead keeps the image while lifting control contrast. */
+/* Keep the light masthead on the same canvas as the page content. */
 :root[data-theme='light'] .topbar--scene {
-  border-bottom-color: rgb(37 50 44 / 10%);
-  background: #e9efea;
-  box-shadow: 0 9px 26px rgb(37 50 44 / 10%);
+  border-bottom-color: transparent;
+  background: var(--canvas);
+  box-shadow: none;
 }
 
-:root[data-theme='light'] .topbar--scene::before {
-  filter: saturate(.82) contrast(.94) brightness(1.04);
-}
-
+:root[data-theme='light'] .topbar--scene::before,
 :root[data-theme='light'] .topbar--scene::after {
-  background:
-    linear-gradient(90deg, rgb(240 246 241 / 89%) 0%, rgb(238 245 239 / 59%) 48%, rgb(238 245 239 / 76%) 100%),
-    linear-gradient(180deg, rgb(255 255 255 / 14%), rgb(231 239 233 / 48%));
+  display: none;
 }
 
 :root[data-theme='light'] .topbar__pulse {
@@ -1216,10 +1216,10 @@
 }
 
 :root[data-theme='light'] .topbar--scene .topbar__actions {
-  border-color: rgb(37 50 44 / 11%);
+  border-color: transparent;
   color: #52605a;
-  background: rgb(255 255 255 / 58%);
-  box-shadow: 0 13px 30px rgb(37 50 44 / 10%), inset 0 1px rgb(255 255 255 / 60%);
+  background: transparent;
+  box-shadow: none;
 }
 
 :root[data-theme='light'] .topbar--scene .topbar-tool .theme-toggle,
@@ -1237,7 +1237,7 @@
 :root[data-theme='light'] .topbar--scene .account-menu__trigger:hover,
 :root[data-theme='light'] .topbar--scene .account-menu__trigger[data-state='open'] {
   color: #1f2b25;
-  background: rgb(255 255 255 / 64%);
+  background: rgb(31 43 37 / 5%);
 }
 
 :root[data-theme='light'] .credit-pill__copy small,
@@ -1283,10 +1283,10 @@
 }
 
 :root[data-theme='light'] .topbar-brand__mark {
-  border-color: rgb(37 50 44 / 12%);
-  color: #26332d;
-  background: rgb(255 255 255 / 91%);
-  box-shadow: 0 8px 20px rgb(37 50 44 / 12%);
+  border-color: transparent;
+  color: var(--brand-strong);
+  background: transparent;
+  box-shadow: none;
 }
 
 :root[data-theme='light'] .topbar-brand__copy strong {
@@ -1303,13 +1303,13 @@
 
 :root[data-theme='light'] .topbar-nav__item:hover {
   color: #1f2b25;
-  background: rgb(255 255 255 / 55%);
+  background: rgb(31 43 37 / 4%);
 }
 
 :root[data-theme='light'] .topbar-nav__item--active {
-  color: #1f2b25;
-  background: rgb(255 255 255 / 72%);
-  box-shadow: inset 0 0 0 1px rgb(37 50 44 / 9%);
+  color: var(--brand-strong);
+  background: transparent;
+  box-shadow: none;
 }
 
 :root[data-theme='light'] .workspace-agent-stage .agent-composer-shell {

@@ -3,7 +3,9 @@ from __future__ import annotations
 import asyncio
 import base64
 import ipaddress
+import re
 import socket
+import unicodedata
 from dataclasses import dataclass
 from typing import Any, Literal
 from urllib.parse import urlparse
@@ -13,6 +15,7 @@ from starlette.concurrency import run_in_threadpool
 
 from app.core.config import get_settings
 from app.services.provider_adapters import (
+    AGNES_IMAGE_21_MODEL_ID,
     HttpRequestTemplate,
     ProviderAdapterConfig,
     ReferencePayloadMapping,
@@ -26,10 +29,55 @@ MAX_GENERATED_VIDEO_BYTES = 512 * 1024 * 1024
 MAX_GENERATED_AUDIO_BYTES = 64 * 1024 * 1024
 IMAGE_REQUEST_ATTEMPTS = 3
 RETRYABLE_IMAGE_STATUS_CODES = frozenset({408, 429, 500, 502, 503, 504, 520, 522, 524})
+_PROMPT_WEIGHT_PATTERN = re.compile(
+    r"[（(]\s*([^()（）]+?)\s*[:：]\s*[+-]?\d+(?:\.\d+)?\s*[)）]"
+)
+_AGNES_IMAGE_21_PROMPT_SANITIZATION: dict[str, bool] = {
+    "single_line": True,
+    "strip_control_characters": True,
+    "strip_prompt_weights": True,
+    "collapse_whitespace": True,
+}
 
 
 class ModelGatewayError(RuntimeError):
     pass
+
+
+def image_prompt_for_provider(
+    model: str,
+    prompt: str,
+    capabilities: dict[str, object],
+) -> str:
+    """Build the provider-facing prompt without mutating the stored source prompt."""
+    configured = capabilities.get("prompt_sanitization")
+    if isinstance(configured, dict):
+        if configured.get("enabled") is False:
+            return prompt
+        sanitization = configured
+    elif model == AGNES_IMAGE_21_MODEL_ID:
+        # Existing Agnes 2.1 models may predate the capability flag. Keep the
+        # compatibility behavior tied to this exact model identifier.
+        sanitization = _AGNES_IMAGE_21_PROMPT_SANITIZATION
+    else:
+        return prompt
+
+    result = prompt
+    if sanitization.get("strip_prompt_weights"):
+        result = _PROMPT_WEIGHT_PATTERN.sub(lambda match: match.group(1).strip(), result)
+    if sanitization.get("strip_control_characters"):
+        result = "".join(
+            " " if unicodedata.category(character) == "Cc" else character
+            for character in result
+        )
+    if sanitization.get("single_line"):
+        result = result.replace("\u2028", " ").replace("\u2029", " ")
+    if sanitization.get("collapse_whitespace") or sanitization.get("single_line"):
+        result = " ".join(result.split())
+    result = result.strip()
+    if not result:
+        raise ModelGatewayError("图片提示词经模型兼容处理后为空")
+    return result
 
 
 @dataclass(slots=True)
@@ -110,9 +158,14 @@ class OpenAICompatibleMediaGateway:
         endpoint = str(request.capabilities.get("endpoint") or "images/generations").lstrip("/")
         size_map = request.capabilities.get("size_map")
         size = size_map.get(request.resolution) if isinstance(size_map, dict) else None
+        provider_prompt = image_prompt_for_provider(
+            request.model,
+            request.prompt,
+            request.capabilities,
+        )
         payload: dict[str, object] = {
             "model": request.model,
-            "prompt": request.prompt,
+            "prompt": provider_prompt,
             "n": 1,
         }
         if not request.capabilities.get("nested_response_format"):
@@ -135,7 +188,7 @@ class OpenAICompatibleMediaGateway:
         if isinstance(overrides, dict):
             payload.update(overrides)
             payload["model"] = request.model
-            payload["prompt"] = request.prompt
+            payload["prompt"] = provider_prompt
 
         headers = {**self.headers, "Idempotency-Key": request.idempotency_key}
         timeout = httpx.Timeout(get_settings().media_request_timeout_seconds)
@@ -351,22 +404,35 @@ class OpenAICompatibleMediaGateway:
         )
         try:
             response: httpx.Response | None = None
-            attempts = 4 if template.method == "GET" else 1
+            attempts = 4
             for attempt in range(attempts):
-                response = await client.request(
-                    template.method,
-                    url,
-                    headers=headers,
-                    params=query,
-                    json=body,
-                )
-                if response.status_code not in RETRYABLE_IMAGE_STATUS_CODES or attempt + 1 >= attempts:
+                try:
+                    response = await client.request(
+                        template.method,
+                        url,
+                        headers=headers,
+                        params=query,
+                        json=body,
+                    )
+                except (httpx.TimeoutException, httpx.NetworkError):
+                    if template.method != "GET" or attempt + 1 >= attempts:
+                        raise
+                    await asyncio.sleep(min(5.0 * (attempt + 1), 20.0))
+                    continue
+                retryable_status = response.status_code in RETRYABLE_IMAGE_STATUS_CODES
+                safe_to_retry = template.method == "GET" or response.status_code == 429
+                if not retryable_status or not safe_to_retry or attempt + 1 >= attempts:
                     break
                 retry_after = response.headers.get("retry-after", "")
                 try:
-                    delay = min(max(float(retry_after), 2.0), 20.0)
+                    maximum_delay = 60.0 if template.method == "POST" else 20.0
+                    delay = min(max(float(retry_after), 2.0), maximum_delay)
                 except ValueError:
-                    delay = min(5.0 * (attempt + 1), 20.0)
+                    delay = (
+                        min(10.0 * (attempt + 1), 30.0)
+                        if template.method == "POST"
+                        else min(5.0 * (attempt + 1), 20.0)
+                    )
                 await asyncio.sleep(delay)
             if response is None:
                 raise ModelGatewayError("自定义供应商未返回响应")

@@ -132,6 +132,7 @@ from app.services.user_skills import (
     infer_chat_user_skill_stages,
     personal_agent_scope_id,
     personal_agent_system_instructions,
+    personal_skill_change_requested,
     prompt_user_skill_stages,
     user_skill_snapshots,
     user_skill_usage_instructions,
@@ -634,6 +635,43 @@ _REFERENCE_REQUEST = re.compile(
     r"|(?:这张|上张|上一张|刚才|上传|参考|原图).{0,16}"
     r"(?:生成|制作|做|改|变|动起来)"
 )
+_MEDIA_REVISION_REQUEST = re.compile(
+    r"(?:上一张|上张|刚才(?:那张|的)?|这张|这个画面|它|原图|上一版|上个版本)"
+    r"|(?:继续|保持|保留|沿用|参考|基于|按照|仿照|调整|修改|改成|改为|换成|替换|微调|重做)"
+    r"|(?:再|另外|同时|并且)?(?:加上|加入|添加|补上|放入|移除|去掉|删掉).{0,24}"
+    r"|(?:再|更).{0,12}(?:一点|一些|明显|自然|靠左|靠右|居中|明亮|暗|快|慢)"
+)
+_FRESH_MEDIA_REQUEST = re.compile(
+    r"(?:不要|不再|无需).{0,8}(?:参考|沿用|基于|使用).{0,8}(?:上一张|上张|刚才|原图)"
+    r"|(?:全新|完全不同|另一个|另一种|新主题|重新开始)"
+)
+_MEDIA_PROMPT_REWRITE_REQUEST = re.compile(
+    r"(?:生成|创作|优化|润色|改写|扩写|完善|增强|整理|重写|加工|设计|编写).{0,16}(?:提示词|prompt)"
+    r"|(?:提示词|prompt).{0,16}(?:生成|创作|优化|润色|改写|扩写|完善|增强|整理|重写|加工|设计|编写)"
+    r"|(?:帮我|请你|让你|由你|AI|智能体).{0,10}(?:处理|想|写|改|优化|完善).{0,8}(?:提示词|prompt)"
+)
+
+
+def should_reuse_historical_image(content: str) -> bool:
+    text = content.strip()
+    return bool(text and _MEDIA_REVISION_REQUEST.search(text) and not _FRESH_MEDIA_REQUEST.search(text))
+
+
+def media_prompt_rewrite_allowed(
+    content: str,
+    *,
+    recent_messages: list[dict[str, str]],
+    has_selected_skills: bool,
+) -> bool:
+    if has_selected_skills or should_reuse_historical_image(content):
+        return True
+    if _MEDIA_PROMPT_REWRITE_REQUEST.search(content):
+        return True
+    return any(
+        item.get("role") == AgentMessageRole.USER.value
+        and _MEDIA_PROMPT_REWRITE_REQUEST.search(item.get("content") or "")
+        for item in recent_messages[-8:]
+    )
 
 
 def infer_explicit_media_action(
@@ -649,17 +687,24 @@ def infer_explicit_media_action(
     accidental media task.
     """
     text = content.strip()
+    has_image_generation_request = bool(_IMAGE_GENERATION_REQUEST.search(text))
+    has_video_generation_request = bool(_VIDEO_GENERATION_REQUEST.search(text))
+    only_discusses_media_prompt = bool(
+        re.search(r"(?:图片|视频).{0,6}提示词|提示词.{0,6}(?:图片|视频)", text)
+        and not has_image_generation_request
+        and not has_video_generation_request
+    )
     if (
         not text
         or _MEDIA_CAPABILITY_QUESTION.search(text)
         or re.search(r"(?:如何|怎么|怎样|为什么|介绍|解释).{0,12}(?:生成|制作).{0,8}(?:图片|视频)", text)
-        or re.search(r"(?:图片|视频).{0,6}提示词|提示词.{0,6}(?:图片|视频)", text)
+        or only_discusses_media_prompt
     ):
         return None
     media_type: Literal["image", "video"] | None = None
-    if _VIDEO_GENERATION_REQUEST.search(text):
+    if has_video_generation_request:
         media_type = "video"
-    elif _IMAGE_GENERATION_REQUEST.search(text):
+    elif has_image_generation_request:
         media_type = "image"
     elif available_attachments and re.search(r"(?:让|把)?它.{0,4}(?:动起来|做成视频|变成视频)", text):
         media_type = "video"
@@ -675,7 +720,9 @@ def infer_explicit_media_action(
     image_attachments = [
         item for item in available_attachments if item.mime_type.startswith("image/")
     ]
-    use_reference = bool(image_attachments) and bool(_REFERENCE_REQUEST.search(text))
+    use_reference = bool(image_attachments) and bool(
+        _REFERENCE_REQUEST.search(text) or should_reuse_historical_image(text)
+    )
     if media_type == "video" and image_attachments and re.search(r"(?:动起来|图生视频)", text):
         use_reference = True
     generation_mode = (
@@ -1409,7 +1456,12 @@ async def recover_stale_tasks() -> int:
                         AITask.status == TaskStatus.RUNNING,
                         or_(
                             AITask.lease_expires_at < now,
-                            and_(AITask.lease_expires_at.is_(None), AITask.updated_at < cutoff),
+                            AITask.heartbeat_at < cutoff,
+                            and_(
+                                AITask.lease_expires_at.is_(None),
+                                AITask.heartbeat_at.is_(None),
+                                AITask.updated_at < cutoff,
+                            ),
                         ),
                     )
                     .with_for_update(skip_locked=True)
@@ -2079,8 +2131,39 @@ def assistant_artifact_pointer(message: AgentChatMessage) -> str | None:
     )
 
 
+def assistant_media_pointer(message: AgentChatMessage) -> str | None:
+    generated = (message.runtime_manifest or {}).get("generated_media") or []
+    media = next((item for item in generated if isinstance(item, dict)), None)
+    if media is None:
+        return None
+    mime_type = str(media.get("mime_type") or "")
+    media_type = "视频" if mime_type.startswith("video/") else "图片"
+    prompt = str(media.get("prompt") or "").strip()
+    if len(prompt) > 2400:
+        prompt = prompt[:2400] + "[提示词已截断]"
+    specs = " · ".join(
+        str(value)
+        for value in (
+            media.get("model_name"),
+            media.get("resolution"),
+            media.get("aspect_ratio"),
+            f"{media.get('duration_seconds')} 秒" if media.get("duration_seconds") else None,
+        )
+        if value
+    )
+    return (
+        f"[上一轮{media_type}结果]\n"
+        f"生成提示词：{prompt or '未记录'}\n"
+        f"生成规格：{specs or '使用模型默认参数'}\n"
+        "后续若用户只提出局部修改，应保留该提示词中未被要求改变的内容并合并修改。"
+    )
+
+
 def compact_history_content(message: AgentChatMessage) -> tuple[str, bool]:
     content = (message.content or "").strip()
+    media_pointer = assistant_media_pointer(message)
+    if media_pointer:
+        content = f"{content}\n\n{media_pointer}".strip()
     if not content:
         return "", False
     if (
@@ -2089,7 +2172,7 @@ def compact_history_content(message: AgentChatMessage) -> tuple[str, bool]:
     ):
         pointer = assistant_artifact_pointer(message)
         if pointer:
-            return pointer, True
+            return f"{pointer}\n\n{media_pointer}" if media_pointer else pointer, True
     if len(content) <= AGENT_HISTORY_MESSAGE_CHARACTER_LIMIT:
         return content, False
     head_size = AGENT_HISTORY_MESSAGE_CHARACTER_LIMIT - 700
@@ -2310,6 +2393,7 @@ async def agent_chat_runtime_request(
             workflow_file, workflow_summary = await director_workflow_snapshot(session, chapter)
             if workflow_file is not None:
                 project_files.append(workflow_file)
+        personal_request_mode = str(task.request_payload.get("mode") or "chat")
         if personal_scope:
             personal_media_models = list(
                 (
@@ -2327,7 +2411,7 @@ async def agent_chat_runtime_request(
                     )
                 ).all()
             )
-            personal_skills = list(
+            personal_skill_catalog = list(
                 (
                     await session.scalars(
                         select(UserSkill)
@@ -2351,7 +2435,7 @@ async def agent_chat_runtime_request(
                     task.request_payload.get("selected_skill_versions") or {}
                 ).items()
             }
-            personal_skills_by_id = {item.id: item for item in personal_skills}
+            personal_skills_by_id = {item.id: item for item in personal_skill_catalog}
             selected_personal_skills: list[UserSkill] = []
             for skill_id in selected_skill_ids:
                 skill = personal_skills_by_id.get(skill_id)
@@ -2362,6 +2446,11 @@ async def agent_chat_runtime_request(
                 ):
                     raise RuntimeError("本轮显式选择的 Skill 已更新或禁用，请重新提交")
                 selected_personal_skills.append(skill)
+            personal_skills = (
+                personal_skill_catalog
+                if personal_request_mode == "skill"
+                else selected_personal_skills
+            )
         else:
             user_stages = infer_chat_user_skill_stages(user_message.content, chapter=chapter)
             personal_skills = await enabled_user_skills(
@@ -2407,6 +2496,7 @@ async def agent_chat_runtime_request(
         # small, bounded set of recent session images to the runtime so the
         # Agent can actually see them and return their IDs in a media action.
         runtime_attachment_rows = attachment_rows
+        historical_rows: list[PersonalAgentAttachment] = []
         if personal_scope and len(runtime_attachment_rows) < MAX_CHAT_ATTACHMENTS:
             historical_rows = list(
                 (
@@ -2427,6 +2517,31 @@ async def agent_chat_runtime_request(
             )
             runtime_attachment_rows = attachment_rows + historical_rows[
                 : MAX_CHAT_ATTACHMENTS - len(attachment_rows)
+            ]
+        if (
+            personal_scope
+            and personal_request_mode in {"image", "video"}
+            and not attachment_ids
+            and historical_rows
+            and should_reuse_historical_image(user_message.content)
+        ):
+            reference = historical_rows[0]
+            attachment_ids = [reference.id]
+            payload = {
+                **task.request_payload,
+                "attachment_ids": attachment_ids,
+                "media_generation_mode": (
+                    "image_to_image"
+                    if personal_request_mode == "image"
+                    else "image_to_video"
+                ),
+                "continued_from_attachment_id": reference.id,
+            }
+            task.request_payload = payload
+            runtime_attachment_rows = [reference] + [
+                item
+                for item in runtime_attachment_rows
+                if item.id != reference.id
             ]
         attachment_files: list[ProjectFile | PersonalAgentAttachment] = []
         for attachment in runtime_attachment_rows:
@@ -2463,11 +2578,34 @@ async def agent_chat_runtime_request(
                 f"{item.id}（{item.name}）"
                 for item in runtime_attachment_rows
             )
-            prompt = (
-                f"{prompt}\n\n本轮可引用的会话图片附件：{catalog}。"
-                "如果用户要求基于、参考或仿照某张历史图片，必须在 "
-                "媒体动作标记的 reference_attachment_ids 中填写对应 ID。"
+            attachment_instruction = (
+                "如果用户要求基于、参考或仿照某张历史图片，必须在媒体动作标记的 "
+                "reference_attachment_ids 中填写对应 ID。"
+                if personal_request_mode == "chat"
+                else "这些图片可作为本轮连续修改的视觉上下文；请结合最近对话输出完整的新提示词。"
             )
+            prompt = f"{prompt}\n\n本轮可引用的会话图片附件：{catalog}。{attachment_instruction}"
+        allow_media_prompt_rewrite = bool(
+            personal_scope
+            and media_prompt_rewrite_allowed(
+                user_message.content,
+                recent_messages=recent_messages,
+                has_selected_skills=bool(selected_personal_skills),
+            )
+        )
+        allow_personal_skill_changes = bool(
+            personal_scope
+            and personal_skill_change_requested(
+                user_message.content,
+                mode=personal_request_mode,
+            )
+        )
+        if personal_scope:
+            task.request_payload = {
+                **task.request_payload,
+                "allow_media_prompt_rewrite": allow_media_prompt_rewrite,
+                "allow_personal_skill_changes": allow_personal_skill_changes,
+            }
         retrieved_memories = (
             await retrieve_project_memories(
                 session,
@@ -2494,16 +2632,28 @@ async def agent_chat_runtime_request(
             else ""
         )
         if personal_scope:
-            mode = str(task.request_payload.get("mode") or "chat")
+            mode = personal_request_mode
             personal_skill_instructions = user_skill_usage_instructions(
                 personal_skills,
                 stages=None,
                 selected_skills=selected_personal_skills,
             )
+            personal_system_instructions = personal_agent_system_instructions(
+                personal_skills,
+                mode=mode,
+                allow_skill_changes=allow_personal_skill_changes,
+            )
             system_prompt = (
                 f"{agent.system_prompt}\n\n"
-                f"{personal_agent_system_instructions(personal_skills, mode=mode)}"
+                f"{personal_system_instructions}"
                 f"{personal_skill_instructions}"
+                + (
+                    "\n\n本轮媒体提示词策略：用户已明确授权结合上下文、局部修改或所选 Skill "
+                    "处理提示词，可以输出合并后的完整提示词。"
+                    if allow_media_prompt_rewrite
+                    else "\n\n本轮媒体提示词策略：用户没有授权 AI 改写提示词。若触发图片或视频生成，"
+                    "prompt 必须原样保留用户本轮输入，不得扩写、润色、翻译、增加风格或补充细节。"
+                )
                 + (
                     "\n\n平台当前可调用的媒体模型目录（只能填写这里列出的 ID 或名称）：\n"
                     f"{personal_media_model_catalog(personal_media_models)}"
@@ -3393,12 +3543,15 @@ async def execute_agent_chat_task(
     assistant_response = result.final_response
     generated_media: dict[str, object] | None = None
     media_prompt: PersonalMediaPromptPayload | None = None
+    current_prompt = request.prompt.split(
+        "\n\n本轮可引用的会话图片附件：",
+        1,
+    )[0].strip()
+    allow_media_prompt_rewrite = bool(
+        task.request_payload.get("allow_media_prompt_rewrite")
+    )
     if mode == "chat" and task.request_payload.get("scope") == "personal":
         envelope = media_action_from_response(result.final_response)
-        current_prompt = request.prompt.split(
-            "\n\n本轮可引用的会话图片附件：",
-            1,
-        )[0].strip()
         if envelope is None:
             async with SessionLocal() as session:
                 available_models = list(
@@ -3443,6 +3596,23 @@ async def execute_agent_chat_task(
             assistant_response = envelope.message.strip() or "我已理解你的要求。"
             if envelope.media is not None:
                 action = validate_personal_media_action(envelope.media)
+                available_image_ids = [
+                    item.id
+                    for item in request.attachments
+                    if item.mime_type.startswith("image/")
+                ]
+                if available_image_ids and should_reuse_historical_image(current_prompt):
+                    action.generation_mode = (
+                        "image_to_image" if action.type == "image" else "image_to_video"
+                    )
+                    selected_reference_ids = [
+                        item
+                        for item in action.reference_attachment_ids
+                        if item in available_image_ids
+                    ]
+                    action.reference_attachment_ids = (
+                        selected_reference_ids or [available_image_ids[0]]
+                    )
                 reference_ids = list(action.reference_attachment_ids)
                 if action.generation_mode.startswith("image_to_") and not reference_ids:
                     reference_ids = [
@@ -3566,7 +3736,7 @@ async def execute_agent_chat_task(
                 mode = action.type
                 media_prompt = PersonalMediaPromptPayload(
                     message=assistant_response,
-                    prompt=action.prompt,
+                    prompt=(action.prompt if allow_media_prompt_rewrite else current_prompt),
                 )
     if mode in {"image", "video"}:
         await record_progress(task_id, 52, "Agent 已理解需求，正在整理最终媒体提示词")
@@ -3594,6 +3764,8 @@ async def execute_agent_chat_task(
                 assistant_response = media_prompt.message.strip() or (
                     "图片已按你的要求生成。" if mode == "image" else "视频已按你的要求生成。"
                 )
+        if not allow_media_prompt_rewrite and current_prompt:
+            media_prompt.prompt = current_prompt
         generated_media = await generate_personal_agent_media(
             task_id,
             prompt=media_prompt.prompt,
@@ -3680,11 +3852,28 @@ async def execute_agent_chat_task(
 
         agent_task_dispatches: list[tuple[AITask, TaskEvent]] = []
         if personal_scope:
-            file_change_outcomes = await apply_personal_agent_skill_changes(
-                session,
-                user=user,
-                changes=result.project_file_changes,
+            allow_personal_skill_changes = bool(
+                task.request_payload.get("allow_personal_skill_changes")
             )
+            ignored_personal_file_changes = bool(
+                result.project_file_changes and not allow_personal_skill_changes
+            )
+            file_change_outcomes = (
+                await apply_personal_agent_skill_changes(
+                    session,
+                    user=user,
+                    changes=result.project_file_changes,
+                )
+                if allow_personal_skill_changes
+                else []
+            )
+            if ignored_personal_file_changes:
+                assistant_response = (
+                    "我已结合会话中的参考图片和你的要求完成本轮媒体生成；"
+                    "本轮没有修改或保存个人 Skill。"
+                    if generated_media is not None
+                    else "本轮没有修改或保存个人 Skill；只有你明确要求创建、保存或修改 Skill 时才会更改。"
+                )
         else:
             file_change_outcomes = await apply_project_file_changes(
                 session,
@@ -3751,6 +3940,9 @@ async def execute_agent_chat_task(
                     "media_intent": (task.result_payload or {}).get("media_intent"),
                     "selected_skill_ids": list(
                         task.request_payload.get("selected_skill_ids") or []
+                    ),
+                    "skill_change_requested": bool(
+                        task.request_payload.get("allow_personal_skill_changes")
                     ),
                 }
             )

@@ -283,7 +283,11 @@ async function generateCover(): Promise<void> {
     <div v-if="projectsOnly" class="workspace-command-grid workspace-command-grid--projects">
       <main class="project-library workspace-reveal workspace-reveal--toolbar">
         <header class="project-library__header">
-          <div><span>PROJECT LIBRARY</span><h2>制作项目</h2></div>
+          <div class="project-library__title">
+            <span>项目</span>
+            <h1>制作项目</h1>
+            <p>管理短剧项目，并继续最近的导演创作。</p>
+          </div>
           <section class="workspace-toolbar" aria-label="项目筛选">
             <label class="search-field">
               <Search :size="17" aria-hidden="true" />

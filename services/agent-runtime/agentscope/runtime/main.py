@@ -31,7 +31,14 @@ def _runtime_error_message(exc: Exception) -> str:
         if status_code == 429:
             return "模型供应商请求过于频繁或额度不足 (HTTP 429)"
         if status_code in {400, 405, 409, 415, 422}:
-            return f"模型与 OpenAI Chat Completions/工具调用格式不兼容 (HTTP {status_code})"
+            detail = str(exc).lower()
+            if (
+                status_code == 400
+                and "json_parse_error" in detail
+                and "responseinput" in detail
+            ):
+                return "模型的 Responses 接口连续无法解析请求，系统已自动重试 (HTTP 400)"
+            return f"模型与所选 OpenAI 接口或工具调用格式不兼容 (HTTP {status_code})"
         if status_code >= 500:
             return f"模型供应商服务异常 (HTTP {status_code})"
 

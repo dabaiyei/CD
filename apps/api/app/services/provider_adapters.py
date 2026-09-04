@@ -226,6 +226,18 @@ def agnes_image_capabilities() -> dict[str, Any]:
     }
 
 
+def agnes_image_21_capabilities() -> dict[str, Any]:
+    """Return Agnes Image 2.1 capabilities with its strict prompt contract."""
+    capabilities = agnes_image_capabilities()
+    capabilities["prompt_sanitization"] = {
+        "single_line": True,
+        "strip_control_characters": True,
+        "strip_prompt_weights": True,
+        "collapse_whitespace": True,
+    }
+    return capabilities
+
+
 def autodl_minimax_h3_adapter_config() -> dict[str, Any]:
     """Return the declarative adapter for the official AutoDL ComfyUI workflow contract."""
     return ProviderAdapterConfig.model_validate(

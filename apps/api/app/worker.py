@@ -54,10 +54,13 @@ async def run_worker() -> None:
 
     settings = get_settings()
     logger.info(
-        "Starting worker with database=%s concurrency=%s agent_chat_idle_timeout=%ss",
+        "Starting worker with database=%s concurrency=%s agent_chat_idle_timeout=%ss "
+        "task_lease_timeout=%ss recovery_interval=%ss",
         database_target(settings.database_url),
         settings.worker_concurrency,
         settings.agent_chat_task_timeout_seconds,
+        settings.task_lease_timeout_seconds,
+        settings.task_recovery_interval_seconds,
     )
     await assert_database_current()
     await recover_stale_tasks()

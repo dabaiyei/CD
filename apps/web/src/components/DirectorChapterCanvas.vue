@@ -189,10 +189,11 @@ const selectedVideoShots = computed(() => {
     : shots
 })
 const videoPromptEligibleShots = computed(() => selectedVideoShots.value.filter(
-  (shot) => !busyVideoPromptShotIdSet.value.has(shot.id),
+  (shot) => !busyVideoPromptShotIdSet.value.has(shot.id) && !busyShotIdSet.value.has(shot.id),
 ))
 const videoEligibleShots = computed(() => selectedVideoShots.value.filter(
   (shot) => !busyShotIdSet.value.has(shot.id)
+    && !busyVideoPromptShotIdSet.value.has(shot.id)
     && Boolean(shot.video_prompt.trim())
     && !(activeClips.value.get(shot.id)?.is_active && activeClips.value.get(shot.id)?.status === 'ready'),
 ))
@@ -285,15 +286,9 @@ function toggleAllVideoShots(): void {
   selectedVideoShotIds.value = allVideoShotsSelected.value ? [] : ids
 }
 
-function selectedShotIdsForQueue(): string[] {
-  return selectedVideoShotIds.value.length
-    ? selectedVideoShotIds.value
-    : previewStoryboard.value.shots.map((shot) => shot.id)
-}
-
 function queueVideoPrompts(): void {
   if (!props.storyboard) return
-  emit('queueVideoPrompts', selectedShotIdsForQueue())
+  emit('queueVideoPrompts', videoPromptEligibleShots.value.map((shot) => shot.id))
 }
 
 function queueSelectedVideoPrompt(): void {
@@ -303,7 +298,7 @@ function queueSelectedVideoPrompt(): void {
 
 function queueBatchVideos(): void {
   if (!props.storyboard) return
-  emit('queueBatchVideos', selectedShotIdsForQueue())
+  emit('queueBatchVideos', videoEligibleShots.value.map((shot) => shot.id))
 }
 
 function downloadReadyVideos(): void {
@@ -431,12 +426,12 @@ watch(
               <strong>{{ selectedVideoShot.title }}</strong>
             </div>
             <div class="director-video-focus__buttons">
-              <button type="button" class="button button--secondary" :disabled="demoStageActive || busyVideoPromptShotIdSet.has(selectedVideoShot.id) || videoAction === 'videoPrompt' || videoPromptTaskActive" @click="queueSelectedVideoPrompt">
+              <button type="button" class="button button--secondary" :disabled="demoStageActive || busyVideoPromptShotIdSet.has(selectedVideoShot.id) || busyShotIdSet.has(selectedVideoShot.id) || videoAction === 'videoPrompt' || videoPromptTaskActive" @click="queueSelectedVideoPrompt">
                 <LoaderCircle v-if="busyVideoPromptShotIdSet.has(selectedVideoShot.id) || videoAction === 'videoPrompt'" class="spin" :size="15" />
                 <WandSparkles v-else :size="15" />
                 {{ selectedVideoShot.video_prompt ? '重写提示词' : '生成提示词' }}
               </button>
-              <button type="button" class="button button--primary" :disabled="demoStageActive || !selectedVideoShot.video_prompt || busyShotIdSet.has(selectedVideoShot.id) || videoAction === 'video'" @click="emit('queueShotVideo', selectedVideoShot)">
+              <button type="button" class="button button--primary" :disabled="demoStageActive || !selectedVideoShot.video_prompt || busyShotIdSet.has(selectedVideoShot.id) || busyVideoPromptShotIdSet.has(selectedVideoShot.id) || videoAction === 'video'" @click="emit('queueShotVideo', selectedVideoShot)">
                 <LoaderCircle v-if="busyShotIdSet.has(selectedVideoShot.id)" class="spin" :size="15" />
                 <Play v-else :size="15" />
                 {{ activeClips.get(selectedVideoShot.id)?.is_active ? '重新生成' : '生成本镜头' }}

@@ -13,6 +13,16 @@ from app.db.models import Chapter, ChapterStatus, User, UserSkill, UserSkillStag
 
 USER_SKILL_COMMAND_FILE = "cineforge-user-skill.json"
 
+_USER_SKILL_CHANGE_REQUEST = re.compile(
+    r"(?:(?:保存|存为|创建|新增|添加|建立|写入|更新|修改|编辑|改写|启用|禁用|删除)"
+    r".{0,16}(?:skill|技能)|(?:skill|技能).{0,16}"
+    r"(?:保存|存为|创建|新增|添加|建立|写入|更新|修改|编辑|改写|启用|禁用|删除))",
+    re.I,
+)
+_USER_SKILL_CHANGE_CONFIRMATION = re.compile(
+    r"^(?:确认|确定|可以|好的?|是的|就这样|保存吧|提交吧|创建吧|新增吧|更新吧|修改吧)[。！!\s]*$"
+)
+
 USER_SKILL_STAGE_LABELS: dict[UserSkillStage, str] = {
     UserSkillStage.SCRIPT_GENERATION: "剧本生成",
     UserSkillStage.SCRIPT_REVIEW: "剧本审核与修复",
@@ -192,10 +202,20 @@ def personal_agent_scope_id(user_id: str) -> str:
     return f"personal-{user_id}"
 
 
+def personal_skill_change_requested(content: str, *, mode: str) -> bool:
+    text = content.strip()
+    if not text:
+        return False
+    if _USER_SKILL_CHANGE_REQUEST.search(text):
+        return True
+    return mode == "skill" and bool(_USER_SKILL_CHANGE_CONFIRMATION.fullmatch(text))
+
+
 def personal_agent_system_instructions(
     skills: list[UserSkill],
     *,
     mode: str = "chat",
+    allow_skill_changes: bool = False,
 ) -> str:
     catalog = "\n".join(
         f"- {item.name}（ID: {item.id}；阶段: "
@@ -205,13 +225,19 @@ def personal_agent_system_instructions(
     ) or "- 暂无个人 Skill"
     mode_instruction = {
         "image": (
-            "本轮是生成图片模式。先与用户保持自然交流，并综合用户文字、参考图片和已调用 Skill，"
+            "本轮是连续对话式的生成图片模式，不是一次性提示词表单。先与用户保持自然交流，"
+            "读取最近对话、上一轮媒体提示词与可用历史图片，再综合用户文字、参考图片和已调用 Skill。"
+            "用户只提出局部修改时，必须保留上一轮未要求改变的主体、构图、风格和细节，"
+            "将本轮修改合并成一份完整提示词，不能只输出差异描述。"
             "整理出可直接交给图片模型的完整提示词。最终只能返回严格 JSON，不要使用 Markdown 代码块："
             '{"message":"面向用户的简短中文回复","prompt":"最终图片提示词"}。'
             "message 不得声称图片已经生成；平台会在你返回后调用真实图片模型。"
         ),
         "video": (
-            "本轮是生成视频模式。先与用户保持自然交流，并综合用户文字、参考图片和已调用 Skill，"
+            "本轮是连续对话式的生成视频模式，不是一次性提示词表单。先与用户保持自然交流，"
+            "读取最近对话、上一轮媒体提示词与可用历史参考图，再综合用户文字、参考图片和已调用 Skill。"
+            "用户只提出局部修改时，必须沿用上一轮未要求改变的画面内容、动作、运镜和风格，"
+            "将修改合并成一份可独立执行的完整视频提示词，不能只输出差异描述。"
             "整理出可直接交给视频模型的完整提示词。最终只能返回严格 JSON，不要使用 Markdown 代码块："
             '{"message":"面向用户的简短中文回复","prompt":"最终视频提示词"}。'
             "若包含中文台词，台词原文必须保持中文且逐字保留。message 不得声称视频已经生成；"
@@ -238,6 +264,23 @@ def personal_agent_system_instructions(
         "并在 reference_attachment_ids 中填写可用附件 ID；没有参考图时使用 text_to_image 或 text_to_video。"
         "不得声称媒体已经生成，平台会在解析 media 动作后调用真实模型并返回任务状态。"
     )
+    skill_change_instruction = (
+        f"本轮用户已明确授权保存或修改个人 Skill。只能使用 Write 创建 "
+        f"project-files/new/{USER_SKILL_COMMAND_FILE}，内容必须是严格 JSON："
+        '{"operation":"upsert_user_skill","skill_id":"修改时填写，新增时为空",'
+        '"name":"技能名称","trigger_stages":["storyboard_generation"],'
+        '"description":"完整技能说明与规则","enabled":true}。'
+        "trigger_stages 只能使用 script_generation、script_review、asset_extraction、"
+        "asset_prompt_generation、storyboard_generation、storyboard_review、video_generation。"
+        "修改前应根据目录 ID 调用对应 Skill 阅读现有正文；新增时 skill_id 留空。"
+        "除该受控命令外，不要创建其它文件。完成后只需简洁说明保存或修改了什么。"
+        if allow_skill_changes
+        else (
+            "本轮用户没有明确授权保存、创建或修改个人 Skill，严禁调用 Write 或 Edit，"
+            "也不得创建任何文件或声称 Skill 已保存。‘使用/调用某个 Skill 或美学风格’"
+            "仅代表应用规则，不代表保存或修改 Skill。"
+        )
+    )
     return (
         "你是用户的独立个人创作 Agent，不绑定任何短剧项目。你不能读取、修改、选择或操作项目、章节、"
         "资产、分镜和视频任务，也不能声称已经替用户完成项目操作。你可以讨论创作方法、分析用户粘贴的"
@@ -247,15 +290,7 @@ def personal_agent_system_instructions(
         f"{catalog}\n"
         f"{chat_contract if mode == 'chat' else ''}\n"
         "禁用状态的 Skill 只能在用户要求查看或修改它时调用，不能作为当前创作建议的生效规则。"
-        f"当用户明确要求保存或修改 Skill 时，使用 Write 创建 project-files/new/{USER_SKILL_COMMAND_FILE}，"
-        "内容必须是严格 JSON："
-        '{"operation":"upsert_user_skill","skill_id":"修改时填写，新增时为空",'
-        '"name":"技能名称","trigger_stages":["storyboard_generation"],'
-        '"description":"完整技能说明与规则","enabled":true}。'
-        "trigger_stages 只能使用 script_generation、script_review、asset_extraction、"
-        "asset_prompt_generation、storyboard_generation、storyboard_review、video_generation。"
-        "修改前应根据目录 ID 调用对应 Skill 阅读现有正文；新增时 skill_id 留空。"
-        "除该受控命令外，不要创建其它文件。完成后只需简洁说明保存或修改了什么。"
+        f"{skill_change_instruction}"
     )
 
 
