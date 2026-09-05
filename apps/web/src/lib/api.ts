@@ -77,6 +77,51 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return request<T>(path, init, true)
 }
 
+export interface ApiBlobResult {
+  blob: Blob
+  filename: string | null
+}
+
+function downloadFilename(response: Response): string | null {
+  const disposition = response.headers.get('content-disposition') ?? ''
+  const encoded = disposition.match(/filename\*=UTF-8''([^;]+)/i)?.[1]
+  if (encoded) {
+    try {
+      return decodeURIComponent(encoded)
+    } catch {
+      return encoded
+    }
+  }
+  return disposition.match(/filename="([^"]+)"/i)?.[1] ?? null
+}
+
+async function blobRequest(path: string, init: RequestInit, allowRefresh: boolean): Promise<ApiBlobResult> {
+  const headers = new Headers(init.headers)
+  const token = getToken()
+  if (token) headers.set('Authorization', `Bearer ${token}`)
+  const response = await fetch(`/api/v1${path}`, { ...init, credentials: 'same-origin', headers })
+  if (response.status === 401 && allowRefresh && !AUTH_ENDPOINTS.has(path)) {
+    await refreshAccessToken()
+    return blobRequest(path, init, false)
+  }
+  if (!response.ok) {
+    let message = `下载失败 (${response.status})`
+    try {
+      const body = (await response.json()) as ApiErrorPayload
+      if (typeof body.detail === 'string') message = body.detail
+      else if (Array.isArray(body.detail)) message = body.detail.map((item) => item.msg).join('；')
+    } catch {
+      // Keep the status-based fallback when the response is not JSON.
+    }
+    throw new ApiError(message, response.status)
+  }
+  return { blob: await response.blob(), filename: downloadFilename(response) }
+}
+
+export async function apiBlob(path: string, init: RequestInit = {}): Promise<ApiBlobResult> {
+  return blobRequest(path, init, true)
+}
+
 export interface ApiStreamMessage<T> {
   event: string
   data: T

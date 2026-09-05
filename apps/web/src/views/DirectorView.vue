@@ -173,6 +173,8 @@ const selectedVideoShotId = ref('')
 const selectedVideoShotIds = ref<string[]>([])
 const storyboardLoading = ref(false)
 const storyboardAction = ref<'generate' | 'activate' | 'video' | 'batchVideo' | 'videoPrompt' | 'save' | ''>('')
+const automaticWorkflow = ref<DirectorWorkflowDetail | null>(null)
+const automationAction = ref<'start' | 'stop' | ''>('')
 const shotEditorOpen = ref(false)
 const editingShot = ref<StoryboardShot | null>(null)
 const dialogues = ref<DialogueVersion[]>([])
@@ -191,6 +193,9 @@ let audioPlayer: HTMLAudioElement | null = null
 let directorSplitPointerId: number | null = null
 let directorSplitStartX = 0
 let directorSplitStartWidth = 360
+let automaticWorkflowTimer: ReturnType<typeof setTimeout> | undefined
+let automaticWorkflowLoadVersion = 0
+let automaticWorkflowSignature = ''
 const directorAgentDefaultWidth = 360
 const directorAgentMinWidth = 280
 const directorAgentMaxWidth = 720
@@ -237,6 +242,10 @@ const selectedAnalysis = computed(
   () => analyses.value.find((item) => item.id === selectedAnalysisId.value) ?? analyses.value[0] ?? null,
 )
 const activeScript = computed(() => scripts.value.find((item) => item.is_active) ?? null)
+const automationLocked = computed(() => Boolean(
+  automaticWorkflow.value?.workflow.automation_mode
+  && ['running', 'waiting_user'].includes(automaticWorkflow.value.workflow.status),
+))
 const selectedScriptFormallyApproved = computed(() => Boolean(
   selectedScript.value?.status === 'approved'
   && scriptReviews.value[0]?.decision === 'approved',
@@ -640,11 +649,17 @@ onMounted(() => {
 
 onBeforeUnmount(() => {
   document.body.classList.remove('director-resizing')
+  if (automaticWorkflowTimer) clearTimeout(automaticWorkflowTimer)
 })
 
 watch(projectId, loadDirectorSplit)
 
 watch(selectedChapterId, async (chapterId) => {
+  automaticWorkflowLoadVersion += 1
+  if (automaticWorkflowTimer) clearTimeout(automaticWorkflowTimer)
+  automaticWorkflowTimer = undefined
+  automaticWorkflow.value = null
+  automaticWorkflowSignature = ''
   stopAudio()
   activeWorkflow.value = 'source'
   selectedAssetIds.value = []
@@ -656,6 +671,7 @@ watch(selectedChapterId, async (chapterId) => {
     loadAssetExtractions(chapterId),
     loadStoryboards(chapterId),
     loadDialogues(chapterId),
+    loadAutomaticWorkflow(chapterId),
   ])
 })
 
@@ -953,6 +969,124 @@ async function selectDialogue(dialogueId: string): Promise<void> {
 
 async function refreshChapters(): Promise<void> {
   chapters.value = await api<Chapter[]>(`/projects/${projectId.value}/chapters`)
+}
+
+function automaticDetailSignature(detail: DirectorWorkflowDetail | null): string {
+  if (!detail?.workflow.automation_mode) return ''
+  return JSON.stringify({
+    id: detail.workflow.id,
+    stage: detail.workflow.stage,
+    status: detail.workflow.status,
+    currentTaskId: detail.workflow.current_task_id,
+    updatedAt: detail.workflow.updated_at,
+    children: detail.child_runs.map((child) => [child.id, child.status, child.attempt, child.updated_at]),
+  })
+}
+
+function scheduleAutomaticWorkflowPoll(chapterId: string, delay = 1600): void {
+  if (automaticWorkflowTimer) clearTimeout(automaticWorkflowTimer)
+  automaticWorkflowTimer = undefined
+  if (chapterId !== selectedChapterId.value || !automationLocked.value) return
+  automaticWorkflowTimer = setTimeout(() => void loadAutomaticWorkflow(chapterId), delay)
+}
+
+async function refreshAutomaticWorkflowArtifacts(chapterId: string): Promise<void> {
+  if (chapterId !== selectedChapterId.value) return
+  await Promise.allSettled([
+    refreshChapters(),
+    loadScripts(chapterId),
+    loadAssetExtractions(chapterId),
+    refreshAssets(),
+    loadStoryboards(chapterId),
+    api<ProjectFileItem[]>(`/projects/${projectId.value}/files`).then((rows) => { files.value = rows }),
+    activity.refresh(),
+  ])
+}
+
+async function loadAutomaticWorkflow(chapterId: string, forceRefresh = false): Promise<void> {
+  if (!chapterId) return
+  const version = automaticWorkflowLoadVersion
+  if (automaticWorkflowTimer) clearTimeout(automaticWorkflowTimer)
+  automaticWorkflowTimer = undefined
+  try {
+    const detail = await api<DirectorWorkflowDetail | null>(
+      `/projects/${projectId.value}/chapters/${chapterId}/director-workflow`,
+    )
+    if (version !== automaticWorkflowLoadVersion || chapterId !== selectedChapterId.value) return
+    const automaticDetail = detail?.workflow.automation_mode ? detail : null
+    const nextSignature = automaticDetailSignature(automaticDetail)
+    const changed = Boolean(automaticWorkflowSignature && automaticWorkflowSignature !== nextSignature)
+    automaticWorkflow.value = automaticDetail
+    automaticWorkflowSignature = nextSignature
+    if (forceRefresh || changed) await refreshAutomaticWorkflowArtifacts(chapterId)
+  } catch (error) {
+    if (forceRefresh) {
+      toast.show('全自动任务状态读取失败', {
+        message: error instanceof Error ? error.message : undefined,
+        tone: 'error',
+      })
+    }
+  } finally {
+    scheduleAutomaticWorkflowPoll(chapterId)
+  }
+}
+
+async function startAutomaticWorkflow(): Promise<void> {
+  const chapter = selectedChapter.value
+  if (!chapter || automationAction.value || automationLocked.value) return
+  if (!chapter.original_content.trim()) {
+    toast.show('无法开始全自动制作', { message: '当前章节没有原始文章内容', tone: 'error' })
+    return
+  }
+  automationAction.value = 'start'
+  try {
+    const detail = await api<DirectorWorkflowDetail>(
+      `/projects/${projectId.value}/chapters/${chapter.id}/director-workflow/automatic`,
+      {
+        method: 'POST',
+        body: JSON.stringify({ instruction: '全自动完成本章 AI 视频制作' }),
+      },
+    )
+    automaticWorkflow.value = detail
+    automaticWorkflowSignature = automaticDetailSignature(detail)
+    await activity.refresh()
+    scheduleAutomaticWorkflowPoll(chapter.id, 800)
+    toast.show('AI 全自动制作已启动', {
+      message: '本章已锁定，系统会依次完成剧本、资产、分镜和视频',
+      tone: 'success',
+    })
+  } catch (error) {
+    toast.show('AI 全自动制作启动失败', {
+      message: error instanceof Error ? error.message : undefined,
+      tone: 'error',
+    })
+  } finally {
+    automationAction.value = ''
+  }
+}
+
+async function stopAutomaticWorkflow(): Promise<void> {
+  const detail = automaticWorkflow.value
+  if (!detail || automationAction.value || !automationLocked.value) return
+  automationAction.value = 'stop'
+  try {
+    automaticWorkflow.value = await api<DirectorWorkflowDetail>(
+      `/projects/${projectId.value}/director-workflows/${detail.workflow.id}/stop`,
+      { method: 'POST' },
+    )
+    automaticWorkflowSignature = automaticDetailSignature(automaticWorkflow.value)
+    if (automaticWorkflowTimer) clearTimeout(automaticWorkflowTimer)
+    automaticWorkflowTimer = undefined
+    await refreshAutomaticWorkflowArtifacts(detail.workflow.chapter_id)
+    toast.show('AI 全自动制作已停止', { message: '章节编辑和对话已恢复', tone: 'success' })
+  } catch (error) {
+    toast.show('停止全自动制作失败', {
+      message: error instanceof Error ? error.message : undefined,
+      tone: 'error',
+    })
+  } finally {
+    automationAction.value = ''
+  }
 }
 
 function workflowEnabled(step: WorkflowStep): boolean {
@@ -1947,10 +2081,15 @@ function fileSize(bytes: number): string {
           :busy-video-prompt-shot-ids="[...busyVideoPromptShotIds]"
           :video-action="storyboardAction === 'video' || storyboardAction === 'batchVideo' || storyboardAction === 'videoPrompt' ? storyboardAction : ''"
           :video-prompt-task-active="Boolean(videoPromptTask)"
+          :automatic-workflow="automaticWorkflow"
+          :automation-action="automationAction"
+          :automation-locked="automationLocked"
           @open-assets="openAssetLibrary()"
           @queue-video-prompts="(shotIds) => queueVideoPrompts(true, shotIds)"
           @queue-batch-videos="queueBatchShotVideos"
           @queue-shot-video="queueShotVideo"
+          @start-automation="startAutomaticWorkflow"
+          @stop-automation="stopAutomaticWorkflow"
         />
 
         <div
@@ -1981,6 +2120,8 @@ function fileSize(bytes: number): string {
             :initial-prompt="chapterAgentPrompt"
             :chapter-id="selectedChapter.id"
             :chapter-title="selectedChapter.title"
+            :disabled="automationLocked"
+            locked-reason="AI 全自动制作正在处理本章，完成或手动停止后可继续对话"
             scene="director"
             @project-files-changed="refreshProjectFiles"
             @chapter-changed="refreshAgentChapter"
@@ -2316,7 +2457,7 @@ function fileSize(bytes: number): string {
       <template #footer><span class="dialog-selection-count">镜头稿 v{{ editingShot?.version || 1 }}</span><button class="button button--ghost" type="button" @click="shotEditorOpen = false">取消</button><button class="button button--primary" type="submit" form="shot-editor-form" :disabled="storyboardAction === 'save' || !shotForm.title.trim() || !shotForm.video_prompt.trim()"><LoaderCircle v-if="storyboardAction === 'save'" class="spin" :size="17" /><Save v-else :size="17" />保存镜头</button></template>
     </BaseDialog>
 
-    <BaseDialog :open="assetLibraryOpen" title="资产库" :description="`${project.name} · 塑造资产与租户共享资产`" workbench @update:open="assetLibraryOpen = $event">
+    <BaseDialog :open="assetLibraryOpen" title="资产库" :description="`${project.name} · 塑造资产与租户共享资产`" content-class="dialog-content--asset-library" workbench @update:open="assetLibraryOpen = $event">
       <AssetLibraryWorkbench
         :project-id="projectId"
         :project-name="project.name"

@@ -16,6 +16,7 @@ from app.services.media_gateway import (
 )
 from app.services.provider_adapters import (
     AGNES_IMAGE_21_MODEL_ID,
+    AGNES_PROVIDER_CODE,
     AGNES_VIDEO_MODEL_ID,
     AUTODL_MINIMAX_H3_MODEL_ID,
     VideoModelCapabilities,
@@ -440,6 +441,10 @@ def test_agnes_image_capabilities_use_nested_response_format() -> None:
     assert capabilities["request_overrides"] == {"extra_body": {"response_format": "url"}}
     assert capabilities["nested_response_format"] is True
     assert capabilities["aspect_ratio_parameter"] == "ratio"
+    assert capabilities["generation_modes"] == ["text_to_image", "image_to_image"]
+    assert capabilities["image_reference_parameter"] == "image"
+    assert capabilities["image_reference_container"] == "extra_body"
+    assert capabilities["image_reference_multiple"] is True
 
 
 def test_agnes_image_21_prompt_is_flattened_without_changing_meaningful_text() -> None:
@@ -524,6 +529,7 @@ def test_image_generation_falls_back_to_url_when_b64_json_is_empty(monkeypatch) 
         base_url="https://apihub.agnes-ai.com/v1",
         api_key="secret",
         extra_headers={},
+        provider_code=AGNES_PROVIDER_CODE,
     )
     result = asyncio.run(
         gateway.generate_image(
@@ -539,6 +545,62 @@ def test_image_generation_falls_back_to_url_when_b64_json_is_empty(monkeypatch) 
     )
     assert result == b"valid-image-bytes"
     assert FakeAgnesImageUrlClient.requests[0]["prompt"] == "第一行 真实光影 red cup"
+
+
+def test_agnes_image_references_use_nested_image_array(monkeypatch) -> None:
+    async def allow_test_urls(_url: str, *, media_name: str = "图片") -> None:
+        assert media_name == "图片"
+
+    monkeypatch.setattr(media_gateway.httpx, "AsyncClient", FakeAgnesImageUrlClient)
+    monkeypatch.setattr(media_gateway, "_validate_download_url", allow_test_urls)
+    FakeAgnesImageUrlClient.requests.clear()
+    gateway = OpenAICompatibleMediaGateway(
+        base_url="https://apihub.agnes-ai.com/v1",
+        api_key="secret",
+        extra_headers={},
+        provider_code=AGNES_PROVIDER_CODE,
+    )
+    first = "data:image/png;base64,Zmlyc3Q="
+    second = "data:image/webp;base64,c2Vjb25k"
+    legacy_capabilities = agnes_image_21_capabilities()
+    legacy_capabilities.update(
+        {
+            "image_reference_parameter": "image_url",
+            "image_reference_container": "",
+            "image_reference_multiple": False,
+            "image_generation_mode_parameter": "generation_mode",
+            "request_overrides": {
+                "image_url": "https://stale.example.test/reference.png",
+                "generation_mode": "image_to_image",
+                "extra_body": {"response_format": "url"},
+            },
+        }
+    )
+
+    result = asyncio.run(
+        gateway.generate_image(
+            ImageGenerationRequest(
+                model="custom-agnes-image-alias",
+                prompt="合成两个人物并保持身份特征",
+                resolution="2K",
+                aspect_ratio="16:9",
+                capabilities=legacy_capabilities,
+                idempotency_key="agnes-image-reference-task",
+                reference_image_url=first,
+                reference_image_urls=[first, second],
+                generation_mode="image_to_image",
+            )
+        )
+    )
+
+    assert result == b"valid-image-bytes"
+    payload = FakeAgnesImageUrlClient.requests[0]
+    assert "image_url" not in payload
+    assert "generation_mode" not in payload
+    assert payload["extra_body"] == {
+        "response_format": "url",
+        "image": [first, second],
+    }
 
 
 def test_autodl_minimax_h3_preset_renders_indexed_data_uri_references(monkeypatch) -> None:

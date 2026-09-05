@@ -98,6 +98,9 @@ def test_initial_migration_round_trip_and_revision_guard(tmp_path: Path) -> None
                 "PRAGMA index_list('image_resolution_model_routes')"
             )
         }
+        workflow_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info('director_workflow_runs')")
+        }
     assert {
         "tenants",
         "ai_tasks",
@@ -173,7 +176,8 @@ def test_initial_migration_round_trip_and_revision_guard(tmp_path: Path) -> None
     assert {"avatar_url", "avatar_storage_path"} <= user_columns
     assert "invite_url_prefix" in tenant_columns
     assert "ix_image_resolution_routes_tenant_model" in image_route_indexes
-    assert revision == ("5c8d1f7a4b20",)
+    assert {"automation_mode", "stop_requested"} <= workflow_columns
+    assert revision == ("e4a7c1d9b620",)
 
     checked = run_alembic(database, "check")
     assert "No new upgrade operations detected" in checked.stdout + checked.stderr
@@ -187,7 +191,7 @@ def test_initial_migration_round_trip_and_revision_guard(tmp_path: Path) -> None
     assert stale_guard.returncode != 0
     assert "数据库版本不匹配" in stale_guard.stderr
     with sqlite3.connect(database) as connection:
-        connection.execute("UPDATE alembic_version SET version_num = '5c8d1f7a4b20'")
+        connection.execute("UPDATE alembic_version SET version_num = 'e4a7c1d9b620'")
 
     run_alembic(database, "downgrade", "base")
     with sqlite3.connect(database) as connection:

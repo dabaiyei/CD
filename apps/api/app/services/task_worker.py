@@ -951,6 +951,7 @@ def default_gateway_factory(provider: Provider) -> OpenAICompatibleMediaGateway:
         base_url=provider.base_url,
         api_key=SecretBox().decrypt(provider.encrypted_api_key),
         extra_headers=provider.extra_headers,
+        provider_code=provider.code,
         adapter_config=provider.adapter_config,
         credentials=credentials,
     )
@@ -3236,7 +3237,7 @@ async def generate_personal_agent_media(
         resolution = str(options.get("resolution") or "1K")
         aspect_ratio = str(options.get("aspect_ratio") or "1:1")
         await record_progress(task_id, 62, "最终提示词已就绪，正在调用图片模型")
-        reference_image_url: str | None = None
+        reference_image_urls: list[str] = []
         generation_mode = "text_to_image"
         if str(task_snapshot.request_payload.get("media_generation_mode") or "") == "image_to_image":
             reference_ids = [
@@ -3245,16 +3246,16 @@ async def generate_personal_agent_media(
                 if str(item)
             ]
             if reference_ids:
-                reference = ordered_attachments[0] if ordered_attachments else None
-                if reference is not None:
+                for reference in ordered_attachments:
                     data = await object_storage().get_bytes(reference.storage_path)
                     content_type = reference.mime_type or media_content_type_from_key_or_bytes(
                         reference.storage_path,
                         data,
                     )
-                    reference_image_url = (
+                    reference_image_urls.append(
                         f"data:{content_type};base64,{base64.b64encode(data).decode('ascii')}"
                     )
+                if reference_image_urls:
                     generation_mode = "image_to_image"
         image_data = await gateway.generate_image(
             ImageGenerationRequest(
@@ -3264,8 +3265,9 @@ async def generate_personal_agent_media(
                 aspect_ratio=aspect_ratio,
                 capabilities=capabilities,
                 idempotency_key=task_snapshot.idempotency_key or task_snapshot.id,
-                reference_image_url=reference_image_url,
+                reference_image_url=reference_image_urls[0] if reference_image_urls else None,
                 generation_mode=generation_mode,
+                reference_image_urls=reference_image_urls,
             )
         )
         await record_progress(task_id, 88, "图片已生成，正在写入个人会话")

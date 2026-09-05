@@ -16,6 +16,8 @@ from starlette.concurrency import run_in_threadpool
 from app.core.config import get_settings
 from app.services.provider_adapters import (
     AGNES_IMAGE_21_MODEL_ID,
+    AGNES_IMAGE_MODEL_ID,
+    AGNES_PROVIDER_CODE,
     HttpRequestTemplate,
     ProviderAdapterConfig,
     ReferencePayloadMapping,
@@ -90,6 +92,7 @@ class ImageGenerationRequest:
     idempotency_key: str
     reference_image_url: str | None = None
     generation_mode: str = "text_to_image"
+    reference_image_urls: list[str] | None = None
 
 
 @dataclass(slots=True)
@@ -144,10 +147,12 @@ class OpenAICompatibleMediaGateway:
         base_url: str,
         api_key: str | None,
         extra_headers: dict[str, str],
+        provider_code: str | None = None,
         adapter_config: dict[str, Any] | None = None,
         credentials: dict[str, str] | None = None,
     ) -> None:
         self.base_url = base_url.rstrip("/")
+        self.provider_code = (provider_code or "").strip().lower()
         self.headers = dict(extra_headers)
         if api_key:
             self.headers["Authorization"] = f"Bearer {api_key}"
@@ -175,20 +180,62 @@ class OpenAICompatibleMediaGateway:
         ratio_parameter = request.capabilities.get("aspect_ratio_parameter")
         if isinstance(ratio_parameter, str) and ratio_parameter:
             payload[ratio_parameter] = request.aspect_ratio
-        if request.reference_image_url:
-            reference_parameter = request.capabilities.get("image_reference_parameter")
-            if not isinstance(reference_parameter, str) or not reference_parameter.strip():
-                # Keep the default compatible with the common OpenAI-compatible
-                # image-to-image contracts. Providers with a different field can
-                # override it in the model capabilities.
-                reference_parameter = "image_url"
-            payload[reference_parameter] = request.reference_image_url
-            payload.setdefault("generation_mode", request.generation_mode)
         overrides = request.capabilities.get("request_overrides")
         if isinstance(overrides, dict):
-            payload.update(overrides)
+            for key, value in overrides.items():
+                existing = payload.get(key)
+                if isinstance(existing, dict) and isinstance(value, dict):
+                    payload[key] = {**existing, **value}
+                else:
+                    payload[key] = value
             payload["model"] = request.model
             payload["prompt"] = provider_prompt
+
+        reference_urls = list(request.reference_image_urls or [])
+        if request.reference_image_url and request.reference_image_url not in reference_urls:
+            reference_urls.insert(0, request.reference_image_url)
+        if reference_urls:
+            is_agnes_image = (
+                self.provider_code == AGNES_PROVIDER_CODE
+                or request.model in {AGNES_IMAGE_21_MODEL_ID, AGNES_IMAGE_MODEL_ID}
+            )
+            if is_agnes_image:
+                # Older persisted presets may still advertise image_url. Agnes
+                # interprets that as a text-image queue request and rejects it.
+                payload.pop("image_url", None)
+                payload.pop("generation_mode", None)
+                reference_parameter = "image"
+                reference_container = "extra_body"
+                reference_multiple = True
+            else:
+                reference_parameter = request.capabilities.get("image_reference_parameter")
+                if not isinstance(reference_parameter, str) or not reference_parameter.strip():
+                    reference_parameter = "image_url"
+                reference_container = request.capabilities.get("image_reference_container")
+                if not isinstance(reference_container, str) or not reference_container.strip():
+                    reference_container = ""
+                reference_multiple = request.capabilities.get("image_reference_multiple")
+                if not isinstance(reference_multiple, bool):
+                    reference_multiple = False
+            reference_value: object = reference_urls if reference_multiple else reference_urls[0]
+            if reference_container:
+                nested = payload.get(reference_container)
+                nested_payload = dict(nested) if isinstance(nested, dict) else {}
+                nested_payload[reference_parameter] = reference_value
+                payload[reference_container] = nested_payload
+            else:
+                payload[reference_parameter] = reference_value
+
+            generation_mode_parameter = (
+                ""
+                if is_agnes_image
+                else request.capabilities.get(
+                    "image_generation_mode_parameter",
+                    "generation_mode",
+                )
+            )
+            if isinstance(generation_mode_parameter, str) and generation_mode_parameter.strip():
+                payload[generation_mode_parameter] = request.generation_mode
 
         headers = {**self.headers, "Idempotency-Key": request.idempotency_key}
         timeout = httpx.Timeout(get_settings().media_request_timeout_seconds)

@@ -219,6 +219,13 @@ def agnes_image_capabilities() -> dict[str, Any]:
         "endpoint": "images/generations",
         "size_map": {"1K": "1K", "2K": "2K", "3K": "3K", "4K": "4K"},
         "aspect_ratio_parameter": "ratio",
+        "generation_modes": ["text_to_image", "image_to_image"],
+        # Agnes routes image editing by an image array nested in extra_body.
+        # A top-level image_url is interpreted as an invalid text-image request.
+        "image_reference_parameter": "image",
+        "image_reference_container": "extra_body",
+        "image_reference_multiple": True,
+        "image_generation_mode_parameter": "",
         "nested_response_format": True,
         # URL output is considerably more reliable for Agnes and is downloaded
         # into our object storage by the media gateway.

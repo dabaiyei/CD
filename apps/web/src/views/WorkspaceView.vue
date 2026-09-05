@@ -39,6 +39,7 @@ const emptyForm = (): Partial<ProjectPayload> & Pick<ProjectPayload, 'name'> => 
   name: '',
   description: '',
   cover_url: null,
+  image_model_id: null,
   video_model_id: null,
   video_resolution: '720p',
   aspect_ratio: '16:9',
@@ -51,16 +52,19 @@ const coverPreview = computed(() => pendingCoverPreview.value || form.cover_url 
 const coverPrice = computed(() => Number(
   projectStore.pricing.find((rule) => rule.task_type === 'project_cover_generation')?.unit_cost ?? 20,
 ).toFixed(2))
+const imageModelOptions = computed(() => (projectStore.options?.image_models ?? []).map((item) => ({ value: item.id, label: item.name, description: item.is_default ? '默认生图模型' : '图片生成模型', icon: ImageIcon })))
 const videoModelOptions = computed(() => (projectStore.options?.video_models ?? []).map((item) => ({ value: item.id, label: item.name, description: '视频生成模型', icon: Film })))
 const videoResolutionOptions = computed(() => (projectStore.options?.video_resolutions ?? []).map((item) => ({ value: item, label: item, description: '视频输出清晰度', icon: MonitorUp })))
 const aspectRatioOptions = computed(() => (projectStore.options?.aspect_ratios ?? []).map((item) => ({ value: item, label: item, description: '成片画幅比例', icon: Ratio })))
 const imageResolutionOptions = computed(() => (projectStore.options?.image_resolutions ?? []).map((item) => ({ value: item, label: item, description: '图片输出清晰度', icon: ImageIcon })))
 const projectConfigurationReady = computed(() => Boolean(
-  form.video_model_id
+  form.image_model_id
+  && form.video_model_id
   && form.visual_handbook_id
   && form.director_handbook_id,
 ))
 const missingConfigurationLabels = computed(() => [
+  !form.image_model_id ? '图片模型' : '',
   !form.video_model_id ? '视频模型' : '',
   !form.visual_handbook_id ? '视觉手册' : '',
   !form.director_handbook_id ? '导演手册' : '',
@@ -147,7 +151,8 @@ function resetForm(): void {
   clearPendingCover()
   Object.assign(form, emptyForm())
   const options = projectStore.options
-  form.video_model_id = options?.video_models[0]?.id ?? null
+  form.image_model_id = options?.image_models.find((item) => item.is_default)?.id ?? options?.image_models[0]?.id ?? null
+  form.video_model_id = options?.video_models.find((item) => item.is_default)?.id ?? options?.video_models[0]?.id ?? null
   form.visual_handbook_id = options?.visual_handbooks[0]?.id ?? null
   form.director_handbook_id = options?.director_handbooks[0]?.id ?? null
 }
@@ -336,6 +341,7 @@ async function generateCover(): Promise<void> {
       v-model:open="dialogOpen"
       :title="editingId ? '项目设置' : '创建短剧项目'"
       :description="editingId ? '调整当前项目的生成模型与创作手册' : '设置项目基础信息与生成偏好'"
+      content-class="dialog-content--project"
       wide
     >
       <form id="project-form" class="project-form" @submit.prevent="saveProject">
@@ -354,6 +360,10 @@ async function generateCover(): Promise<void> {
               <textarea v-model.trim="form.description" rows="4" maxlength="4000" placeholder="简要描述故事与创作方向"></textarea>
             </div>
           </label>
+          <div class="field">
+            <span>图片模型</span>
+            <UiSelect :model-value="form.image_model_id ?? ''" :options="imageModelOptions" placeholder="选择图片模型" @update:model-value="form.image_model_id = $event" />
+          </div>
           <div class="field">
             <span>视频模型</span>
             <UiSelect :model-value="form.video_model_id ?? ''" :options="videoModelOptions" placeholder="选择视频模型" @update:model-value="form.video_model_id = $event" />

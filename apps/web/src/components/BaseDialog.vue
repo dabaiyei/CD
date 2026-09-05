@@ -16,6 +16,7 @@ defineProps<{
   description?: string
   wide?: boolean
   workbench?: boolean
+  contentClass?: string
 }>()
 
 const emit = defineEmits<{ 'update:open': [value: boolean] }>()
@@ -27,7 +28,10 @@ const emit = defineEmits<{ 'update:open': [value: boolean] }>()
       <DialogOverlay class="dialog-overlay" />
       <DialogContent
         class="dialog-content t-modal"
-        :class="{ 'dialog-content--wide': wide, 'dialog-content--workbench': workbench }"
+        :class="[
+          { 'dialog-content--wide': wide, 'dialog-content--workbench': workbench },
+          contentClass,
+        ]"
       >
         <header class="dialog-header">
           <div>

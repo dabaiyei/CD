@@ -1726,15 +1726,15 @@ body,
   }
 
   .asset-studio__topbar {
-    min-height: 154px !important;
-    align-items: stretch !important;
-    flex-direction: column;
-    justify-content: flex-end !important;
+    min-height: 72px !important;
+    align-items: center !important;
+    justify-content: space-between !important;
+    padding: 8px 10px !important;
     background-position: 67% center !important;
   }
 
   .asset-studio__topbar::before {
-    background: linear-gradient(180deg, rgb(8 13 11 / 12%), rgb(8 13 11 / 88%) 72%);
+    background: linear-gradient(90deg, rgb(8 13 11 / 78%), rgb(8 13 11 / 42%) 72%, rgb(8 13 11 / 18%));
   }
 
   .asset-studio__topbar .asset-scope-switch {

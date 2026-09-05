@@ -4,6 +4,7 @@ import asyncio
 import base64
 import hashlib
 import json
+import zipfile
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from io import BytesIO
@@ -18,6 +19,7 @@ from sqlalchemy import delete, func, select, update
 
 from app.api.routes import admin as admin_routes
 from app.api.routes import auth as auth_routes
+from app.api.routes.agent_chat import requested_storyboard_video_action
 from app.core.config import get_settings
 from app.core.security import (
     create_access_token,
@@ -36,6 +38,8 @@ from app.db.models import (
     Chapter,
     CreditAccount,
     CreditLedger,
+    DirectorChildRun,
+    DirectorChildStatus,
     DirectorWorkflowRun,
     InvitationCode,
     InvitationRedemption,
@@ -63,7 +67,10 @@ from app.services.agent_runtime import (
     raise_for_runtime_status,
 )
 from app.services.auth_security import login_identity_hash
-from app.services.director_orchestration import recover_orphaned_agent_script_reviews
+from app.services.director_orchestration import (
+    recover_automatic_workflows,
+    recover_orphaned_agent_script_reviews,
+)
 from app.services.image_model_routing import resolve_image_model
 from app.services.media_gateway import (
     ImageGenerationRequest,
@@ -86,6 +93,23 @@ from app.services.task_worker import (
     recover_stale_tasks,
     signal_task_activity,
 )
+
+
+def grant_creator_test_credits(
+    client: TestClient,
+    creator_headers: dict[str, str],
+    admin_headers: dict[str, str],
+    *,
+    amount: str = "1000.00",
+) -> None:
+    token = creator_headers["Authorization"].removeprefix("Bearer ")
+    user_id = str(decode_access_token(token)["sub"])
+    response = client.post(
+        f"/api/v1/admin/users/{user_id}/credits/adjust",
+        headers=admin_headers,
+        json={"amount": amount, "reason": "高消耗生产流程集成测试"},
+    )
+    assert response.status_code == 200
 
 
 class FakeImageGateway:
@@ -542,7 +566,10 @@ class FakeWorkflowRuntime:
 
 class FakeDirectorOrchestrationRuntime(FakeWorkflowRuntime):
     async def run(self, request: AgentRuntimeRequest) -> AgentRuntimeResponse:
-        if "独立的短剧导演审核子智能体" not in request.prompt:
+        if not any(
+            marker in request.prompt
+            for marker in ("独立的短剧导演审核子智能体", "独立的导演分镜审核子智能体")
+        ):
             return await super().run(request)
         self.requests.append(request)
         response = {
@@ -566,6 +593,126 @@ class FakeDirectorOrchestrationRuntime(FakeWorkflowRuntime):
                 "skill_versions": request.skill_versions,
             },
         )
+
+
+class FakeAutomaticDirectorRuntime(FakeDirectorOrchestrationRuntime):
+    async def run(self, request: AgentRuntimeRequest) -> AgentRuntimeResponse:
+        if "asset_type 只能是" not in request.prompt:
+            return await super().run(request)
+        self.requests.append(request)
+        response = {
+            "assets": [
+                {
+                    "asset_type": "character",
+                    "name": "林遥",
+                    "description": "二十八岁的记忆修复师，短发，克制冷静。",
+                    "parent_name": None,
+                },
+                {
+                    "asset_type": "character",
+                    "name": "林遥·雨夜造型",
+                    "description": "深色防水风衣，发梢被雨水打湿。",
+                    "parent_name": "林遥",
+                },
+                {
+                    "asset_type": "scene",
+                    "name": "记忆修复室",
+                    "description": "玻璃幕墙、冷白设备光和雨夜城市倒影。",
+                    "parent_name": None,
+                },
+                {
+                    "asset_type": "prop",
+                    "name": "旧相机",
+                    "description": "表面磨损、会自行回卷的关键叙事道具。",
+                    "parent_name": None,
+                },
+            ]
+        }
+        return AgentRuntimeResponse(
+            session_id=request.session_id,
+            final_response=json.dumps(response, ensure_ascii=False),
+            finish_reason="stop",
+            events=[{"type": "assistant/message"}],
+            manifest={
+                "runtime_type": "agentscope",
+                "runtime_version": "test",
+                "agentscope_version": "test",
+                "contract_version": request.contract_version,
+                "provider": request.model_binding["provider"],
+                "model": request.model_binding["model"],
+                "prompt_versions": request.prompt_versions,
+                "skill_versions": request.skill_versions,
+            },
+        )
+
+
+class FakeAutomaticReviewRetryRuntime(FakeAutomaticDirectorRuntime):
+    def __init__(self, *, blocking: bool, script_rejections: int = 5) -> None:
+        super().__init__()
+        self.blocking = blocking
+        self.script_rejections = script_rejections
+        self.script_review_calls = 0
+        self.script_repair_calls = 0
+
+    def response(
+        self,
+        request: AgentRuntimeRequest,
+        payload: dict,
+    ) -> AgentRuntimeResponse:
+        return AgentRuntimeResponse(
+            session_id=request.session_id,
+            final_response=json.dumps(payload, ensure_ascii=False),
+            finish_reason="stop",
+            events=[{"type": "assistant/message"}],
+            manifest={
+                "runtime_type": "agentscope",
+                "runtime_version": "test",
+                "agentscope_version": "test",
+                "contract_version": request.contract_version,
+                "provider": request.model_binding["provider"],
+                "model": request.model_binding["model"],
+                "prompt_versions": request.prompt_versions,
+                "skill_versions": request.skill_versions,
+            },
+        )
+
+    async def run(self, request: AgentRuntimeRequest) -> AgentRuntimeResponse:
+        if "独立的短剧导演审核子智能体" in request.prompt:
+            self.requests.append(request)
+            self.script_review_calls += 1
+            approved = self.script_review_calls > self.script_rejections
+            findings = [] if approved else [
+                {
+                    "severity": "blocking" if self.blocking else "major",
+                    "location": "第一场",
+                    "issue": "冲突建立仍不够明确",
+                    "suggestion": "强化开场动作与人物目标",
+                }
+            ]
+            return self.response(
+                request,
+                {
+                    "approved": approved,
+                    "summary": "审核通过" if approved else "仍需修复开场冲突",
+                    "findings": findings,
+                },
+            )
+        if "你是剧本修复子智能体" in request.prompt:
+            self.requests.append(request)
+            self.script_repair_calls += 1
+            return self.response(
+                request,
+                {
+                    "title": f"第一集 · 自动修复 v{self.script_repair_calls + 1}",
+                    "content": (
+                        "01 内景 记忆修复室 夜\n"
+                        f"第 {self.script_repair_calls} 次修复后，林遥推门，旧相机突然回卷。\n"
+                        "林遥：谁动过它？"
+                    ),
+                    "review_notes": f"完成第 {self.script_repair_calls} 次审核修复",
+                },
+            )
+        return await super().run(request)
 
 
 class FakeAssetImageGateway:
@@ -1078,26 +1225,23 @@ def test_project_requires_complete_production_configuration(
         headers=creator_headers,
         json={
             "name": "完整生产配置项目",
+            "image_model_id": options["image_models"][0]["id"],
             "video_model_id": options["video_models"][0]["id"],
             "visual_handbook_id": options["visual_handbooks"][0]["id"],
             "director_handbook_id": options["director_handbooks"][0]["id"],
         },
     )
     assert created.status_code == 201
-    assert created.json()["image_model_id"] is None
+    assert created.json()["image_model_id"] == options["image_models"][0]["id"]
     assert created.json()["visual_handbook_id"] == options["visual_handbooks"][0]["id"]
 
-    legacy_image_model_id = next(
-        item["image_model_id"]
-        for item in client.get("/api/v1/projects", headers=creator_headers).json()
-        if item["image_model_id"]
-    )
-    override = client.patch(
+    unset_image = client.patch(
         f"/api/v1/projects/{created.json()['id']}",
         headers=creator_headers,
-        json={"image_model_id": legacy_image_model_id},
+        json={"image_model_id": None},
     )
-    assert override.status_code == 422
+    assert unset_image.status_code == 422
+    assert unset_image.json()["detail"] == "image_model_id 是项目必填配置"
 
     unset = client.patch(
         f"/api/v1/projects/{created.json()['id']}",
@@ -1124,6 +1268,7 @@ def test_creator_can_delete_project_and_its_media(
         headers=creator_headers,
         json={
             "name": "待删除项目",
+            "image_model_id": options["image_models"][0]["id"],
             "video_model_id": options["video_models"][0]["id"],
             "visual_handbook_id": options["visual_handbooks"][0]["id"],
             "director_handbook_id": options["director_handbooks"][0]["id"],
@@ -1160,6 +1305,7 @@ def test_project_delete_requires_active_tasks_to_stop(
         headers=creator_headers,
         json={
             "name": "活动任务删除保护",
+            "image_model_id": options["image_models"][0]["id"],
             "video_model_id": options["video_models"][0]["id"],
             "visual_handbook_id": options["visual_handbooks"][0]["id"],
             "director_handbook_id": options["director_handbooks"][0]["id"],
@@ -1927,6 +2073,7 @@ def test_missing_required_default_blocks_projects_and_tasks_without_charging(
             headers=creator_headers,
             json={
                 "name": "不应创建的未就绪项目",
+                "image_model_id": options["image_models"][0]["id"],
                 "video_model_id": options["video_models"][0]["id"],
                 "visual_handbook_id": options["visual_handbooks"][0]["id"],
                 "director_handbook_id": options["director_handbooks"][0]["id"],
@@ -4166,6 +4313,474 @@ def test_director_workflow_auto_reviews_script_and_extracts_assets(
     ).json()
 
 
+def test_automatic_director_workflow_rejects_chapter_without_source_content(
+    client: TestClient,
+    creator_headers: dict[str, str],
+) -> None:
+    project_id = client.get("/api/v1/projects", headers=creator_headers).json()[1]["id"]
+    imported = client.post(
+        f"/api/v1/projects/{project_id}/sources/import",
+        headers=creator_headers,
+        data={
+            "mode": "novel",
+            "source_name": "空原文全自动测试",
+            "pasted_text": "第一章 临时内容\n用于建立待校验章节。",
+        },
+    ).json()
+    chapter_id = imported["chapters"][0]["id"]
+
+    async def clear_source_content() -> None:
+        async with SessionLocal() as session:
+            chapter = await session.get(Chapter, chapter_id)
+            assert chapter is not None
+            chapter.original_content = "   "
+            await session.commit()
+
+    asyncio.run(clear_source_content())
+    response = client.post(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/director-workflow/automatic",
+        headers=creator_headers,
+        json={},
+    )
+    assert response.status_code == 409
+    assert response.json()["detail"] == "当前章节没有可供改编的原始文章内容"
+
+
+def test_automatic_director_workflow_retries_failed_child_with_new_task(
+    client: TestClient,
+    creator_headers: dict[str, str],
+    admin_headers: dict[str, str],
+) -> None:
+    grant_creator_test_credits(client, creator_headers, admin_headers)
+    provider_id = client.get("/api/v1/admin/providers", headers=admin_headers).json()[0]["id"]
+    assert client.patch(
+        f"/api/v1/admin/providers/{provider_id}",
+        headers=admin_headers,
+        json={"api_key": "test-automatic-retry-key"},
+    ).status_code == 200
+    project_id = client.get("/api/v1/projects", headers=creator_headers).json()[1]["id"]
+    imported = client.post(
+        f"/api/v1/projects/{project_id}/sources/import",
+        headers=creator_headers,
+        data={
+            "mode": "novel",
+            "source_name": "全自动失败重试测试",
+            "pasted_text": "第一章 重试\n林遥推开门，旧相机突然自行回卷。",
+        },
+    ).json()
+    chapter_id = imported["chapters"][0]["id"]
+    workflow_path = f"/api/v1/projects/{project_id}/chapters/{chapter_id}/director-workflow"
+    started = client.post(
+        f"{workflow_path}/automatic",
+        headers=creator_headers,
+        json={},
+    ).json()
+    first_task_id = started["workflow"]["current_task_id"]
+
+    assert asyncio.run(
+        process_task(first_task_id, runtime_factory=lambda: FakeFailingAgentRuntime())
+    ) is True
+    retried = client.get(workflow_path, headers=creator_headers).json()
+    assert retried["workflow"]["status"] == "running"
+    assert retried["workflow"]["current_task_id"] != first_task_id
+    assert [(child["attempt"], child["status"]) for child in retried["child_runs"]] == [
+        (1, "failed"),
+        (2, "queued"),
+    ]
+    assert all(child["max_attempts"] == 5 for child in retried["child_runs"])
+    assert client.get(
+        f"/api/v1/tasks/{retried['workflow']['current_task_id']}",
+        headers=creator_headers,
+    ).json()["cost"] == "0.00"
+
+    stopped = client.post(
+        f"/api/v1/projects/{project_id}/director-workflows/{retried['workflow']['id']}/stop",
+        headers=creator_headers,
+    )
+    assert stopped.status_code == 200
+    assert stopped.json()["workflow"]["status"] == "cancelled"
+
+
+def test_automatic_director_workflow_completes_chapter_to_ready_videos(
+    client: TestClient,
+    creator_headers: dict[str, str],
+    admin_headers: dict[str, str],
+) -> None:
+    grant_creator_test_credits(client, creator_headers, admin_headers)
+    provider_id = client.get("/api/v1/admin/providers", headers=admin_headers).json()[0]["id"]
+    assert client.patch(
+        f"/api/v1/admin/providers/{provider_id}",
+        headers=admin_headers,
+        json={"api_key": "test-automatic-director-key"},
+    ).status_code == 200
+    project_id = client.get("/api/v1/projects", headers=creator_headers).json()[1]["id"]
+    imported = client.post(
+        f"/api/v1/projects/{project_id}/sources/import",
+        headers=creator_headers,
+        data={
+            "mode": "novel",
+            "source_name": "全自动导演流程测试",
+            "pasted_text": "第一章 雨夜回卷\n林遥推开修复室的门，桌上的旧相机突然自行回卷。",
+        },
+    ).json()
+    chapter_id = imported["chapters"][0]["id"]
+    workflow_path = (
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/director-workflow"
+    )
+    started = client.post(
+        f"{workflow_path}/automatic",
+        headers=creator_headers,
+        json={"instruction": "全自动完成本章 AI 视频制作"},
+    )
+    assert started.status_code == 202
+    assert started.json()["workflow"]["automation_mode"] is True
+    assert started.json()["child_runs"][0]["max_attempts"] == 5
+
+    blocked_script = client.post(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/scripts",
+        headers=creator_headers,
+        json={
+            "title": "不应写入",
+            "content": "全自动运行期间不得修改。",
+            "status": "draft",
+            "activate": False,
+        },
+    )
+    assert blocked_script.status_code == 409
+    assert "AI 全自动制作" in blocked_script.json()["detail"]
+
+    chat_session = client.post(
+        f"/api/v1/projects/{project_id}/agent/sessions",
+        headers=creator_headers,
+        json={"scene": "director"},
+    ).json()
+    blocked_chat = client.post(
+        f"/api/v1/projects/{project_id}/agent/sessions/{chat_session['id']}/messages",
+        headers=creator_headers,
+        json={"content": "修改当前剧本", "chapter_id": chapter_id},
+    )
+    assert blocked_chat.status_code == 409
+
+    runtime = FakeAutomaticDirectorRuntime()
+    image_gateway = FakeAssetImageGateway()
+    video_gateway = FakeVideoGateway()
+    detail = started.json()
+    processed_task_ids: set[str] = set()
+    for _ in range(40):
+        if detail["workflow"]["status"] in {"completed", "failed", "cancelled"}:
+            break
+        queued_children = [
+            child
+            for child in detail["child_runs"]
+            if child["status"] == "queued" and child["task_id"] not in processed_task_ids
+        ]
+        assert queued_children, detail
+        for child in queued_children:
+            task_id = child["task_id"]
+            task = client.get(f"/api/v1/tasks/{task_id}", headers=creator_headers).json()
+            gateway = video_gateway if task["task_type"] == "shot_video_generation" else image_gateway
+            assert asyncio.run(
+                process_task(
+                    task_id,
+                    gateway_factory=lambda _provider, selected=gateway: selected,
+                    runtime_factory=lambda: runtime,
+                )
+            )
+            processed_task_ids.add(task_id)
+        detail = client.get(workflow_path, headers=creator_headers).json()
+
+    assert detail["workflow"]["status"] == "completed", detail
+    assert detail["workflow"]["stage"] == "ready_for_video"
+    assert all(child["max_attempts"] == 5 for child in detail["child_runs"])
+    child_task_ids = [child["task_id"] for child in detail["child_runs"]]
+    assert len(child_task_ids) == len(set(child_task_ids))
+    assert {
+        "script_adaptation",
+        "script_review",
+        "asset_extraction",
+        "asset_prompt",
+        "asset_image",
+        "storyboard_generation",
+        "storyboard_review",
+        "video_prompt",
+        "video_generation",
+    } <= {child["kind"] for child in detail["child_runs"]}
+
+    project_assets = client.get(
+        f"/api/v1/projects/{project_id}/assets", headers=creator_headers
+    ).json()
+    assets = [
+        asset
+        for asset in project_assets
+        if asset["asset_metadata"].get("extraction_id")
+        == detail["workflow"]["asset_extraction_id"]
+    ]
+    assert assets and all(asset["status"] == "ready" and asset["media_url"] for asset in assets)
+    storyboards = client.get(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/storyboards",
+        headers=creator_headers,
+    ).json()
+    assert len(storyboards) == 1
+    storyboard = client.get(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/storyboards/{storyboards[0]['id']}",
+        headers=creator_headers,
+    ).json()
+    assert storyboard["shots"]
+    assert len(storyboard["video_clips"]) == len(storyboard["shots"])
+    assert all(
+        clip["status"] == "ready" and clip["is_active"] and clip["media_url"]
+        for clip in storyboard["video_clips"]
+    )
+    chapters = client.get(
+        f"/api/v1/projects/{project_id}/chapters", headers=creator_headers
+    ).json()
+    assert next(chapter for chapter in chapters if chapter["id"] == chapter_id)["status"] == "completed"
+
+
+def test_automatic_director_workflow_can_stop_and_unlock_chapter(
+    client: TestClient,
+    creator_headers: dict[str, str],
+    admin_headers: dict[str, str],
+) -> None:
+    provider_id = client.get("/api/v1/admin/providers", headers=admin_headers).json()[0]["id"]
+    assert client.patch(
+        f"/api/v1/admin/providers/{provider_id}",
+        headers=admin_headers,
+        json={"api_key": "test-stop-automatic-director-key"},
+    ).status_code == 200
+    project_id = client.get("/api/v1/projects", headers=creator_headers).json()[1]["id"]
+    imported = client.post(
+        f"/api/v1/projects/{project_id}/sources/import",
+        headers=creator_headers,
+        data={
+            "mode": "novel",
+            "source_name": "停止全自动导演流程测试",
+            "pasted_text": "第一章 暂停按钮\n林遥刚走进房间，制作任务便被主动暂停。",
+        },
+    ).json()
+    chapter_id = imported["chapters"][0]["id"]
+    started = client.post(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/director-workflow/automatic",
+        headers=creator_headers,
+        json={},
+    ).json()
+    stopped = client.post(
+        f"/api/v1/projects/{project_id}/director-workflows/{started['workflow']['id']}/stop",
+        headers=creator_headers,
+    )
+    assert stopped.status_code == 200
+    detail = stopped.json()
+    assert detail["workflow"]["status"] == "cancelled"
+    assert detail["workflow"]["stop_requested"] is True
+    assert detail["child_runs"][0]["status"] == "cancelled"
+    task = client.get(
+        f"/api/v1/tasks/{detail['child_runs'][0]['task_id']}", headers=creator_headers
+    ).json()
+    assert task["status"] == "cancelled"
+    assert task["result_payload"]["credit_refunded"] is True
+
+    unlocked_script = client.post(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/scripts",
+        headers=creator_headers,
+        json={
+            "title": "停止后可编辑",
+            "content": "内景，房间，夜。林遥按下停止按钮。",
+            "status": "draft",
+            "activate": False,
+        },
+    )
+    assert unlocked_script.status_code == 201
+
+
+def test_automatic_director_workflow_recovers_after_worker_restart(
+    client: TestClient,
+    creator_headers: dict[str, str],
+    admin_headers: dict[str, str],
+) -> None:
+    grant_creator_test_credits(client, creator_headers, admin_headers)
+    provider_id = client.get("/api/v1/admin/providers", headers=admin_headers).json()[0]["id"]
+    assert client.patch(
+        f"/api/v1/admin/providers/{provider_id}",
+        headers=admin_headers,
+        json={"api_key": "test-recover-automatic-director-key"},
+    ).status_code == 200
+    project_id = client.get("/api/v1/projects", headers=creator_headers).json()[1]["id"]
+    imported = client.post(
+        f"/api/v1/projects/{project_id}/sources/import",
+        headers=creator_headers,
+        data={
+            "mode": "novel",
+            "source_name": "全自动恢复测试",
+            "pasted_text": "第一章 重启后的修复室\n林遥推门时，所有设备在黑暗中重新亮起。",
+        },
+    ).json()
+    chapter_id = imported["chapters"][0]["id"]
+    workflow_path = f"/api/v1/projects/{project_id}/chapters/{chapter_id}/director-workflow"
+    started = client.post(
+        f"{workflow_path}/automatic",
+        headers=creator_headers,
+        json={"instruction": "自动完成并验证重启恢复"},
+    ).json()
+    workflow_id = started["workflow"]["id"]
+    adaptation_task_id = started["workflow"]["current_task_id"]
+    runtime = FakeAutomaticDirectorRuntime()
+    assert asyncio.run(
+        process_task(adaptation_task_id, runtime_factory=lambda: runtime)
+    ) is True
+    before_restart = client.get(workflow_path, headers=creator_headers).json()
+    review_task_id = before_restart["workflow"]["current_task_id"]
+    review_child_id = before_restart["child_runs"][-1]["id"]
+    assert before_restart["child_runs"][-1]["kind"] == "script_review"
+
+    async def simulate_interrupted_worker() -> None:
+        expired = datetime.now(UTC) - timedelta(minutes=10)
+        async with SessionLocal() as session:
+            workflow = await session.get(DirectorWorkflowRun, workflow_id)
+            task = await session.get(AITask, review_task_id)
+            child = await session.get(DirectorChildRun, review_child_id)
+            assert workflow is not None and task is not None and child is not None
+            workflow.current_task_id = None
+            task.status = TaskStatus.RUNNING
+            task.worker_id = "stopped-worker"
+            task.heartbeat_at = expired
+            task.lease_expires_at = expired
+            child.status = DirectorChildStatus.RUNNING
+            await session.commit()
+
+    asyncio.run(simulate_interrupted_worker())
+    assert asyncio.run(recover_stale_tasks()) == 1
+    assert asyncio.run(recover_automatic_workflows()) == 1
+    recovered = client.get(workflow_path, headers=creator_headers).json()
+    assert recovered["workflow"]["current_task_id"] == review_task_id
+    assert next(
+        child for child in recovered["child_runs"] if child["id"] == review_child_id
+    )["status"] == "running"
+    recovered_task = client.get(
+        f"/api/v1/tasks/{review_task_id}", headers=creator_headers
+    ).json()
+    assert recovered_task["status"] == "queued"
+    assert recovered_task["result_payload"]["recovery_count"] == 1
+
+    detail = recovered
+    processed_task_ids = {adaptation_task_id}
+    image_gateway = FakeAssetImageGateway()
+    video_gateway = FakeVideoGateway()
+    for _ in range(40):
+        if detail["workflow"]["status"] in {"completed", "failed", "cancelled"}:
+            break
+        pending = [
+            child
+            for child in detail["child_runs"]
+            if child["status"] in {"queued", "running"}
+            and child["task_id"] not in processed_task_ids
+        ]
+        assert pending, detail
+        for child in pending:
+            task_id = child["task_id"]
+            task = client.get(f"/api/v1/tasks/{task_id}", headers=creator_headers).json()
+            gateway = video_gateway if task["task_type"] == "shot_video_generation" else image_gateway
+            assert asyncio.run(
+                process_task(
+                    task_id,
+                    gateway_factory=lambda _provider, selected=gateway: selected,
+                    runtime_factory=lambda: runtime,
+                )
+            ) is True
+            processed_task_ids.add(task_id)
+        detail = client.get(workflow_path, headers=creator_headers).json()
+
+    assert detail["workflow"]["status"] == "completed", detail
+    assert detail["workflow"]["stage"] == "ready_for_video"
+    task_ids = [child["task_id"] for child in detail["child_runs"]]
+    assert len(task_ids) == len(set(task_ids))
+    assert task_ids.count(review_task_id) == 1
+    assert all(child["max_attempts"] == 5 for child in detail["child_runs"])
+
+
+@pytest.mark.parametrize(
+    ("blocking", "expected_script_versions", "expected_repair_mode"),
+    [
+        (False, 5, "partial"),
+        (True, 6, "full"),
+    ],
+)
+def test_automatic_director_review_version_limit_and_blocking_exception(
+    client: TestClient,
+    creator_headers: dict[str, str],
+    admin_headers: dict[str, str],
+    blocking: bool,
+    expected_script_versions: int,
+    expected_repair_mode: str,
+) -> None:
+    grant_creator_test_credits(client, creator_headers, admin_headers)
+    provider_id = client.get("/api/v1/admin/providers", headers=admin_headers).json()[0]["id"]
+    assert client.patch(
+        f"/api/v1/admin/providers/{provider_id}",
+        headers=admin_headers,
+        json={"api_key": f"test-review-limit-{'blocking' if blocking else 'major'}"},
+    ).status_code == 200
+    project_id = client.get("/api/v1/projects", headers=creator_headers).json()[1]["id"]
+    imported = client.post(
+        f"/api/v1/projects/{project_id}/sources/import",
+        headers=creator_headers,
+        data={
+            "mode": "novel",
+            "source_name": "审核版本上限测试",
+            "pasted_text": "第一章 雨夜审核\n林遥走进修复室，旧相机突然自行回卷。",
+        },
+    ).json()
+    chapter_id = imported["chapters"][0]["id"]
+    workflow_path = f"/api/v1/projects/{project_id}/chapters/{chapter_id}/director-workflow"
+    detail = client.post(
+        f"{workflow_path}/automatic",
+        headers=creator_headers,
+        json={"instruction": "自动修复所有审核问题"},
+    ).json()
+    runtime = FakeAutomaticReviewRetryRuntime(blocking=blocking)
+    processed: set[str] = set()
+
+    for _ in range(20):
+        if detail["workflow"]["stage"] == "asset_extracting":
+            break
+        task_id = detail["workflow"]["current_task_id"]
+        assert task_id and task_id not in processed, detail
+        assert asyncio.run(process_task(task_id, runtime_factory=lambda: runtime)) is True
+        processed.add(task_id)
+        detail = client.get(workflow_path, headers=creator_headers).json()
+
+    assert detail["workflow"]["stage"] == "asset_extracting", detail
+    scripts = client.get(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/scripts",
+        headers=creator_headers,
+    ).json()
+    assert len(scripts) == expected_script_versions
+    assert sorted(script["version"] for script in scripts) == list(
+        range(1, expected_script_versions + 1)
+    )
+    active_script = next(script for script in scripts if script["is_active"])
+    assert active_script["version"] == expected_script_versions
+    assert active_script["status"] == "approved"
+    assert sum(child["kind"] == "script_repair" for child in detail["child_runs"]) == (
+        expected_script_versions - 1
+    )
+    repair_tasks = [
+        client.get(f"/api/v1/tasks/{child['task_id']}", headers=creator_headers).json()
+        for child in detail["child_runs"]
+        if child["kind"] == "script_repair"
+    ]
+    assert repair_tasks
+    assert all(
+        task["request_payload"]["repair_mode"] == expected_repair_mode
+        for task in repair_tasks
+    )
+    if blocking:
+        assert runtime.script_review_calls == 6
+        assert detail["workflow"]["context_snapshot"]["script_version_count"] == 6
+    else:
+        assert runtime.script_review_calls == 5
+        assert detail["workflow"]["context_snapshot"]["script_version_count"] == 5
+
+
 def test_director_storyboard_start_continues_ready_asset_workflow(
     client: TestClient,
     creator_headers: dict[str, str],
@@ -4707,6 +5322,14 @@ def test_storyboard_and_restart_safe_video_pipeline(
     assert refreshed["video_clips"][0]["is_active"] is True
     assert refreshed["video_clips"][0]["media_url"].endswith(".mp4")
 
+    archive = client.get(f"{detail_path}/videos/download", headers=creator_headers)
+    assert archive.status_code == 200
+    assert archive.headers["content-type"] == "application/zip"
+    with zipfile.ZipFile(BytesIO(archive.content)) as bundle:
+        assert bundle.namelist() == ["001-雨夜推门-v1.mp4"]
+        assert bundle.read(bundle.namelist()[0]) == b"\x00\x00\x00\x18ftypmp42test-video"
+    assert client.get(f"{detail_path}/videos/download", headers=admin_headers).status_code == 404
+
     edited = client.patch(
         f"{detail_path}/shots/{shot['id']}",
         headers=creator_headers,
@@ -4921,6 +5544,182 @@ def test_storyboard_batch_video_prompt_and_video_queue(
     )
     assert edit_conflict.status_code == 409
     assert "正在生成视频" in edit_conflict.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    ("content", "expected"),
+    [
+        ("给所有视频分镜生成提示词", "prompt"),
+        ("生成全部未完成镜头视频", "video"),
+        ("不要生成视频", None),
+        ("不要生成视频提示词", None),
+        ("不需要重写提示词，直接生成视频", "video"),
+    ],
+)
+def test_requested_storyboard_video_action_respects_negative_intent(
+    content: str,
+    expected: str | None,
+) -> None:
+    assert requested_storyboard_video_action(content) == expected
+
+
+def test_director_agent_routes_natural_video_commands_to_platform_tasks(
+    client: TestClient,
+    creator_headers: dict[str, str],
+    admin_headers: dict[str, str],
+) -> None:
+    grant_creator_test_credits(client, creator_headers, admin_headers)
+    provider_id = client.get("/api/v1/admin/providers", headers=admin_headers).json()[0]["id"]
+    assert client.patch(
+        f"/api/v1/admin/providers/{provider_id}",
+        headers=admin_headers,
+        json={"api_key": "test-agent-video-command-key"},
+    ).status_code == 200
+    project_id = client.get("/api/v1/projects", headers=creator_headers).json()[0]["id"]
+    imported = client.post(
+        f"/api/v1/projects/{project_id}/sources/import",
+        headers=creator_headers,
+        data={
+            "mode": "novel",
+            "source_name": "导演 Agent 视频命令测试",
+            "pasted_text": "第一章 灯塔追逐\n林遥追着旧相机的微光跑向海边灯塔。",
+        },
+    ).json()
+    chapter_id = imported["chapters"][0]["id"]
+    script = client.post(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/scripts",
+        headers=creator_headers,
+        json={
+            "title": "第一集灯塔追逐",
+            "content": "外景，海边灯塔，黄昏。林遥追逐旧相机发出的微光。",
+            "status": "approved",
+            "activate": True,
+        },
+    )
+    assert script.status_code == 201
+    extraction = client.post(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/asset-extractions",
+        headers=creator_headers,
+        json={
+            "assets": [
+                {"asset_type": "character", "name": "林遥", "description": "短发记忆修复师"},
+            ]
+        },
+    )
+    assert extraction.status_code == 201
+
+    async def mark_agent_video_asset_ready() -> None:
+        asset_id = extraction.json()["assets"][0]["id"]
+        key = f"test/agent-video-command-assets/{asset_id}.webp"
+        await object_storage().put_bytes(key, b"ready-agent-video-command-image", "image/webp")
+        async with SessionLocal() as session:
+            asset = await session.get(Asset, asset_id)
+            assert asset is not None
+            asset.status = AssetStatus.READY
+            asset.media_url = f"/uploads/{key}"
+            asset.generation_prompt = "电影级人物设定图"
+            asset.version += 1
+            await session.commit()
+
+    asyncio.run(mark_agent_video_asset_ready())
+    storyboard = client.post(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/storyboards",
+        headers=creator_headers,
+        json={
+            "shots": [
+                {
+                    "title": "追向灯塔",
+                    "shot_type": "远景",
+                    "duration_seconds": 5,
+                    "scene_description": "海边灯塔与黄昏潮水",
+                    "action_description": "林遥沿潮线奔跑",
+                    "image_prompt": "黄昏海边灯塔远景",
+                    "video_prompt": "",
+                },
+                {
+                    "title": "相机微光",
+                    "shot_type": "特写",
+                    "duration_seconds": 5,
+                    "scene_description": "旧相机在沙滩上发光",
+                    "action_description": "微光有节奏地闪烁",
+                    "image_prompt": "沙滩上的旧相机特写",
+                    "video_prompt": "",
+                },
+                {
+                    "title": "灯塔门前",
+                    "shot_type": "中景",
+                    "duration_seconds": 5,
+                    "scene_description": "灯塔木门被海风吹动",
+                    "action_description": "林遥停在门前抬头",
+                    "image_prompt": "灯塔门前人物中景",
+                    "video_prompt": "",
+                },
+            ]
+        },
+    )
+    assert storyboard.status_code == 201
+    storyboard_id = storyboard.json()["version"]["id"]
+    shots = storyboard.json()["shots"]
+    session_id = client.post(
+        f"/api/v1/projects/{project_id}/agent/sessions",
+        headers=creator_headers,
+        json={"scene": "director"},
+    ).json()["id"]
+    message_path = f"/api/v1/projects/{project_id}/agent/sessions/{session_id}/messages"
+
+    prompted = client.post(
+        message_path,
+        headers=creator_headers,
+        json={"content": "给所有视频分镜生成提示词", "chapter_id": chapter_id},
+    )
+    assert prompted.status_code == 202
+    prompt_task = prompted.json()["task"]
+    assert prompt_task["task_type"] == "shot_video_prompt_generation"
+    assert set(prompt_task["request_payload"]["shot_ids"]) == {shot["id"] for shot in shots}
+    assert asyncio.run(
+        process_task(prompt_task["id"], runtime_factory=lambda: FakeWorkflowRuntime())
+    ) is True
+
+    selected = client.post(
+        message_path,
+        headers=creator_headers,
+        json={"content": "生成第 2 个镜头的视频", "chapter_id": chapter_id},
+    )
+    assert selected.status_code == 202
+    selected_task = selected.json()["task"]
+    assert selected_task["task_type"] == "shot_video_generation"
+    assert selected_task["request_payload"]["shot_id"] == shots[1]["id"]
+    assert asyncio.run(
+        process_task(
+            selected_task["id"],
+            gateway_factory=lambda _provider: FakeVideoGateway(),
+        )
+    ) is True
+
+    unfinished = client.post(
+        message_path,
+        headers=creator_headers,
+        json={"content": "生成全部未完成镜头视频", "chapter_id": chapter_id},
+    )
+    assert unfinished.status_code == 202
+    assert unfinished.json()["task"]["task_type"] == "shot_video_generation"
+    detail = client.get(
+        f"/api/v1/projects/{project_id}/agent/sessions/{session_id}",
+        headers=creator_headers,
+    ).json()
+    change = detail["messages"][-1]["runtime_manifest"]["domain_changes"][0]
+    assert change["operation"] == "queue_storyboard_videos"
+    assert len(change["task_ids"]) == 2
+    queued = [
+        client.get(f"/api/v1/tasks/{task_id}", headers=creator_headers).json()
+        for task_id in change["task_ids"]
+    ]
+    assert {task["request_payload"]["shot_id"] for task in queued} == {
+        shots[0]["id"],
+        shots[2]["id"],
+    }
+    assert all(task["request_payload"]["storyboard_version_id"] == storyboard_id for task in queued)
+    assert "2 个独立镜头任务" in detail["messages"][-1]["content"]
 
 
 def test_dialogue_voice_binding_and_restart_safe_tts_pipeline(
@@ -7323,6 +8122,7 @@ def test_same_tenant_accounts_cannot_access_each_others_creation_data(
             headers=headers,
             json={
                 "name": f"账号隔离项目 {key}",
+                "image_model_id": payload["image_models"][0]["id"],
                 "video_model_id": payload["video_models"][0]["id"],
                 "visual_handbook_id": payload["visual_handbooks"][0]["id"],
                 "director_handbook_id": payload["director_handbooks"][0]["id"],

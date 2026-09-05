@@ -241,6 +241,7 @@ export interface Handbook {
 }
 
 export interface ProjectOptions {
+  image_models: AIModel[]
   video_models: AIModel[]
   visual_handbooks: Handbook[]
   director_handbooks: Handbook[]
@@ -441,6 +442,8 @@ export type DirectorWorkflowStage =
   | 'storyboard_reviewing'
   | 'awaiting_storyboard_decision'
   | 'storyboard_repairing'
+  | 'video_prompt_generating'
+  | 'video_generating'
   | 'ready_for_video'
   | 'failed'
   | 'cancelled'
@@ -484,6 +487,8 @@ export interface DirectorWorkflow {
   chat_session_id: string | null
   stage: DirectorWorkflowStage
   status: 'running' | 'waiting_user' | 'completed' | 'failed' | 'cancelled'
+  automation_mode: boolean
+  stop_requested: boolean
   script_version_id: string | null
   asset_extraction_id: string | null
   storyboard_version_id: string | null

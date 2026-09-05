@@ -164,6 +164,8 @@ class DirectorWorkflowStage(enum.StrEnum):
     STORYBOARD_REVIEWING = "storyboard_reviewing"
     AWAITING_STORYBOARD_DECISION = "awaiting_storyboard_decision"
     STORYBOARD_REPAIRING = "storyboard_repairing"
+    VIDEO_PROMPT_GENERATING = "video_prompt_generating"
+    VIDEO_GENERATING = "video_generating"
     READY_FOR_VIDEO = "ready_for_video"
     FAILED = "failed"
     CANCELLED = "cancelled"
@@ -559,6 +561,8 @@ class DirectorWorkflowRun(Base, TimestampMixin):
     status: Mapped[DirectorWorkflowStatus] = mapped_column(
         Enum(DirectorWorkflowStatus, native_enum=False), default=DirectorWorkflowStatus.RUNNING, index=True
     )
+    automation_mode: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    stop_requested: Mapped[bool] = mapped_column(Boolean, default=False)
     script_version_id: Mapped[str | None] = mapped_column(
         ForeignKey("script_versions.id", ondelete="SET NULL"), nullable=True, index=True
     )

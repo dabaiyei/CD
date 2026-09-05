@@ -25,6 +25,7 @@ from app.services.director_orchestration import (
     start_script_workflow,
     start_storyboard_workflow,
     start_storyboard_workflow_for_chapter,
+    stop_automatic_workflow,
     submit_decision,
     workflow_detail_rows,
     workflow_for_user,
@@ -139,6 +140,61 @@ async def create_workflow(
         raise HTTPException(status_code=409, detail=str(error)) from error
     except RuntimeError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error
+    return await _detail(session, workflow)
+
+
+@router.post(
+    "/{project_id}/chapters/{chapter_id}/director-workflow/automatic",
+    response_model=DirectorWorkflowDetail,
+    status_code=status.HTTP_202_ACCEPTED,
+)
+async def create_automatic_workflow(
+    project_id: str,
+    chapter_id: str,
+    payload: DirectorWorkflowStart,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    chapter = await chapter_for_user(session, project_id, chapter_id, user)
+    try:
+        workflow = await start_script_workflow(
+            session,
+            chapter=chapter,
+            user=user,
+            instruction=payload.instruction.strip() or "全自动完成本章 AI 视频制作",
+            chat_session_id=payload.chat_session_id,
+            automation_mode=True,
+        )
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    except RuntimeError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    return await _detail(session, workflow)
+
+
+@router.post(
+    "/{project_id}/director-workflows/{workflow_id}/stop",
+    response_model=DirectorWorkflowDetail,
+)
+async def stop_workflow_automation(
+    project_id: str,
+    workflow_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    workflow = await workflow_for_user(
+        session,
+        workflow_id=workflow_id,
+        project_id=project_id,
+        user=user,
+    )
+    if workflow is None:
+        raise HTTPException(status_code=404, detail="导演流程不存在")
+    try:
+        await stop_automatic_workflow(session, workflow)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    await session.refresh(workflow)
     return await _detail(session, workflow)
 
 

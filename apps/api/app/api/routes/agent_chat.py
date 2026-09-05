@@ -65,6 +65,7 @@ from app.domain.schemas import (
     AgentOptionPublic,
     AgentSkillPublic,
     ModelPublic,
+    StoryboardShotBatchRequest,
     TaskPublic,
 )
 from app.services.agent_memory import retrieve_project_memories
@@ -203,6 +204,92 @@ def requested_storyboard_platform_action(content: str) -> bool:
     if not storyboard_requested:
         return False
     return not any(term in normalized for term in ("审核分镜", "检查分镜", "修改分镜", "修复分镜"))
+
+
+def requested_storyboard_video_action(content: str) -> Literal["prompt", "video"] | None:
+    normalized = re.sub(r"\s+", "", content.lower())
+    if not normalized:
+        return None
+    if re.search(r"(?:取消|停止|不要|别)(?:继续)?(?:生成|制作|创建)?(?:镜头)?(?:视频|成片)", normalized):
+        return None
+    actionable = re.sub(
+        r"(?:不要|不需要|无需|别)(?:再)?(?:生成|制作|重写|更新|优化)?(?:视频|镜头|动态)?(?:提示词|prompt)",
+        "",
+        normalized,
+    )
+    has_video_context = any(
+        term in actionable for term in ("视频", "成片", "动态镜头", "视频分镜")
+    )
+    has_shot_context = any(term in actionable for term in ("镜头", "分镜"))
+    has_generate_intent = any(
+        term in actionable
+        for term in ("生成", "制作", "补全", "重写", "更新", "优化", "创建", "开始", "出")
+    )
+    has_prompt_target = any(term in actionable for term in ("提示词", "prompt"))
+    if has_generate_intent and has_prompt_target and (has_video_context or has_shot_context):
+        return "prompt"
+    if has_generate_intent and has_video_context:
+        return "video"
+    return None
+
+
+def requested_storyboard_shot_indexes(content: str) -> set[int]:
+    indexes: set[int] = set()
+    for segment in re.findall(r"([第\d、,，和及至到\-~～\s]+)(?:个)?(?:镜头|分镜)", content):
+        numbers = [int(item) for item in re.findall(r"\d+", segment)]
+        if any(marker in segment for marker in ("-", "~", "～", "至", "到")) and len(numbers) == 2:
+            start, end = sorted(numbers)
+            indexes.update(range(start, min(end, start + 299) + 1))
+        else:
+            indexes.update(numbers)
+    return {index for index in indexes if index > 0}
+
+
+async def active_storyboard_video_selection(
+    db: AsyncSession,
+    *,
+    chapter: Chapter,
+    user: User,
+    content: str,
+) -> tuple[StoryboardVersion, list[str]]:
+    storyboard = await db.scalar(
+        select(StoryboardVersion)
+        .where(
+            StoryboardVersion.chapter_id == chapter.id,
+            StoryboardVersion.user_id == user.id,
+            StoryboardVersion.is_active.is_(True),
+        )
+        .order_by(StoryboardVersion.version.desc())
+        .limit(1)
+    )
+    if storyboard is None:
+        raise HTTPException(status_code=409, detail="当前章节还没有生效分镜")
+    shots = list(
+        (
+            await db.scalars(
+                select(StoryboardShot)
+                .where(
+                    StoryboardShot.storyboard_version_id == storyboard.id,
+                    StoryboardShot.user_id == user.id,
+                )
+                .order_by(StoryboardShot.order_index)
+            )
+        ).all()
+    )
+    if not shots:
+        raise HTTPException(status_code=409, detail="当前生效分镜没有镜头")
+    requested_indexes = requested_storyboard_shot_indexes(content)
+    selected = [
+        shot
+        for shot in shots
+        if shot.order_index in requested_indexes
+        or (not requested_indexes and shot.title and shot.title in content)
+    ]
+    if requested_indexes and len(selected) != len(requested_indexes):
+        existing = {shot.order_index for shot in selected}
+        missing = "、".join(str(index) for index in sorted(requested_indexes - existing))
+        raise HTTPException(status_code=404, detail=f"未找到第 {missing} 镜头")
+    return storyboard, [shot.id for shot in selected]
 
 
 async def persist_platform_action_failure(
@@ -1813,6 +1900,16 @@ async def send_message(
             or chapter.user_id != user.id
         ):
             raise HTTPException(status_code=404, detail="当前导演台章节不存在")
+        from app.services.director_orchestration import ensure_chapter_not_automating
+
+        try:
+            await ensure_chapter_not_automating(
+                db,
+                chapter_id=chapter.id,
+                user_id=user.id,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
     agent = await resolve_scene_agent(db, tenant_id=user.tenant_id, scene=scene)
     if chat_session.agent_profile_id != agent.id:
         chat_session.agent_profile_id = agent.id
@@ -1850,6 +1947,142 @@ async def send_message(
             "agent_chat_message_id": user_message.id,
             "agent_chat_session_id": chat_session.id,
         }
+    storyboard_video_action = (
+        requested_storyboard_video_action(payload.content)
+        if scene == "director" and chapter is not None
+        else None
+    )
+    if storyboard_video_action is not None and chapter is not None:
+        from app.api.routes.storyboards import (
+            generate_storyboard_video_prompts,
+            generate_storyboard_videos,
+        )
+
+        try:
+            storyboard, shot_ids = await active_storyboard_video_selection(
+                db,
+                chapter=chapter,
+                user=user,
+                content=payload.content,
+            )
+            normalized_content = re.sub(r"\s+", "", payload.content.lower())
+            overwrite = any(
+                term in normalized_content for term in ("重新生成", "全部重做", "覆盖", "重写")
+            )
+            selection = StoryboardShotBatchRequest(
+                shot_ids=shot_ids,
+                overwrite=overwrite,
+                only_missing=not overwrite,
+            )
+            if storyboard_video_action == "prompt":
+                primary_task = await generate_storyboard_video_prompts(
+                    project_id,
+                    chapter.id,
+                    storyboard.id,
+                    selection,
+                    user,
+                    db,
+                )
+                queued_tasks = [primary_task]
+                action_title = "视频提示词任务"
+                assistant_content = (
+                    f"已通过分镜【视频提示词】通道安排"
+                    f"{'指定镜头' if shot_ids else '全部缺失镜头'}。"
+                    "任务状态会同步显示在导演台和通知中心。"
+                )
+            else:
+                queued_tasks = await generate_storyboard_videos(
+                    project_id,
+                    chapter.id,
+                    storyboard.id,
+                    selection,
+                    user,
+                    db,
+                )
+                primary_task = queued_tasks[0]
+                action_title = "视频生成任务"
+                assistant_content = (
+                    f"已通过分镜【生成视频】通道创建 {len(queued_tasks)} 个独立镜头任务。"
+                    "每个镜头会分别排队、生成并更新状态，你可以在导演台和通知中心查看进度。"
+                )
+        except HTTPException as error:
+            return await persist_platform_action_failure(
+                db,
+                user=user,
+                project=project,
+                chat_session=chat_session,
+                user_message=user_message,
+                action=f"storyboard_video_{storyboard_video_action}",
+                title="视频提示词任务" if storyboard_video_action == "prompt" else "视频生成任务",
+                message=str(error.detail),
+                now=now,
+            )
+
+        latest_event = await db.scalar(
+            select(TaskEvent)
+            .where(TaskEvent.task_id == primary_task.id)
+            .order_by(TaskEvent.created_at.desc())
+            .limit(1)
+        )
+        outcome = {
+            "operation": (
+                "queue_storyboard_video_prompts"
+                if storyboard_video_action == "prompt"
+                else "queue_storyboard_videos"
+            ),
+            "file_id": None,
+            "name": action_title,
+            "status": "applied",
+            "reason": None,
+            "resource_type": "storyboard_video_tasks",
+            "resource_id": primary_task.id,
+            "task_id": primary_task.id,
+            "task_ids": [task.id for task in queued_tasks],
+            "chapter_id": chapter.id,
+            "storyboard_version_id": storyboard.id,
+            "shot_ids": shot_ids,
+        }
+        runtime_manifest = {
+            "runtime_type": "platform_action",
+            "contract_version": "v1",
+            "agent_chat_session_id": chat_session.id,
+            "project_file_changes": [outcome],
+            "domain_changes": [outcome],
+            "platform_action": outcome["operation"],
+        }
+        user_message.run_id = primary_task.id
+        assistant_message = AgentChatMessage(
+            tenant_id=user.tenant_id,
+            user_id=user.id,
+            session_id=chat_session.id,
+            role=AgentMessageRole.ASSISTANT,
+            content=assistant_content,
+            run_id=primary_task.id,
+            finish_reason="platform_action",
+            runtime_events=[],
+            runtime_manifest=runtime_manifest,
+        )
+        db.add(assistant_message)
+        if chat_session.title == "新对话":
+            chat_session.title = payload.content[:56] or action_title
+        chat_session.runtime_manifest = runtime_manifest
+        chat_session.last_message_at = now
+        await db.commit()
+        await db.refresh(chat_session)
+        await db.refresh(user_message)
+        await db.refresh(primary_task)
+        task_public = TaskPublic.model_validate(primary_task).model_copy(
+            update={
+                "progress": latest_event.progress if latest_event else 0,
+                "latest_message": latest_event.message if latest_event else action_title,
+                "latest_event_at": latest_event.created_at if latest_event else None,
+            }
+        )
+        return AgentChatRunQueuedPublic(
+            session=chat_session,
+            user_message=user_message,
+            task=task_public,
+        )
     if scene == "director" and chapter is not None and requested_storyboard_platform_action(payload.content):
         from app.services.director_orchestration import start_storyboard_workflow_for_chapter
 

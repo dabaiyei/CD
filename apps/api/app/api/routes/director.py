@@ -53,6 +53,7 @@ from app.domain.schemas import (
 )
 from app.services.billing import resolve_task_pricing
 from app.services.composition import invalidate_compositions
+from app.services.director_orchestration import ensure_chapter_not_automating
 from app.services.object_storage import delete_media_file, materialize_media_file, object_storage
 from app.services.source_import import (
     MAX_EPUB_BYTES,
@@ -67,6 +68,42 @@ from app.services.task_submission import active_tasks, create_queued_task
 
 router = APIRouter(prefix="/projects", tags=["director-workspace"])
 settings = get_settings()
+
+
+async def require_chapter_writable(session: AsyncSession, chapter: Chapter, user: User) -> None:
+    try:
+        await ensure_chapter_not_automating(session, chapter_id=chapter.id, user_id=user.id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+async def require_project_file_writable(
+    session: AsyncSession,
+    project_file: ProjectFile,
+    user: User,
+) -> None:
+    chapter_ids = list(
+        (
+            await session.scalars(
+                select(Chapter.id).where(
+                    Chapter.source_file_id == project_file.id,
+                    Chapter.user_id == user.id,
+                )
+            )
+        ).all()
+    )
+    metadata_chapter_id = str((project_file.file_metadata or {}).get("chapter_id") or "")
+    if metadata_chapter_id and metadata_chapter_id not in chapter_ids:
+        chapter_ids.append(metadata_chapter_id)
+    for chapter_id in chapter_ids:
+        try:
+            await ensure_chapter_not_automating(
+                session,
+                chapter_id=chapter_id,
+                user_id=user.id,
+            )
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 async def screenplay_agent(session: AsyncSession, tenant_id: str) -> AgentProfile:
@@ -232,6 +269,7 @@ async def update_project_file(
     session: AsyncSession = Depends(get_session),
 ) -> ProjectFile:
     project_file = await project_file_for_user(session, project_id, file_id, user)
+    await require_project_file_writable(session, project_file, user)
     if not project_file.editable:
         raise HTTPException(status_code=409, detail="原始上传文件不可编辑")
     values = payload.model_dump(exclude_unset=True)
@@ -253,6 +291,7 @@ async def delete_project_file(
     session: AsyncSession = Depends(get_session),
 ) -> None:
     project_file = await project_file_for_user(session, project_id, file_id, user)
+    await require_project_file_writable(session, project_file, user)
     chapter_count = await session.scalar(
         select(func.count(Chapter.id)).where(Chapter.source_file_id == project_file.id)
     )
@@ -354,6 +393,7 @@ async def generate_chapter_analysis(
     session: AsyncSession = Depends(get_session),
 ) -> AITask:
     chapter = await chapter_for_user(session, project_id, chapter_id, user)
+    await require_chapter_writable(session, chapter, user)
     for pending in await active_tasks(
         session,
         project_id=project_id,
@@ -430,6 +470,7 @@ async def generate_script_version(
     session: AsyncSession = Depends(get_session),
 ) -> AITask:
     chapter = await chapter_for_user(session, project_id, chapter_id, user)
+    await require_chapter_writable(session, chapter, user)
     analysis = (
         await session.get(ChapterAnalysis, payload.analysis_id)
         if payload.analysis_id
@@ -515,6 +556,7 @@ async def create_script_version(
     session: AsyncSession = Depends(get_session),
 ) -> ScriptVersion:
     chapter = await chapter_for_user(session, project_id, chapter_id, user)
+    await require_chapter_writable(session, chapter, user)
     latest = await session.scalar(
         select(func.max(ScriptVersion.version)).where(ScriptVersion.chapter_id == chapter.id)
     )
@@ -553,6 +595,7 @@ async def activate_script_version(
     session: AsyncSession = Depends(get_session),
 ) -> ScriptVersion:
     chapter = await chapter_for_user(session, project_id, chapter_id, user)
+    await require_chapter_writable(session, chapter, user)
     script = await session.get(ScriptVersion, script_id)
     if (
         script is None
@@ -616,6 +659,7 @@ async def review_script_version(
     session: AsyncSession = Depends(get_session),
 ) -> ScriptReviewResult:
     chapter = await chapter_for_user(session, project_id, chapter_id, user)
+    await require_chapter_writable(session, chapter, user)
     script = await session.get(ScriptVersion, script_id)
     if (
         script is None
@@ -676,6 +720,7 @@ async def delete_script_version(
     session: AsyncSession = Depends(get_session),
 ) -> None:
     chapter = await chapter_for_user(session, project_id, chapter_id, user)
+    await require_chapter_writable(session, chapter, user)
     script = await session.get(ScriptVersion, script_id)
     if (
         script is None

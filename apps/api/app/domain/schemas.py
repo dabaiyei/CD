@@ -515,7 +515,7 @@ class ProjectCreate(BaseModel):
     video_model_id: str = Field(min_length=1, max_length=36)
     video_resolution: str = Field(default="720p", max_length=32)
     aspect_ratio: str = Field(default="16:9", max_length=16)
-    image_model_id: None = None
+    image_model_id: str = Field(min_length=1, max_length=36)
     image_resolution: Literal["1K", "2K", "4K"] = "1K"
     visual_handbook_id: str = Field(min_length=1, max_length=36)
     director_handbook_id: str = Field(min_length=1, max_length=36)
@@ -528,7 +528,7 @@ class ProjectUpdate(BaseModel):
     video_model_id: str | None = None
     video_resolution: str | None = Field(default=None, max_length=32)
     aspect_ratio: str | None = Field(default=None, max_length=16)
-    image_model_id: None = None
+    image_model_id: str | None = None
     image_resolution: Literal["1K", "2K", "4K"] | None = None
     visual_handbook_id: str | None = None
     director_handbook_id: str | None = None
@@ -553,6 +553,7 @@ class ProjectPublic(ApiModel):
 
 
 class ProjectOptions(BaseModel):
+    image_models: list[ModelPublic]
     video_models: list[ModelPublic]
     visual_handbooks: list[HandbookPublic]
     director_handbooks: list[HandbookPublic]
@@ -712,6 +713,8 @@ class DirectorWorkflowPublic(ApiModel):
     chat_session_id: str | None
     stage: DirectorWorkflowStage
     status: DirectorWorkflowStatus
+    automation_mode: bool
+    stop_requested: bool
     script_version_id: str | None
     asset_extraction_id: str | None
     storyboard_version_id: str | None

@@ -51,6 +51,7 @@ router = APIRouter(prefix="/projects", tags=["projects"])
 settings = get_settings()
 logger = logging.getLogger(__name__)
 REQUIRED_PROJECT_RELATIONS = {
+    "image_model_id",
     "video_model_id",
     "visual_handbook_id",
     "director_handbook_id",
@@ -72,6 +73,7 @@ async def validate_project_relations(
     session: AsyncSession, tenant_id: str, values: dict[str, object]
 ) -> None:
     checks = [
+        ("image_model_id", AIModel, ModelType.IMAGE),
         ("video_model_id", AIModel, ModelType.VIDEO),
         ("visual_handbook_id", Handbook, HandbookType.VISUAL),
         ("director_handbook_id", Handbook, HandbookType.DIRECTOR),
@@ -145,6 +147,9 @@ async def project_options(
         ).all()
     )
     return ProjectOptions(
+        image_models=[
+            ModelPublic.model_validate(item) for item in models if item.model_type == ModelType.IMAGE
+        ],
         video_models=[
             ModelPublic.model_validate(item) for item in models if item.model_type == ModelType.VIDEO
         ],

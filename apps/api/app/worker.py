@@ -50,7 +50,10 @@ async def worker_slot(slot: int) -> None:
 
 
 async def run_worker() -> None:
-    from app.services.director_orchestration import recover_orphaned_agent_script_reviews
+    from app.services.director_orchestration import (
+        recover_automatic_workflows,
+        recover_orphaned_agent_script_reviews,
+    )
 
     settings = get_settings()
     logger.info(
@@ -64,6 +67,9 @@ async def run_worker() -> None:
     )
     await assert_database_current()
     await recover_stale_tasks()
+    recovered_automatic = await recover_automatic_workflows()
+    if recovered_automatic:
+        logger.info("Reconciled %s automatic director workflow tasks", recovered_automatic)
     recovered_reviews = await recover_orphaned_agent_script_reviews()
     if recovered_reviews:
         logger.info("Recovered %s orphaned Agent script review workflows", recovered_reviews)

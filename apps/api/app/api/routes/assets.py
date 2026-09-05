@@ -46,6 +46,10 @@ from app.services.asset_tasks import (
     queue_asset_prompt_generation_task,
 )
 from app.services.billing import resolve_task_pricing
+from app.services.director_orchestration import (
+    ensure_asset_not_automating,
+    ensure_chapter_not_automating,
+)
 from app.services.media import (
     ALLOWED_COVER_TYPES,
     MAX_COVER_BYTES,
@@ -59,6 +63,25 @@ from app.services.task_submission import active_tasks, create_queued_task
 
 router = APIRouter(tags=["assets"])
 DERIVABLE_ASSET_TYPES = {AssetType.CHARACTER, AssetType.SCENE, AssetType.PROP}
+
+
+async def require_chapter_writable(session: AsyncSession, chapter: Chapter, user: User) -> None:
+    try:
+        await ensure_chapter_not_automating(session, chapter_id=chapter.id, user_id=user.id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+
+
+async def require_assets_writable(
+    session: AsyncSession,
+    assets: list[Asset],
+    user: User,
+) -> None:
+    for asset in assets:
+        try:
+            await ensure_asset_not_automating(session, asset_id=asset.id, user_id=user.id)
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 async def asset_for_user(session: AsyncSession, asset_id: str, user: User) -> Asset:
@@ -229,6 +252,7 @@ async def generate_asset_extraction(
         or chapter.user_id != user.id
     ):
         raise HTTPException(status_code=404, detail="章节不存在")
+    await require_chapter_writable(session, chapter, user)
     if not chapter.active_script_version_id:
         raise HTTPException(status_code=409, detail="提取资产前必须先选择生效剧本")
     script = await session.get(ScriptVersion, chapter.active_script_version_id)
@@ -291,6 +315,7 @@ async def generate_asset_prompts(
         project_id=project_id,
         asset_ids=payload.asset_ids,
     )
+    await require_assets_writable(session, assets, user)
     task, event, _assets = await queue_asset_prompt_generation_task(
         session,
         user=user,
@@ -322,6 +347,7 @@ async def generate_asset_images(
         project_id=project_id,
         asset_ids=payload.asset_ids,
     )
+    await require_assets_writable(session, assets, user)
     queued = await queue_asset_image_generation_tasks(
         session,
         user=user,
@@ -441,6 +467,7 @@ async def update_asset(
     session: AsyncSession = Depends(get_session),
 ) -> Asset:
     asset = await asset_for_user(session, asset_id, user)
+    await require_assets_writable(session, [asset], user)
     if asset.scope == AssetScope.PROJECT and asset.project_id:
         await project_for_user(session, asset.project_id, user)
     values = payload.model_dump(exclude_unset=True)
@@ -488,6 +515,7 @@ async def upload_asset_image(
     session: AsyncSession = Depends(get_session),
 ) -> Asset:
     asset = await asset_for_user(session, asset_id, user)
+    await require_assets_writable(session, [asset], user)
     if asset.asset_type == AssetType.AUDIO:
         raise HTTPException(status_code=409, detail="音频资产不能上传图片")
     if asset.scope == AssetScope.PROJECT and asset.project_id:
@@ -573,6 +601,7 @@ async def restore_asset_revision(
     session: AsyncSession = Depends(get_session),
 ) -> Asset:
     asset = await asset_for_user(session, asset_id, user)
+    await require_assets_writable(session, [asset], user)
     if asset.scope == AssetScope.PROJECT and asset.project_id:
         await project_for_user(session, asset.project_id, user)
     revision = await session.get(AssetRevision, revision_id)
@@ -618,6 +647,7 @@ async def delete_asset(
     session: AsyncSession = Depends(get_session),
 ) -> None:
     asset = await asset_for_user(session, asset_id, user)
+    await require_assets_writable(session, [asset], user)
     if asset.scope == AssetScope.PROJECT and asset.project_id:
         await project_for_user(session, asset.project_id, user)
     if await session.scalar(select(Asset.id).where(Asset.parent_asset_id == asset.id).limit(1)):
@@ -703,6 +733,7 @@ async def save_asset_extraction(
         or chapter.user_id != user.id
     ):
         raise HTTPException(status_code=404, detail="章节不存在")
+    await require_chapter_writable(session, chapter, user)
     if not chapter.active_script_version_id:
         raise HTTPException(status_code=409, detail="提取资产前必须先选择生效剧本")
     script = await session.get(ScriptVersion, chapter.active_script_version_id)

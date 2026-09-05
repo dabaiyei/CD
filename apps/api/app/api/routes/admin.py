@@ -740,6 +740,7 @@ def provider_gateway(provider: Provider) -> OpenAICompatibleMediaGateway:
         base_url=provider.base_url,
         api_key=SecretBox().decrypt(provider.encrypted_api_key),
         extra_headers=provider.extra_headers,
+        provider_code=provider.code,
         adapter_config=provider.adapter_config,
         credentials=provider_credentials(provider),
     )

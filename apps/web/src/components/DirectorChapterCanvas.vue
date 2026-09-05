@@ -12,13 +12,18 @@ import {
   History,
   Image,
   Layers3,
+  LockKeyhole,
   LoaderCircle,
   Play,
   Sparkles,
+  Square,
   WandSparkles,
 } from 'lucide-vue-next'
 
-import type { AssetItem, Chapter, ScriptVersion, StoryboardShot, StoryboardVersionDetail, VideoClip } from '@/types'
+import BaseDialog from '@/components/BaseDialog.vue'
+import { apiBlob } from '@/lib/api'
+import { useToastStore } from '@/stores/toast'
+import type { AssetItem, Chapter, DirectorWorkflowDetail, ScriptVersion, StoryboardShot, StoryboardVersionDetail, VideoClip } from '@/types'
 
 const props = defineProps<{
   chapter: Chapter
@@ -31,16 +36,56 @@ const props = defineProps<{
   busyVideoPromptShotIds?: string[]
   videoAction?: 'video' | 'batchVideo' | 'videoPrompt' | ''
   videoPromptTaskActive?: boolean
+  automaticWorkflow?: DirectorWorkflowDetail | null
+  automationAction?: 'start' | 'stop' | ''
+  automationLocked?: boolean
 }>()
 const emit = defineEmits<{
   openAssets: []
   queueVideoPrompts: [shotIds: string[]]
   queueBatchVideos: [shotIds: string[]]
   queueShotVideo: [shot: StoryboardShot]
+  startAutomation: []
+  stopAutomation: []
 }>()
 const tab = ref<'source' | 'script' | 'assets' | 'storyboard' | 'video'>('source')
 const selectedVideoShotId = ref('')
 const selectedVideoShotIds = ref<string[]>([])
+const downloadingVideos = ref(false)
+const automationConfirmOpen = ref(false)
+const toast = useToastStore()
+const automationStageOrder = [
+  'script_adapting',
+  'script_reviewing',
+  'script_repairing',
+  'asset_extracting',
+  'ready_for_asset_images',
+  'asset_preparing',
+  'storyboard_generating',
+  'storyboard_reviewing',
+  'storyboard_repairing',
+  'video_prompt_generating',
+  'video_generating',
+  'ready_for_video',
+] as const
+const automationStageLabels: Record<string, string> = {
+  script_adapting: '正在改编剧本',
+  script_reviewing: '正在审核剧本',
+  awaiting_script_decision: '正在选择剧本修复路线',
+  script_repairing: '正在修复剧本',
+  asset_extracting: '正在提取资产',
+  ready_for_asset_images: '正在准备资产图片',
+  asset_preparing: '正在生成资产提示词与图片',
+  storyboard_generating: '正在制作分镜',
+  storyboard_reviewing: '正在审核分镜',
+  awaiting_storyboard_decision: '正在选择分镜修复路线',
+  storyboard_repairing: '正在修复分镜',
+  video_prompt_generating: '正在生成视频提示词',
+  video_generating: '正在生成镜头视频',
+  ready_for_video: '视频生成完成',
+  failed: '全自动制作失败',
+  cancelled: '全自动制作已停止',
+}
 
 const demoTimestamp = '2026-09-02T10:00:00+08:00'
 const demoScript = computed<ScriptVersion>(() => ({
@@ -197,9 +242,31 @@ const videoEligibleShots = computed(() => selectedVideoShots.value.filter(
     && Boolean(shot.video_prompt.trim())
     && !(activeClips.value.get(shot.id)?.is_active && activeClips.value.get(shot.id)?.status === 'ready'),
 ))
-const downloadableVideoClips = computed(() => selectedVideoShots.value
+const downloadableVideoClips = computed(() => previewStoryboard.value.shots
   .map((shot) => activeClips.value.get(shot.id))
   .filter((clip): clip is VideoClip => Boolean(clip?.is_active && clip.status === 'ready' && clip.media_url)))
+const automaticWorkflowState = computed(() => props.automaticWorkflow?.workflow ?? null)
+const automationVisible = computed(() => Boolean(automaticWorkflowState.value?.automation_mode))
+const automationRunning = computed(() => Boolean(
+  automationVisible.value
+  && ['running', 'waiting_user'].includes(automaticWorkflowState.value?.status ?? ''),
+))
+const automationStageLabel = computed(() => {
+  const workflow = automaticWorkflowState.value
+  if (!workflow) return 'AI 全自动制作'
+  if (workflow.status === 'completed') return '本章全自动制作完成'
+  return automationStageLabels[workflow.stage] ?? workflow.last_message ?? '正在推进本章制作'
+})
+const automationProgress = computed(() => {
+  const workflow = automaticWorkflowState.value
+  if (!workflow) return 0
+  if (workflow.status === 'completed') return 100
+  const stageIndex = automationStageOrder.indexOf(workflow.stage as typeof automationStageOrder[number])
+  return stageIndex < 0 ? 4 : Math.max(4, Math.round(((stageIndex + 0.35) / automationStageOrder.length) * 100))
+})
+const automationCompletedChildren = computed(() => (
+  props.automaticWorkflow?.child_runs.filter((child) => child.status === 'succeeded').length ?? 0
+))
 const chapterStatusText = computed(() => ({
   uninitialized: '尚未创作',
   analyzing: '正在分析',
@@ -301,16 +368,44 @@ function queueBatchVideos(): void {
   emit('queueBatchVideos', videoEligibleShots.value.map((shot) => shot.id))
 }
 
-function downloadReadyVideos(): void {
-  downloadableVideoClips.value.forEach((clip) => {
-    if (!clip.media_url) return
+function openAutomationConfirmation(): void {
+  if (automationRunning.value || props.automationAction) return
+  automationConfirmOpen.value = true
+}
+
+function confirmAutomationStart(): void {
+  if (props.automationAction) return
+  automationConfirmOpen.value = false
+  emit('startAutomation')
+}
+
+async function downloadReadyVideos(): Promise<void> {
+  if (!props.storyboard || downloadingVideos.value || !downloadableVideoClips.value.length) return
+  downloadingVideos.value = true
+  try {
+    const result = await apiBlob(
+      `/projects/${props.chapter.project_id}/chapters/${props.chapter.id}/storyboards/${props.storyboard.version.id}/videos/download`,
+    )
+    const url = URL.createObjectURL(result.blob)
     const link = document.createElement('a')
-    link.href = clip.media_url
-    link.download = `shot-${clip.shot_id}-v${clip.version}.mp4`
+    link.href = url
+    link.download = result.filename || `${props.chapter.title}-镜头视频.zip`
     document.body.appendChild(link)
     link.click()
     link.remove()
-  })
+    window.setTimeout(() => URL.revokeObjectURL(url), 0)
+    toast.show('镜头视频压缩包已开始下载', {
+      message: `包含 ${downloadableVideoClips.value.length} 个已完成镜头`,
+      tone: 'success',
+    })
+  } catch (error) {
+    toast.show('视频打包下载失败', {
+      message: error instanceof Error ? error.message : undefined,
+      tone: 'error',
+    })
+  } finally {
+    downloadingVideos.value = false
+  }
 }
 
 watch(
@@ -345,8 +440,44 @@ watch(
         <span v-if="demoStageActive" class="director-preview-badge">演示预览</span>
         <span class="chapter-status" :data-status="chapter.status"><i></i>{{ chapterStatusText }}</span>
         <small><Check :size="13" />AI 自动编排</small>
+        <button
+          v-if="!automationRunning"
+          class="director-automation-trigger"
+          type="button"
+          :disabled="Boolean(automationAction)"
+          @click="openAutomationConfirmation"
+        >
+          <LoaderCircle v-if="automationAction === 'start'" class="spin" :size="15" />
+          <Sparkles v-else :size="15" />
+          {{ automationAction === 'start' ? '正在启动' : 'AI 全自动' }}
+        </button>
       </div>
     </header>
+
+    <section
+      v-if="automationVisible"
+      class="director-automation-bar"
+      :data-status="automaticWorkflowState?.status"
+      role="status"
+      aria-live="polite"
+    >
+      <span class="director-automation-bar__icon">
+        <LoaderCircle v-if="automationRunning" class="spin" :size="17" />
+        <Check v-else-if="automaticWorkflowState?.status === 'completed'" :size="17" />
+        <Square v-else :size="16" />
+      </span>
+      <div class="director-automation-bar__copy">
+        <span><strong>{{ automationStageLabel }}</strong><small class="tabular-nums">{{ automationCompletedChildren }} / {{ automaticWorkflow?.child_runs.length || 0 }} 子任务</small></span>
+        <p>{{ automaticWorkflowState?.last_error || automaticWorkflowState?.last_message || '系统会自动完成剧本、资产、分镜和镜头视频。' }}</p>
+        <i aria-hidden="true"><span :style="{ width: `${automationProgress}%` }"></span></i>
+      </div>
+      <span v-if="automationRunning" class="director-automation-bar__lock"><LockKeyhole :size="13" />章节已锁定</span>
+      <button v-if="automationRunning" type="button" :disabled="automationAction === 'stop'" @click="emit('stopAutomation')">
+        <LoaderCircle v-if="automationAction === 'stop'" class="spin" :size="14" />
+        <Square v-else :size="13" fill="currentColor" />
+        {{ automationAction === 'stop' ? '停止中' : '停止' }}
+      </button>
+    </section>
 
     <nav class="director-canvas__tabs" aria-label="章节产物">
       <button type="button" :aria-pressed="tab === 'source'" @click="tab = 'source'"><BookOpenText :size="15" />原文</button>
@@ -371,7 +502,7 @@ watch(
     </section>
 
     <section v-else-if="tab === 'assets'" class="director-asset-board">
-      <header><div><strong>本章塑造资产</strong><span>{{ readyAssets.length }} / {{ previewAssets.length }} 已定稿</span></div><button type="button" @click="emit('openAssets')"><Boxes :size="15" />管理资产</button></header>
+      <header><div><strong>本章塑造资产</strong><span>{{ readyAssets.length }} / {{ previewAssets.length }} 已定稿</span></div><button type="button" :disabled="automationLocked" @click="emit('openAssets')"><LockKeyhole v-if="automationLocked" :size="15" /><Boxes v-else :size="15" />{{ automationLocked ? '全自动运行中' : '管理资产' }}</button></header>
       <div>
         <article v-for="asset in previewAssets" :key="asset.id">
           <div><img v-if="asset.media_url" :src="asset.media_url" :alt="asset.name" /><span v-else><Image :size="22" /></span><i :data-ready="Boolean(asset.media_url)">{{ asset.media_url ? '已定稿' : asset.generation_prompt ? '待生图' : '待提示词' }}</i></div>
@@ -398,13 +529,13 @@ watch(
           <span><b class="tabular-nums">{{ readyVideoCount }}</b> / {{ previewStoryboard.shots.length }} 已完成 · <b class="tabular-nums">{{ shotsWithPromptCount }}</b> 个镜头已有提示词</span>
         </div>
         <div class="director-video-board__actions">
-          <button type="button" class="button button--secondary" :disabled="!downloadableVideoClips.length" @click="downloadReadyVideos"><Download :size="15" />下载已完成</button>
-          <button type="button" class="button button--secondary" :disabled="demoStageActive || !videoPromptEligibleShots.length || videoAction === 'videoPrompt' || videoPromptTaskActive" @click="queueVideoPrompts">
+          <button type="button" class="button button--secondary" :disabled="!downloadableVideoClips.length || downloadingVideos" @click="downloadReadyVideos"><LoaderCircle v-if="downloadingVideos" class="spin" :size="15" /><Download v-else :size="15" />{{ downloadingVideos ? '正在打包' : '下载已完成' }}</button>
+          <button type="button" class="button button--secondary" :disabled="automationLocked || demoStageActive || !videoPromptEligibleShots.length || videoAction === 'videoPrompt' || videoPromptTaskActive" @click="queueVideoPrompts">
             <LoaderCircle v-if="videoAction === 'videoPrompt' || videoPromptTaskActive" class="spin" :size="15" />
             <WandSparkles v-else :size="15" />
             批量提示词
           </button>
-          <button type="button" class="button button--primary" :disabled="demoStageActive || !videoEligibleShots.length || Boolean(videoAction)" @click="queueBatchVideos">
+          <button type="button" class="button button--primary" :disabled="automationLocked || demoStageActive || !videoEligibleShots.length || Boolean(videoAction)" @click="queueBatchVideos">
             <LoaderCircle v-if="videoAction === 'batchVideo'" class="spin" :size="15" />
             <Play v-else :size="15" />
             批量生成视频
@@ -414,24 +545,24 @@ watch(
 
       <section v-if="selectedVideoShot" class="director-video-focus">
         <div class="director-video-focus__preview">
-          <video v-if="activeClips.get(selectedVideoShot.id)?.media_url" :src="activeClips.get(selectedVideoShot.id)?.media_url || undefined" controls preload="metadata"></video>
+          <video v-if="activeClips.get(selectedVideoShot.id)?.media_url" :src="activeClips.get(selectedVideoShot.id)?.media_url || undefined" controls playsinline preload="metadata"></video>
           <img v-else-if="shotFallbackImage(selectedVideoShot)" :src="shotFallbackImage(selectedVideoShot)" :alt="selectedVideoShot.title" />
           <span v-else><Camera :size="28" />等待参考图</span>
           <i :data-status="activeClips.get(selectedVideoShot.id)?.status || 'idle'">{{ shotVideoStatus(selectedVideoShot) }}</i>
         </div>
-        <article>
+        <div class="director-video-focus__detail">
           <header>
             <div>
               <small class="tabular-nums">SHOT {{ String(selectedVideoShot.order_index).padStart(2, '0') }} · {{ selectedVideoShot.duration_seconds }}s</small>
               <strong>{{ selectedVideoShot.title }}</strong>
             </div>
             <div class="director-video-focus__buttons">
-              <button type="button" class="button button--secondary" :disabled="demoStageActive || busyVideoPromptShotIdSet.has(selectedVideoShot.id) || busyShotIdSet.has(selectedVideoShot.id) || videoAction === 'videoPrompt' || videoPromptTaskActive" @click="queueSelectedVideoPrompt">
+              <button type="button" class="button button--secondary" :disabled="automationLocked || demoStageActive || busyVideoPromptShotIdSet.has(selectedVideoShot.id) || busyShotIdSet.has(selectedVideoShot.id) || videoAction === 'videoPrompt' || videoPromptTaskActive" @click="queueSelectedVideoPrompt">
                 <LoaderCircle v-if="busyVideoPromptShotIdSet.has(selectedVideoShot.id) || videoAction === 'videoPrompt'" class="spin" :size="15" />
                 <WandSparkles v-else :size="15" />
                 {{ selectedVideoShot.video_prompt ? '重写提示词' : '生成提示词' }}
               </button>
-              <button type="button" class="button button--primary" :disabled="demoStageActive || !selectedVideoShot.video_prompt || busyShotIdSet.has(selectedVideoShot.id) || busyVideoPromptShotIdSet.has(selectedVideoShot.id) || videoAction === 'video'" @click="emit('queueShotVideo', selectedVideoShot)">
+              <button type="button" class="button button--primary" :disabled="automationLocked || demoStageActive || !selectedVideoShot.video_prompt || busyShotIdSet.has(selectedVideoShot.id) || busyVideoPromptShotIdSet.has(selectedVideoShot.id) || videoAction === 'video'" @click="emit('queueShotVideo', selectedVideoShot)">
                 <LoaderCircle v-if="busyShotIdSet.has(selectedVideoShot.id)" class="spin" :size="15" />
                 <Play v-else :size="15" />
                 {{ activeClips.get(selectedVideoShot.id)?.is_active ? '重新生成' : '生成本镜头' }}
@@ -475,7 +606,7 @@ watch(
             <span><Camera :size="14" />{{ aspectRatio || '默认比例' }}</span>
             <span><History :size="14" />{{ clipsByShot.get(selectedVideoShot.id)?.length || 0 }} 个历史版本</span>
           </footer>
-        </article>
+        </div>
       </section>
 
       <div class="director-video-shot-grid">
@@ -487,7 +618,7 @@ watch(
         >
           <button type="button" :aria-pressed="selectedVideoShotIds.includes(shot.id)" :title="selectedVideoShotIds.includes(shot.id) ? '取消选择' : '选择镜头'" @click.stop="toggleVideoShotSelection(shot.id)"><Check :size="13" /></button>
           <div>
-            <video v-if="activeClips.get(shot.id)?.media_url" :src="activeClips.get(shot.id)?.media_url || undefined" preload="metadata"></video>
+            <video v-if="activeClips.get(shot.id)?.media_url" :src="activeClips.get(shot.id)?.media_url || undefined" muted playsinline preload="metadata"></video>
             <img v-else-if="shotFallbackImage(shot)" :src="shotFallbackImage(shot)" :alt="shot.title" />
             <span v-else><Camera :size="20" /></span>
             <i :data-status="activeClips.get(shot.id)?.status || 'idle'">{{ shotVideoStatus(shot) }}</i>
@@ -507,4 +638,41 @@ watch(
       <span><Sparkles :size="22" /></span><strong>{{ emptyStageContent.title }}</strong><p>{{ emptyStageContent.description }}</p>
     </section>
   </main>
+
+  <BaseDialog
+    v-model:open="automationConfirmOpen"
+    title="启动 AI 全自动制作"
+    description="确认后系统将接管当前章节的完整生产流程"
+  >
+    <div class="automation-confirm">
+      <div class="automation-confirm__intro">
+        <span><Sparkles :size="22" /></span>
+        <div>
+          <strong>确认制作“{{ chapter.title }}”吗？</strong>
+          <p>AI 将根据项目手册和当前章节内容，自动编排并执行以下阶段。</p>
+        </div>
+      </div>
+
+      <ol class="automation-confirm__stages" aria-label="全自动制作阶段">
+        <li><span><Clapperboard :size="17" /></span><div><strong>剧本</strong><small>改编、审核与必要修复</small></div></li>
+        <li><span><Boxes :size="17" /></span><div><strong>资产</strong><small>提取、提示词与图片生成</small></div></li>
+        <li><span><Layers3 :size="17" /></span><div><strong>分镜</strong><small>制作、审核与必要修复</small></div></li>
+        <li><span><Film :size="17" /></span><div><strong>视频</strong><small>提示词与镜头视频生成</small></div></li>
+      </ol>
+
+      <div class="automation-confirm__notice">
+        <LockKeyhole :size="17" />
+        <p>运行期间当前章节会被锁定，相关模型任务将按实际调用消耗积分；失败任务按系统规则退回积分。</p>
+      </div>
+    </div>
+
+    <template #footer>
+      <button class="button button--ghost" type="button" :disabled="Boolean(automationAction)" @click="automationConfirmOpen = false">取消</button>
+      <button class="button button--primary" type="button" :disabled="Boolean(automationAction)" @click="confirmAutomationStart">
+        <LoaderCircle v-if="automationAction === 'start'" class="spin" :size="17" />
+        <Sparkles v-else :size="17" />
+        {{ automationAction === 'start' ? '正在启动' : '确认启动' }}
+      </button>
+    </template>
+  </BaseDialog>
 </template>

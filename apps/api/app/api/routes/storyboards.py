@@ -1,10 +1,18 @@
 from __future__ import annotations
 
+import re
+import shutil
+import tempfile
+import zipfile
 from decimal import Decimal
+from pathlib import Path
 
 from fastapi import APIRouter, Depends, HTTPException, status
+from fastapi.responses import FileResponse
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
+from starlette.background import BackgroundTask
+from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import get_current_user
 from app.api.routes.director import chapter_for_user
@@ -46,7 +54,10 @@ from app.domain.schemas import (
 )
 from app.services.billing import resolve_task_pricing
 from app.services.composition import invalidate_compositions
-from app.services.director_orchestration import start_storyboard_workflow_for_chapter
+from app.services.director_orchestration import (
+    ensure_chapter_not_automating,
+    start_storyboard_workflow_for_chapter,
+)
 from app.services.object_storage import materialize_media_file, object_key_from_media_url
 from app.services.provider_adapters import closest_supported_video_duration, compatible_video_resolution
 from app.services.task_events import publish_task_event
@@ -54,6 +65,25 @@ from app.services.task_queue import enqueue_task
 from app.services.task_submission import active_tasks, create_queued_task
 
 router = APIRouter(prefix="/projects", tags=["storyboard-production"])
+
+
+def safe_archive_name(value: str, *, fallback: str) -> str:
+    normalized = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "-", value).strip(" .-")
+    normalized = re.sub(r"\s+", " ", normalized)
+    return (normalized or fallback)[:80]
+
+
+def write_video_archive(target: Path, entries: list[tuple[Path, str]]) -> None:
+    with zipfile.ZipFile(target, mode="w", compression=zipfile.ZIP_STORED) as archive:
+        for source, archive_name in entries:
+            archive.write(source, arcname=archive_name)
+
+
+async def require_chapter_writable(session: AsyncSession, chapter: Chapter, user: User) -> None:
+    try:
+        await ensure_chapter_not_automating(session, chapter_id=chapter.id, user_id=user.id)
+    except ValueError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
 
 
 async def active_script_and_extraction(
@@ -508,6 +538,81 @@ async def get_storyboard(
     )
 
 
+@router.get(
+    "/{project_id}/chapters/{chapter_id}/storyboards/{storyboard_id}/videos/download",
+    response_class=FileResponse,
+)
+async def download_storyboard_videos(
+    project_id: str,
+    chapter_id: str,
+    storyboard_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> FileResponse:
+    chapter, storyboard = await storyboard_for_user(
+        session,
+        project_id=project_id,
+        chapter_id=chapter_id,
+        storyboard_id=storyboard_id,
+        user=user,
+    )
+    if not storyboard.is_active:
+        raise HTTPException(status_code=409, detail="只能下载当前生效分镜的视频")
+    rows = list(
+        (
+            await session.execute(
+                select(StoryboardShot, VideoClip)
+                .join(VideoClip, VideoClip.shot_id == StoryboardShot.id)
+                .where(
+                    StoryboardShot.storyboard_version_id == storyboard.id,
+                    StoryboardShot.user_id == user.id,
+                    VideoClip.storyboard_version_id == storyboard.id,
+                    VideoClip.user_id == user.id,
+                    VideoClip.status == VideoClipStatus.READY,
+                    VideoClip.is_active.is_(True),
+                    VideoClip.media_url.is_not(None),
+                )
+                .order_by(StoryboardShot.order_index)
+            )
+        ).all()
+    )
+    if not rows:
+        raise HTTPException(status_code=409, detail="当前分镜还没有可下载的已完成视频")
+
+    entries: list[tuple[Path, str]] = []
+    for shot, clip in rows:
+        storage_key = object_key_from_media_url(clip.media_url)
+        if not storage_key:
+            raise HTTPException(
+                status_code=409,
+                detail=f"镜头 {shot.order_index:02d} 的视频文件地址无效，请重新生成",
+            )
+        try:
+            source = await materialize_media_file(storage_key)
+        except (FileNotFoundError, ValueError) as error:
+            raise HTTPException(
+                status_code=409,
+                detail=f"镜头 {shot.order_index:02d} 的视频文件不存在，请重新生成",
+            ) from error
+        title = safe_archive_name(shot.title, fallback=f"镜头-{shot.order_index:03d}")
+        entries.append((source, f"{shot.order_index:03d}-{title}-v{clip.version}.mp4"))
+
+    temporary_dir = Path(tempfile.mkdtemp(prefix="cineforge-shot-videos-"))
+    archive_path = temporary_dir / "videos.zip"
+    try:
+        await run_in_threadpool(write_video_archive, archive_path, entries)
+    except Exception:
+        await run_in_threadpool(shutil.rmtree, temporary_dir, True)
+        raise
+    filename = f"{safe_archive_name(chapter.title, fallback='chapter')}-镜头视频.zip"
+    return FileResponse(
+        archive_path,
+        media_type="application/zip",
+        filename=filename,
+        background=BackgroundTask(shutil.rmtree, temporary_dir, True),
+    )
+
+
 @router.post(
     "/{project_id}/chapters/{chapter_id}/storyboards",
     response_model=StoryboardVersionDetail,
@@ -521,6 +626,7 @@ async def save_storyboard(
     session: AsyncSession = Depends(get_session),
 ) -> StoryboardVersionDetail:
     chapter = await chapter_for_user(session, project_id, chapter_id, user)
+    await require_chapter_writable(session, chapter, user)
     script, _extraction = await active_script_and_extraction(session, chapter)
     version, shots = await create_storyboard(
         session,
@@ -552,6 +658,7 @@ async def generate_storyboard(
     session: AsyncSession = Depends(get_session),
 ) -> AITask:
     chapter = await chapter_for_user(session, project_id, chapter_id, user)
+    await require_chapter_writable(session, chapter, user)
     try:
         workflow = await start_storyboard_workflow_for_chapter(
             session,
@@ -589,6 +696,7 @@ async def activate_storyboard(
         storyboard_id=storyboard_id,
         user=user,
     )
+    await require_chapter_writable(session, chapter, user)
     if storyboard.script_version_id != chapter.active_script_version_id:
         raise HTTPException(status_code=409, detail="只能启用当前生效剧本生成的分镜版本")
     reason = f"已切换为分镜 v{storyboard.version}"
@@ -654,6 +762,7 @@ async def update_storyboard_shot(
         storyboard_id=storyboard_id,
         user=user,
     )
+    await require_chapter_writable(session, chapter, user)
     if not storyboard.is_active:
         raise HTTPException(status_code=409, detail="只能编辑当前生效分镜")
     shot = await session.get(StoryboardShot, shot_id)
@@ -754,6 +863,7 @@ async def generate_storyboard_video_prompts(
         storyboard_id=storyboard_id,
         user=user,
     )
+    await require_chapter_writable(session, chapter, user)
     if not storyboard.is_active or storyboard.script_version_id != chapter.active_script_version_id:
         raise HTTPException(status_code=409, detail="只能为当前生效分镜生成视频提示词")
     shots = await storyboard_shots_for_selection(session, storyboard=storyboard, selection=payload)
@@ -858,6 +968,7 @@ async def generate_storyboard_videos(
         storyboard_id=storyboard_id,
         user=user,
     )
+    await require_chapter_writable(session, chapter, user)
     if not storyboard.is_active or storyboard.script_version_id != chapter.active_script_version_id:
         raise HTTPException(status_code=409, detail="只能为当前生效分镜生成视频")
     shots = await storyboard_shots_for_selection(session, storyboard=storyboard, selection=payload)
@@ -920,6 +1031,7 @@ async def generate_shot_video(
         storyboard_id=storyboard_id,
         user=user,
     )
+    await require_chapter_writable(session, chapter, user)
     if not storyboard.is_active or storyboard.script_version_id != chapter.active_script_version_id:
         raise HTTPException(status_code=409, detail="只能为当前生效分镜生成视频")
     shot = await session.get(StoryboardShot, shot_id)

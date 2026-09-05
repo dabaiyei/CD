@@ -459,6 +459,15 @@
   background: #e8ecee;
 }
 
+:root[data-theme='light'] .director-video-focus__preview video,
+:root[data-theme='light'] .director-video-focus__preview img,
+:root[data-theme='light'] .director-video-shot-grid article video,
+:root[data-theme='light'] .director-video-shot-grid article img,
+:root[data-theme='light'] .director-video-references article img {
+  outline: 1px solid rgba(0, 0, 0, .1);
+  outline-offset: -1px;
+}
+
 /* Admin */
 :root[data-theme='light'] .global-defaults {
   border: 1px solid var(--line);

@@ -15,6 +15,7 @@ import {
   History,
   Image as ImageIcon,
   ImagePlus,
+  LockKeyhole,
   LoaderCircle,
   Maximize2,
   Menu,
@@ -77,6 +78,8 @@ const props = withDefaults(
     chapterId?: string
     chapterTitle?: string
     defaultCollapsed?: boolean
+    disabled?: boolean
+    lockedReason?: string
   }>(),
   { projects: () => [], personal: false, scene: 'workspace', defaultCollapsed: false },
 )
@@ -99,6 +102,8 @@ const runTaskId = ref('')
 const textarea = ref<HTMLTextAreaElement | null>(null)
 const fileInput = ref<HTMLInputElement | null>(null)
 const agentRoot = ref<HTMLElement | null>(null)
+const composer = ref<HTMLDivElement | null>(null)
+const composerHeight = ref(112)
 const contextMenu = ref<HTMLDetailsElement | null>(null)
 const modeMenu = ref<HTMLDetailsElement | null>(null)
 const thread = ref<HTMLDivElement | null>(null)
@@ -143,6 +148,7 @@ let directorWorkflowSignature = ''
 let directorWorkflowDiscoveryUntil = 0
 let streamScrollFrame: number | undefined
 let textareaResizeFrame: number | undefined
+let composerResizeObserver: ResizeObserver | undefined
 let copiedResetTimer: ReturnType<typeof setTimeout> | undefined
 const settlingTaskIds = new Set<string>()
 const dropdownSelector = '.agent-mode-dropdown, .agent-context-switcher, .agent-inline-select'
@@ -210,7 +216,7 @@ const canSend = computed(
     && (personalMode.value || selectedProjectId.value)
     && options.value.agents.length
     && (props.scene !== 'director' || Boolean(props.chapterId)),
-  ) && !sending.value && !uploadingAttachments.value,
+  ) && !props.disabled && !sending.value && !uploadingAttachments.value,
 )
 const messageVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>(computed(() => ({
   count: messages.value.length,
@@ -432,6 +438,13 @@ watch(
   },
 )
 
+watch(
+  () => props.disabled,
+  () => {
+    if (props.scene === 'director') void loadDirectorWorkflow()
+  },
+)
+
 onMounted(() => {
   window.addEventListener('keydown', handleWindowKeydown)
   document.addEventListener('pointerdown', handleDocumentPointerDown)
@@ -455,9 +468,32 @@ onUnmounted(() => {
   if (directorWorkflowPollTimer) clearTimeout(directorWorkflowPollTimer)
   if (streamScrollFrame !== undefined) cancelAnimationFrame(streamScrollFrame)
   if (textareaResizeFrame !== undefined) cancelAnimationFrame(textareaResizeFrame)
+  composerResizeObserver?.disconnect()
   if (copiedResetTimer) clearTimeout(copiedResetTimer)
   document.body.classList.remove('agent-focus-open')
 })
+
+watch(
+  composer,
+  (element) => {
+    composerResizeObserver?.disconnect()
+    composerResizeObserver = undefined
+    if (!element) return
+
+    const updateComposerHeight = () => {
+      const nextHeight = Math.ceil(element.getBoundingClientRect().height)
+      if (nextHeight > 0 && nextHeight !== composerHeight.value) {
+        composerHeight.value = nextHeight
+        void scrollToLatest(false)
+      }
+    }
+
+    updateComposerHeight()
+    composerResizeObserver = new ResizeObserver(updateComposerHeight)
+    composerResizeObserver.observe(element)
+  },
+  { flush: 'post' },
+)
 
 watch(focusMode, (active) => {
   document.body.classList.toggle('agent-focus-open', active)
@@ -973,7 +1009,7 @@ async function copyMediaPrompt(media: AgentGeneratedMedia): Promise<void> {
 }
 
 function openAttachmentPicker(): void {
-  if (!sending.value && !uploadingAttachments.value && pendingAttachments.value.length < maxAttachmentCount) {
+  if (!props.disabled && !sending.value && !uploadingAttachments.value && pendingAttachments.value.length < maxAttachmentCount) {
     fileInput.value?.click()
   }
 }
@@ -998,6 +1034,10 @@ async function pasteAttachments(event: ClipboardEvent): Promise<void> {
   if (!files.length) return
 
   event.preventDefault()
+  if (props.disabled) {
+    toast.show('当前章节已锁定', { message: props.lockedReason, tone: 'info' })
+    return
+  }
   if (sending.value) {
     toast.show('生成期间无法添加图片', { message: '停止或等待本轮创作完成后再粘贴', tone: 'info' })
     return
@@ -1010,7 +1050,7 @@ async function pasteAttachments(event: ClipboardEvent): Promise<void> {
 }
 
 async function uploadAttachmentFiles(files: File[], fromClipboard = false): Promise<void> {
-  if (!files.length || (!personalMode.value && !selectedProjectId.value)) return
+  if (props.disabled || !files.length || (!personalMode.value && !selectedProjectId.value)) return
   const available = maxAttachmentCount - pendingAttachments.value.length
   if (available <= 0) {
     toast.show(`最多添加 ${maxAttachmentCount} 张图片`, { tone: 'info' })
@@ -1076,6 +1116,10 @@ async function discardPendingAttachments(): Promise<void> {
 }
 
 function useStarter(content: string): void {
+  if (props.disabled) {
+    toast.show('当前章节已锁定', { message: props.lockedReason, tone: 'info' })
+    return
+  }
   draft.value = props.scene === 'director' && props.initialPrompt
     ? `${props.initialPrompt}\n\n${content}`
     : content
@@ -1364,6 +1408,10 @@ async function sendMessage(): Promise<void> {
           duration_seconds: videoDuration.value,
         }
       : {}
+  if (props.disabled) {
+    toast.show('当前章节已锁定', { message: props.lockedReason, tone: 'info' })
+    return
+  }
   if (!canSend.value || (!content && !attachments.length)) return
   const submittedAt = Date.now()
   const pendingMessageId = `pending-${submittedAt}`
@@ -1638,7 +1686,11 @@ async function sendMessage(): Promise<void> {
         </aside>
       </Transition>
 
-          <div v-if="!collapsed" class="agent-workspace-body">
+          <div
+            v-if="!collapsed"
+            class="agent-workspace-body"
+            :style="{ '--agent-composer-height': `${composerHeight}px` }"
+          >
         <div v-if="messages.length" class="agent-conversation">
           <div ref="thread" class="agent-thread" :class="{ 'is-streaming': sending }" aria-live="off" @scroll.passive="updateScrollIntent">
             <div class="agent-thread__virtual" :style="{ height: `${virtualMessageHeight}px` }">
@@ -1846,16 +1898,16 @@ async function sendMessage(): Promise<void> {
             <p>{{ emptyGuideDescription }}</p>
           </div>
           <div v-if="scene === 'director'" class="agent-starters" aria-label="导演创作建议">
-            <button type="button" @click="useStarter('先分析本章，并给出适合 AI 视频短剧的改编策略。')">
+            <button type="button" :disabled="disabled" @click="useStarter('先分析本章，并给出适合 AI 视频短剧的改编策略。')">
               <MessageSquareText :size="15" />分析与改编
             </button>
-            <button type="button" @click="useStarter('基于本章原文创作首版剧本，完成后自动审核并告诉我需要决定的问题。')">
+            <button type="button" :disabled="disabled" @click="useStarter('基于本章原文创作首版剧本，完成后自动审核并告诉我需要决定的问题。')">
               <Clapperboard :size="15" />创作首版剧本
             </button>
-            <button type="button" @click="useStarter('检查当前生效剧本；若审核通过，请继续完成资产提取。')">
+            <button type="button" :disabled="disabled" @click="useStarter('检查当前生效剧本；若审核通过，请继续完成资产提取。')">
               <Check :size="15" />审核并提取资产
             </button>
-            <button type="button" @click="useStarter('检查本章资产是否齐备，满足条件后继续制作并审核分镜。')">
+            <button type="button" :disabled="disabled" @click="useStarter('检查本章资产是否齐备，满足条件后继续制作并审核分镜。')">
               <Sparkles :size="15" />继续制作分镜
             </button>
           </div>
@@ -1871,7 +1923,11 @@ async function sendMessage(): Promise<void> {
           </div>
         </div>
 
-        <div class="agent-composer">
+        <div ref="composer" class="agent-composer">
+          <div v-if="disabled" class="agent-composer__locked" role="status">
+            <LockKeyhole :size="15" />
+            <span>{{ lockedReason || '当前内容暂时不可编辑' }}</span>
+          </div>
           <Transition name="agent-command">
             <section v-if="skillCommandOpen" class="agent-skill-command" aria-label="可用 Skills">
               <header>
@@ -1915,7 +1971,7 @@ async function sendMessage(): Promise<void> {
             v-model="draft"
             rows="1"
             maxlength="200000"
-            :disabled="(!personalMode && !selectedProject) || !options.agents.length"
+            :disabled="disabled || (!personalMode && !selectedProject) || !options.agents.length"
             :placeholder="personalMode ? personalPlaceholder : selectedProject ? `描述想法、粘贴原文，或分析《${selectedProject.name}》` : '等待项目上下文加载'"
             aria-label="发送给创作 Agent"
             @input="resizeTextarea"
@@ -1924,11 +1980,11 @@ async function sendMessage(): Promise<void> {
           ></textarea>
 
           <div class="agent-composer__actions">
-            <input ref="fileInput" class="sr-only" type="file" accept="image/jpeg,image/png,image/webp" multiple @change="uploadAttachments" />
+            <input ref="fileInput" class="sr-only" type="file" accept="image/jpeg,image/png,image/webp" multiple :disabled="disabled" @change="uploadAttachments" />
             <button
               class="agent-attach-button"
               type="button"
-              :disabled="sending || uploadingAttachments || pendingAttachments.length >= maxAttachmentCount"
+              :disabled="disabled || sending || uploadingAttachments || pendingAttachments.length >= maxAttachmentCount"
               :title="pendingAttachments.length >= maxAttachmentCount ? `最多添加 ${maxAttachmentCount} 张图片` : '上传图片'"
               @click="openAttachmentPicker"
             >

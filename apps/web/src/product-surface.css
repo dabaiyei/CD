@@ -2023,6 +2023,185 @@
     min-height: 116px;
   }
 
+  .dialog-content.dialog-content--project,
+  .dialog-content.dialog-content--asset-library {
+    inset: 0;
+    width: 100%;
+    max-width: none;
+    height: 100vh;
+    height: 100dvh;
+    max-height: 100dvh;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    margin: 0;
+    overflow: hidden;
+    transform: none;
+    border-radius: 0;
+    box-shadow: none;
+    overscroll-behavior: contain;
+  }
+
+  .dialog-content--asset-library .dialog-header {
+    min-width: 0;
+    min-height: 68px;
+    padding: calc(12px + env(safe-area-inset-top)) 16px 12px;
+  }
+
+  .dialog-content--asset-library .dialog-header > div {
+    min-width: 0;
+  }
+
+  .dialog-content--asset-library .dialog-title,
+  .dialog-content--asset-library .dialog-description {
+    overflow-wrap: anywhere;
+    text-wrap: pretty;
+  }
+
+  .dialog-content--asset-library .dialog-body,
+  .dialog-content--asset-library.dialog-content--workbench .dialog-body {
+    width: 100%;
+    min-width: 0;
+    min-height: 0;
+    overflow: hidden;
+    padding: 0;
+    overscroll-behavior: contain;
+  }
+
+  .dialog-content--project .dialog-header {
+    min-width: 0;
+    min-height: 68px;
+    padding: calc(12px + env(safe-area-inset-top)) 16px 12px;
+  }
+
+  .dialog-content--project .dialog-header > div {
+    min-width: 0;
+  }
+
+  .dialog-content--project .dialog-title,
+  .dialog-content--project .dialog-description {
+    overflow-wrap: anywhere;
+    text-wrap: pretty;
+  }
+
+  .dialog-content--project .dialog-body {
+    width: 100%;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 12px 12px 20px;
+    overscroll-behavior: contain;
+    scrollbar-width: none;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .dialog-content--project .dialog-body::-webkit-scrollbar {
+    display: none;
+  }
+
+  .dialog-content--project .project-form {
+    width: 100%;
+    min-width: 0;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 14px;
+  }
+
+  .dialog-content--project .project-form__main {
+    width: 100%;
+    min-width: 0;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+
+  .dialog-content--project .project-form__main > * {
+    min-width: 0;
+    max-width: 100%;
+    grid-column: auto;
+  }
+
+  .dialog-content--project .project-text-control--textarea textarea {
+    min-height: 88px;
+  }
+
+  .dialog-content--project .handbook-choice-grid {
+    display: flex;
+    width: 100%;
+    max-width: 100%;
+    gap: 9px;
+    overflow-x: auto;
+    padding: 2px 2px 8px;
+    contain: inline-size;
+    overscroll-behavior-inline: contain;
+    scroll-padding-inline: 2px;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+  }
+
+  .dialog-content--project .handbook-choice-grid::-webkit-scrollbar {
+    display: none;
+  }
+
+  .dialog-content--project .handbook-choice {
+    width: calc(100% - 28px);
+    min-width: calc(100% - 28px);
+    min-height: 86px;
+    flex: 0 0 calc(100% - 28px);
+    grid-template-columns: 76px minmax(0, 1fr) 28px;
+    scroll-snap-align: start;
+  }
+
+  .dialog-content--project .cover-panel {
+    display: grid;
+    width: 100%;
+    min-width: 0;
+    grid-template-columns: 104px minmax(0, 1fr);
+    grid-template-rows: auto auto minmax(0, 1fr);
+    align-items: start;
+    gap: 8px 12px;
+    padding: 10px;
+  }
+
+  .dialog-content--project .cover-panel > .field-label {
+    grid-column: 1 / -1;
+  }
+
+  .dialog-content--project .cover-preview {
+    width: 104px;
+    margin: 0;
+    grid-row: 2 / 4;
+    aspect-ratio: 4 / 3;
+  }
+
+  .dialog-content--project .cover-panel__actions {
+    display: grid;
+    min-width: 0;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    gap: 7px;
+    margin: 0;
+  }
+
+  .dialog-content--project .cover-panel__actions .button {
+    min-width: 0;
+    padding-inline: 6px;
+  }
+
+  .dialog-content--project .cover-panel > p {
+    margin: 0;
+    text-align: left;
+  }
+
+  .dialog-content--project .dialog-footer {
+    width: 100%;
+    min-width: 0;
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+    background: var(--surface);
+    box-shadow: 0 -1px 0 var(--line);
+  }
+
+  .dialog-content--project .dialog-footer .button {
+    min-width: 0;
+    min-height: 44px;
+    flex: 1 1 0;
+  }
+
   .app-shell .user-skills-page .skills-hero {
     display: grid;
   }
@@ -2251,7 +2430,7 @@
   }
 
   .app-shell.app-shell--agent-home .page-content:has(.workspace-agent-stage--home) {
-    margin-bottom: calc(60px + env(safe-area-inset-bottom));
+    margin-bottom: 0;
   }
 
   .app-shell--agent-home .workspace-agent-stage--home {
@@ -2264,12 +2443,20 @@
   }
 
   .app-shell--agent-home .workspace-agent-stage--home .agent-thread {
-    padding: 8px 10px 12px;
+    padding: 8px 10px max(112px, calc(var(--agent-composer-height, 112px) + 10px));
+  }
+
+  .app-shell--agent-home .workspace-agent-stage--home .agent-workspace-body {
+    position: relative;
   }
 
   .app-shell--agent-home .workspace-agent-stage--home .agent-composer {
-    width: calc(100% - 16px);
-    margin: 4px 8px 0;
+    position: absolute;
+    right: 8px;
+    bottom: 0;
+    left: 8px;
+    width: auto;
+    margin: 0;
     padding: 7px 8px;
   }
 
@@ -2324,5 +2511,74 @@
 
   .app-shell--agent-home .workspace-agent-stage--home .agent-generated-media__preview {
     height: 180px;
+  }
+}
+
+/* Mobile director pages use the document as their only vertical scroller.
+   Historical director styles assigned scrolling and clipping to several nested
+   panels, which made touch dragging unreliable and hid long video details. */
+@media (max-width: 760px) {
+  .app-shell .director-page.director-workspace {
+    display: block;
+    width: 100%;
+    height: auto;
+    max-height: none;
+    min-height: calc(100dvh - var(--topbar-height));
+    overflow: visible;
+  }
+
+  .app-shell .director-page .director-production {
+    width: 100%;
+    height: auto;
+    max-height: none;
+    min-height: 0;
+    overflow: visible;
+  }
+
+  .app-shell .director-page .director-main-workspace {
+    display: grid;
+    width: 100%;
+    height: auto;
+    max-height: none;
+    min-height: 0;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: auto auto !important;
+    overflow: visible;
+    overscroll-behavior: auto;
+    touch-action: pan-y;
+  }
+
+  .app-shell .director-page .director-main-workspace > .director-canvas {
+    width: 100%;
+    height: auto;
+    max-height: none;
+    min-height: 0;
+    overflow: visible;
+    overscroll-behavior: auto;
+    touch-action: pan-y;
+  }
+
+  .app-shell .director-page .director-video-board {
+    width: 100%;
+    max-height: none;
+    overflow: visible;
+    overscroll-behavior: auto;
+  }
+
+  .app-shell .director-page .director-video-focus,
+  .app-shell .director-page .director-video-focus__detail,
+  .app-shell .director-page .director-video-source-grid,
+  .app-shell .director-page .director-video-final-prompt {
+    max-height: none;
+    overflow: visible;
+  }
+
+  .app-shell .director-page .director-video-focus__detail p,
+  .app-shell .director-page .director-video-final-prompt p {
+    display: block;
+    max-height: none;
+    overflow: visible;
+    padding-right: 0;
+    -webkit-line-clamp: unset;
   }
 }
