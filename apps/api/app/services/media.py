@@ -165,6 +165,45 @@ def save_asset_image(
     return f"/uploads/{relative}", target
 
 
+def save_asset_reference_audio(
+    data: bytes,
+    *,
+    uploads_root: Path,
+    tenant_id: str,
+    project_id: str | None,
+    asset_id: str,
+    content_type: str | None,
+) -> tuple[str, Path, str]:
+    if not data:
+        raise ValueError("参考音频文件为空")
+    formats = {
+        "audio/mpeg": (".mp3", "audio/mpeg"),
+        "audio/wav": (".wav", "audio/wav"),
+        "audio/x-wav": (".wav", "audio/wav"),
+        "audio/ogg": (".ogg", "audio/ogg"),
+        "audio/webm": (".webm", "audio/webm"),
+        "audio/flac": (".flac", "audio/flac"),
+        "audio/mp4": (".m4a", "audio/mp4"),
+        "audio/aac": (".aac", "audio/aac"),
+    }
+    suffix, mime_type = formats.get(content_type or "", (".mp3", "audio/mpeg"))
+    target_dir = (
+        uploads_root / tenant_id / "projects" / project_id / "assets" / "reference-audio"
+        if project_id
+        else uploads_root / tenant_id / "global-assets" / "reference-audio"
+    )
+    target_dir.mkdir(parents=True, exist_ok=True)
+    target = target_dir / f"{asset_id}-{uuid4()}{suffix}"
+    temporary = target.with_suffix(f"{suffix}.tmp")
+    try:
+        temporary.write_bytes(data)
+        temporary.replace(target)
+    finally:
+        temporary.unlink(missing_ok=True)
+    relative = target.relative_to(uploads_root).as_posix()
+    return f"/uploads/{relative}", target, mime_type
+
+
 def save_agent_chat_image(
     data: bytes,
     *,

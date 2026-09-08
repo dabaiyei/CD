@@ -53,10 +53,10 @@ function toggleMode(mode: VideoGenerationMode): void {
   if (index >= 0 && next.generation_modes.length > 1) next.generation_modes.splice(index, 1)
   else if (index < 0) next.generation_modes.push(mode)
   if (['first_frame', 'first_last_frame', 'last_frame'].includes(mode) && index < 0) {
-    next.reference_limits.image = { enabled: true, min_count: 1, max_count: Math.max(1, next.reference_limits.image.max_count) }
+    next.reference_limits.image = { ...next.reference_limits.image, enabled: true, min_count: 1, max_count: Math.max(1, next.reference_limits.image.max_count) }
   }
   if (mode === 'full_reference' && index < 0) {
-    next.reference_limits.video = { enabled: true, min_count: 1, max_count: Math.max(1, next.reference_limits.video.max_count) }
+    next.reference_limits.video = { ...next.reference_limits.video, enabled: true, min_count: 1, max_count: Math.max(1, next.reference_limits.video.max_count) }
   }
   emit('update:modelValue', next)
 }
@@ -65,8 +65,16 @@ function toggleReference(kind: 'image' | 'video' | 'audio'): void {
   const next = clone()
   const enabled = !next.reference_limits[kind].enabled
   next.reference_limits[kind] = enabled
-    ? { enabled: true, min_count: 0, max_count: 1 }
-    : { enabled: false, min_count: 0, max_count: 0 }
+    ? { ...next.reference_limits[kind], enabled: true, min_count: 0, max_count: 1 }
+    : { ...next.reference_limits[kind], enabled: false, min_count: 0, max_count: 0 }
+  emit('update:modelValue', next)
+}
+
+function setReferenceFormats(kind: 'image' | 'video' | 'audio', raw: string): void {
+  const next = clone()
+  next.reference_limits[kind].accepted_mime_types = [
+    ...new Set(raw.split(/[,，\s]+/).map((item) => item.trim().toLowerCase()).filter(Boolean)),
+  ]
   emit('update:modelValue', next)
 }
 
@@ -147,6 +155,10 @@ function removeGroup(index: number): void {
             <label><span>最少</span><div><button type="button" title="减少最少数量" @click="stepReference(media.value, 'min_count', -1)"><Minus :size="14" /></button><strong class="tabular-nums">{{ modelValue.reference_limits[media.value].min_count }}</strong><button type="button" title="增加最少数量" @click="stepReference(media.value, 'min_count', 1)"><Plus :size="14" /></button></div></label>
             <label><span>最多</span><div><button type="button" title="减少最多数量" @click="stepReference(media.value, 'max_count', -1)"><Minus :size="14" /></button><strong class="tabular-nums">{{ modelValue.reference_limits[media.value].max_count }}</strong><button type="button" title="增加最多数量" @click="stepReference(media.value, 'max_count', 1)"><Plus :size="14" /></button></div></label>
           </div>
+          <label class="reference-formats">
+            <span>支持格式（MIME）</span>
+            <input :value="modelValue.reference_limits[media.value].accepted_mime_types.join(', ')" :disabled="!modelValue.reference_limits[media.value].enabled" placeholder="image/jpeg, image/png" @change="setReferenceFormats(media.value, ($event.target as HTMLInputElement).value)" />
+          </label>
         </article>
       </div>
     </section>

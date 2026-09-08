@@ -350,7 +350,9 @@ async def generate_dialogues(
         if pending.request_payload.get("chapter_id") == chapter.id:
             raise HTTPException(status_code=409, detail="该章节已有台词提取任务正在处理")
     agent = await general_agent(session, user.tenant_id)
-    model, _provider, _api_key = await resolve_text_model(session, agent, user.tenant_id)
+    model, _provider, _api_key = await resolve_text_model(
+        session, agent, user.tenant_id, project_id=project_id,
+    )
     pricing = await resolve_task_pricing(
         session,
         tenant_id=user.tenant_id,

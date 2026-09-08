@@ -5,7 +5,7 @@ from decimal import Decimal
 from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 
-from app.db.models import AITask, Project, TaskEvent, TaskStatus, User
+from app.db.models import AIModel, AITask, Chapter, ModelType, Project, TaskEvent, TaskStatus, User
 from app.services.billing import debit_task_cost
 from app.services.readiness import require_core_models_ready
 from app.services.task_events import record_task_event
@@ -56,6 +56,23 @@ async def create_queued_task(
     message: str,
 ) -> tuple[AITask, TaskEvent]:
     await require_core_models_ready(session, user.tenant_id)
+    if project_id:
+        from app.services.ai_creation import require_ai_chapter_unlocked
+
+        project = await session.get(Project, project_id)
+        if project and project.creation_mode == "ai":
+            chapter_id = request_payload.get("chapter_id")
+            chapter = await session.get(Chapter, chapter_id) if chapter_id else None
+            if chapter and chapter.project_id == project.id:
+                await require_ai_chapter_unlocked(session, chapter)
+            requested_model = await session.get(AIModel, model_id) if model_id else None
+            if requested_model and requested_model.model_type == ModelType.TEXT:
+                model_id = project.text_model_id
+                request_payload = {**request_payload, "text_model_id": model_id}
+            elif requested_model and requested_model.model_type == ModelType.IMAGE:
+                model_id = project.image_model_id
+            elif requested_model and requested_model.model_type == ModelType.VIDEO:
+                model_id = project.video_model_id
     task = AITask(
         tenant_id=user.tenant_id,
         user_id=user.id,

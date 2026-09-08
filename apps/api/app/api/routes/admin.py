@@ -115,6 +115,8 @@ from app.services.provider_adapters import (
     AGNES_VIDEO_MODEL_ID,
     AUTODL_MINIMAX_H3_MODEL_ID,
     AUTODL_MINIMAX_H3_PROVIDER_CODE,
+    DOLA_PROVIDER_CODE,
+    DOLA_VIDEO_MODELS,
     ProviderAdapterConfig,
     agnes_image_21_capabilities,
     agnes_image_capabilities,
@@ -122,6 +124,8 @@ from app.services.provider_adapters import (
     agnes_video_capabilities,
     autodl_minimax_h3_adapter_config,
     autodl_minimax_h3_capabilities,
+    dola_video_adapter_config,
+    dola_video_capabilities,
     normalize_video_capabilities,
 )
 from app.services.readiness import configured_image_resolutions, default_model_types
@@ -639,7 +643,8 @@ async def active_model_reference_labels(
             select(Project.id)
             .where(
                 Project.tenant_id == tenant_id,
-                (Project.video_model_id == model.id) | (Project.image_model_id == model.id),
+                (Project.video_model_id == model.id) | (Project.image_model_id == model.id)
+                | (Project.text_model_id == model.id),
             )
             .limit(1)
         ),
@@ -1084,6 +1089,69 @@ async def install_agnes_ai_preset(
     }
 
 
+@router.post("/provider-presets/dola-local/install", status_code=status.HTTP_200_OK)
+async def install_dola_local_preset(
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+) -> dict[str, object]:
+    """Install the local Dola account-pool API and its supported video models."""
+    provider = await session.scalar(
+        select(Provider).where(
+            Provider.tenant_id == admin.tenant_id,
+            Provider.code == DOLA_PROVIDER_CODE,
+        )
+    )
+    if provider is None:
+        provider = Provider(
+            tenant_id=admin.tenant_id,
+            code=DOLA_PROVIDER_CODE,
+            name="Dola 本地视频中转",
+            provider_type=ProviderType.CUSTOM,
+            base_url="http://127.0.0.1:8199",
+            extra_headers={},
+            adapter_config=dola_video_adapter_config(),
+            max_concurrency=4,
+            enabled=False,
+        )
+        session.add(provider)
+        await session.flush()
+    else:
+        provider.base_url = provider.base_url or "http://127.0.0.1:8199"
+        provider.adapter_config = dola_video_adapter_config()
+
+    installed: list[AIModel] = []
+    for model_id in DOLA_VIDEO_MODELS:
+        model = await session.scalar(
+            select(AIModel).where(
+                AIModel.provider_id == provider.id,
+                AIModel.model_id == model_id,
+            )
+        )
+        if model is None:
+            model = AIModel(
+                tenant_id=admin.tenant_id,
+                provider_id=provider.id,
+                model_id=model_id,
+                name=model_id,
+                model_type=ModelType.VIDEO,
+                capabilities=dola_video_capabilities(),
+                enabled=False,
+                is_default=False,
+            )
+            session.add(model)
+        else:
+            model.capabilities = dola_video_capabilities()
+        installed.append(model)
+    await session.commit()
+    await session.refresh(provider)
+    for model in installed:
+        await session.refresh(model)
+    return {
+        "provider": provider_public(provider),
+        "models": [ModelPublic.model_validate(model) for model in installed],
+    }
+
+
 @router.post("/providers/{provider_id}/test", response_model=ConnectivityResult)
 async def test_provider(
     provider_id: str,
@@ -1481,7 +1549,8 @@ async def delete_model(
             select(Project.id)
             .where(
                 Project.tenant_id == admin.tenant_id,
-                (Project.video_model_id == model.id) | (Project.image_model_id == model.id),
+                (Project.video_model_id == model.id) | (Project.image_model_id == model.id)
+                | (Project.text_model_id == model.id),
             )
             .limit(1)
         ),

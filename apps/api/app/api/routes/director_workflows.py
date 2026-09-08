@@ -22,6 +22,7 @@ from app.domain.schemas import (
     DirectorWorkflowStart,
 )
 from app.services.director_orchestration import (
+    start_automatic_workflow_from_progress,
     start_script_workflow,
     start_storyboard_workflow,
     start_storyboard_workflow_for_chapter,
@@ -157,13 +158,12 @@ async def create_automatic_workflow(
 ) -> dict:
     chapter = await chapter_for_user(session, project_id, chapter_id, user)
     try:
-        workflow = await start_script_workflow(
+        workflow = await start_automatic_workflow_from_progress(
             session,
             chapter=chapter,
             user=user,
             instruction=payload.instruction.strip() or "全自动完成本章 AI 视频制作",
             chat_session_id=payload.chat_session_id,
-            automation_mode=True,
         )
     except ValueError as error:
         raise HTTPException(status_code=409, detail=str(error)) from error

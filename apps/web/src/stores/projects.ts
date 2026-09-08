@@ -4,7 +4,7 @@ import { defineStore } from 'pinia'
 import { api } from '@/lib/api'
 import type { PricingRule, Project, ProjectOptions } from '@/types'
 
-export type ProjectPayload = Omit<Project, 'id' | 'tenant_id' | 'owner_id' | 'created_at' | 'updated_at'>
+export type ProjectPayload = Omit<Project, 'id' | 'tenant_id' | 'owner_id' | 'created_at' | 'updated_at' | 'creation_state'>
 
 export const useProjectsStore = defineStore('projects', () => {
   const projects = ref<Project[]>([])

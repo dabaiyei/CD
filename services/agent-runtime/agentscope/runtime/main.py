@@ -60,6 +60,11 @@ def _runtime_error_message(exc: Exception) -> str:
             return "Grok 服务暂时不可用或响应超时"
 
     exception_name = type(exc).__name__.lower()
+    exception_detail = str(exc).lower()
+    if "validationerror" in exception_name and "toolcallblock" in exception_detail:
+        return "模型供应商返回了无效的工具调用数据"
+    if "protocolerror" in exception_name:
+        return "模型供应商的流式响应意外中断，请重试"
     if "timeout" in exception_name:
         return "模型供应商响应超时"
     if "connect" in exception_name:

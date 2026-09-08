@@ -2589,6 +2589,17 @@ body.director-resizing * {
   max-width: 100%;
 }
 
+.director-video-shot-grid > article {
+  content-visibility: auto;
+  contain: layout paint style;
+  contain-intrinsic-size: 210px;
+}
+
+.director-video-shot-grid article > button,
+.director-video-shot-grid article i {
+  backdrop-filter: none;
+}
+
 .director-video-board {
   container-type: inline-size;
   overflow-x: clip;

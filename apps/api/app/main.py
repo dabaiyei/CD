@@ -11,6 +11,7 @@ from fastapi.responses import FileResponse
 from app.api.routes import (
     admin,
     agent_chat,
+    ai_creation,
     assets,
     auth,
     branding,
@@ -80,6 +81,7 @@ app.include_router(branding.router, prefix=settings.api_prefix)
 app.include_router(invitations.router, prefix=settings.api_prefix)
 app.include_router(marketplace.router, prefix=settings.api_prefix)
 app.include_router(projects.router, prefix=settings.api_prefix)
+app.include_router(ai_creation.router, prefix=settings.api_prefix)
 app.include_router(director.router, prefix=settings.api_prefix)
 app.include_router(director_workflows.router, prefix=settings.api_prefix)
 app.include_router(assets.router, prefix=settings.api_prefix)

@@ -18,6 +18,7 @@ from app.services.provider_adapters import (
     AGNES_IMAGE_21_MODEL_ID,
     AGNES_IMAGE_MODEL_ID,
     AGNES_PROVIDER_CODE,
+    DOLA_PROVIDER_CODE,
     HttpRequestTemplate,
     ProviderAdapterConfig,
     ReferencePayloadMapping,
@@ -305,6 +306,8 @@ class OpenAICompatibleMediaGateway:
         raise ModelGatewayError("图片平台未返回图片数据")
 
     async def submit_video(self, request: VideoGenerationRequest) -> VideoGenerationResult:
+        if self.provider_code == DOLA_PROVIDER_CODE:
+            return await self._submit_dola_video(request)
         if self.adapter and self.adapter.video:
             body, client = await self._adapter_request(
                 self.adapter.video.create,
@@ -342,6 +345,8 @@ class OpenAICompatibleMediaGateway:
         request: VideoGenerationRequest,
         provider_job_id: str,
     ) -> VideoGenerationResult:
+        if self.provider_code == DOLA_PROVIDER_CODE:
+            return await self._poll_dola_video(provider_job_id)
         if self.adapter and self.adapter.video:
             if self.adapter.video.poll is None:
                 raise ModelGatewayError("自定义视频适配器未配置轮询请求")
@@ -365,6 +370,219 @@ class OpenAICompatibleMediaGateway:
         if result.provider_job_id is None:
             result.provider_job_id = provider_job_id
         return result
+
+    async def _dola_json_request(
+        self,
+        client: httpx.AsyncClient,
+        method: str,
+        path: str,
+        **kwargs: Any,
+    ) -> dict[str, Any]:
+        try:
+            request_headers = {**self.headers, **dict(kwargs.pop("headers", {}))}
+            response = await client.request(
+                method,
+                f"{self.base_url}/{path.lstrip('/')}",
+                headers=request_headers,
+                **kwargs,
+            )
+            response.raise_for_status()
+            payload = response.json()
+        except httpx.HTTPStatusError as exc:
+            raise ModelGatewayError(
+                _http_error_message(exc.response, prefix="Dola 中转返回")
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise ModelGatewayError("无法连接 Dola 本地中转服务") from exc
+        except ValueError as exc:
+            raise ModelGatewayError("Dola 中转返回了无效 JSON") from exc
+        if not isinstance(payload, dict):
+            raise ModelGatewayError("Dola 中转返回了无法识别的数据结构")
+        return payload
+
+    async def _dola_account_for_uploads(
+        self,
+        client: httpx.AsyncClient,
+        model: str,
+    ) -> str:
+        pool = await self._dola_json_request(client, "GET", "api/video-pool")
+        raw_costs = pool.get("model_costs")
+        costs = raw_costs if isinstance(raw_costs, list) else []
+        configured_cost = next(
+            (
+                item.get("credits")
+                for item in costs
+                if isinstance(item, dict) and str(item.get("model") or "") == model
+            ),
+            None,
+        )
+        if not isinstance(configured_cost, int) or configured_cost < 1:
+            raise ModelGatewayError(f"Dola 尚未配置模型 {model} 的单次积分消耗")
+        account_payload = await self._dola_json_request(client, "GET", "api/video-accounts")
+        raw_accounts = account_payload.get("accounts")
+        accounts = raw_accounts if isinstance(raw_accounts, list) else []
+        candidates = [
+            item
+            for item in accounts
+            if isinstance(item, dict)
+            and item.get("pool_eligible") is True
+            and isinstance(item.get("credits_available"), int)
+            and item["credits_available"] >= configured_cost
+            and isinstance(item.get("id"), str)
+        ]
+        if not candidates:
+            raise ModelGatewayError("Dola 没有已验证、已启用且额度足够的可用账号")
+        candidates.sort(key=lambda item: int(item.get("credits_available") or 0), reverse=True)
+        return str(candidates[0]["id"])
+
+    @staticmethod
+    def _dola_reference_image(reference: dict[str, str], index: int) -> tuple[bytes, str]:
+        mime_type = str(reference.get("mime_type") or "").lower()
+        encoded = str(reference.get("base64") or "")
+        data_uri = str(reference.get("data_uri") or "")
+        if data_uri:
+            header, separator, encoded_body = data_uri.partition(",")
+            if not separator or ";base64" not in header.lower():
+                raise ModelGatewayError(f"第 {index} 张 Dola 参考图不是有效的 Base64 Data URI")
+            encoded = encoded_body
+            declared_mime = header[5:].split(";", 1)[0].strip().lower()
+            if declared_mime:
+                mime_type = declared_mime
+        if not encoded:
+            raise ModelGatewayError(f"第 {index} 张 Dola 参考图缺少可上传的文件数据")
+        try:
+            data = base64.b64decode(encoded, validate=True)
+        except (ValueError, TypeError) as exc:
+            raise ModelGatewayError(f"第 {index} 张 Dola 参考图 Base64 无效") from exc
+        extensions = {
+            "image/jpeg": ".jpg",
+            "image/png": ".png",
+            "image/webp": ".webp",
+        }
+        extension = extensions.get(mime_type)
+        if extension is None:
+            raise ModelGatewayError(f"Dola 不支持第 {index} 张参考图的格式：{mime_type or '未知'}")
+        if not data:
+            raise ModelGatewayError(f"第 {index} 张 Dola 参考图为空")
+        if len(data) > 20 * 1024 * 1024:
+            raise ModelGatewayError(f"第 {index} 张 Dola 参考图超过 20 MiB")
+        return data, f"reference-{index}{extension}"
+
+    async def _submit_dola_video(self, request: VideoGenerationRequest) -> VideoGenerationResult:
+        prompt = request.prompt.strip()
+        if not prompt:
+            raise ModelGatewayError("Dola 视频提示词不能为空")
+        if len(prompt) > 20_000:
+            raise ModelGatewayError("Dola 视频提示词不能超过 20000 字符")
+        duration = int(request.duration_seconds)
+        if request.duration_seconds != duration or duration not in {5, 10, 15}:
+            raise ModelGatewayError("Dola 视频时长仅支持 5、10 或 15 秒")
+        references = [
+            item
+            for item in (request.reference_media or [])
+            if item.get("type") == "image"
+        ]
+        if len(references) > 9:
+            raise ModelGatewayError("Dola 每个视频任务最多支持 9 张参考图")
+        timeout = httpx.Timeout(get_settings().media_request_timeout_seconds)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            attachment_ids: list[str] = []
+            account_id: str | None = None
+            if references:
+                account_id = await self._dola_account_for_uploads(client, request.model)
+                for index, reference in enumerate(references, start=1):
+                    image_data, filename = self._dola_reference_image(reference, index)
+                    uploaded = await self._dola_json_request(
+                        client,
+                        "POST",
+                        f"api/video-accounts/{account_id}/attachments",
+                        params={"filename": filename},
+                        content=image_data,
+                    )
+                    attachment_id = uploaded.get("id")
+                    if not isinstance(attachment_id, str) or not attachment_id:
+                        raise ModelGatewayError("Dola 参考图上传成功但未返回附件 ID")
+                    if attachment_id not in attachment_ids:
+                        attachment_ids.append(attachment_id)
+            payload: dict[str, object] = {
+                "prompt": prompt,
+                "model": request.model,
+                "duration": duration,
+                "ratio": request.aspect_ratio,
+                "timeout_seconds": 900,
+                "attachment_ids": attachment_ids,
+            }
+            if account_id:
+                payload["account_id"] = account_id
+            task = await self._dola_json_request(
+                client,
+                "POST",
+                "api/video-tasks",
+                headers={"Idempotency-Key": request.idempotency_key},
+                json=payload,
+            )
+            return await self._dola_video_result(client, task)
+
+    async def _poll_dola_video(self, provider_job_id: str) -> VideoGenerationResult:
+        timeout = httpx.Timeout(get_settings().media_request_timeout_seconds)
+        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
+            task = await self._dola_json_request(
+                client,
+                "GET",
+                f"api/video-tasks/{provider_job_id}",
+            )
+            return await self._dola_video_result(client, task, fallback_job_id=provider_job_id)
+
+    async def _dola_video_result(
+        self,
+        client: httpx.AsyncClient,
+        task: dict[str, Any],
+        *,
+        fallback_job_id: str | None = None,
+    ) -> VideoGenerationResult:
+        provider_job_id = str(task.get("id") or fallback_job_id or "") or None
+        status = str(task.get("status") or "").strip().lower()
+        pending = {
+            "queued", "starting", "preparing", "submitting", "generating",
+            "downloading", "waiting_verification",
+        }
+        failed = {"failed", "needs_login", "needs_review", "cancelled"}
+        if status in pending:
+            if not provider_job_id:
+                raise ModelGatewayError("Dola 任务未返回可恢复的任务 ID")
+            return VideoGenerationResult(status="pending", provider_job_id=provider_job_id)
+        if status in failed:
+            detail = str(task.get("error") or "").strip()
+            return VideoGenerationResult(
+                status="failed",
+                provider_job_id=provider_job_id,
+                error_message=f"Dola 任务 {status}：{detail or '请检查账号池和任务记录'}",
+            )
+        if status != "completed" or not provider_job_id:
+            raise ModelGatewayError(f"Dola 返回未知任务状态：{status or '空状态'}")
+        try:
+            response = await client.request(
+                "GET",
+                f"{self.base_url}/api/video-tasks/{provider_job_id}/file",
+                headers=self.headers,
+                params={"download": "true"},
+            )
+            response.raise_for_status()
+        except httpx.HTTPStatusError as exc:
+            raise ModelGatewayError(
+                _http_error_message(exc.response, prefix="Dola 视频下载返回")
+            ) from exc
+        except httpx.HTTPError as exc:
+            raise ModelGatewayError("无法从 Dola 下载已完成视频") from exc
+        content_type = response.headers.get("content-type", "").split(";", 1)[0]
+        if content_type != "video/mp4":
+            raise ModelGatewayError("Dola 已完成任务未返回 MP4 视频")
+        return VideoGenerationResult(
+            status="succeeded",
+            provider_job_id=provider_job_id,
+            video_data=_bounded_video(response.content),
+            content_type=content_type,
+        )
 
     def _video_context(self, request: VideoGenerationRequest) -> dict[str, Any]:
         references = request.reference_media or []
@@ -438,7 +656,8 @@ class OpenAICompatibleMediaGateway:
     ) -> tuple[dict[str, Any], httpx.AsyncClient]:
         path = str(render_template(template.path, context)).lstrip("/")
         url = f"{self.base_url}/{path}"
-        await _validate_download_url(url, media_name="供应商接口")
+        if self.provider_code != DOLA_PROVIDER_CODE:
+            await _validate_download_url(url, media_name="供应商接口")
         headers = {**self.headers, **render_template(template.headers, context)}
         headers.setdefault("Idempotency-Key", str(context.get("idempotency_key") or ""))
         query = render_template(template.query, context)

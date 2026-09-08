@@ -127,6 +127,7 @@ class AgentRunRequest(ContractModel):
     skills: list[SkillSnapshot] = Field(default_factory=list, max_length=200)
     memory_context: list[str] = Field(default_factory=list, max_length=100)
     state_mode: Literal["persistent", "ephemeral"] = "persistent"
+    tool_mode: Literal["workspace", "none"] = "workspace"
     conversation_summary: str | None = Field(default=None, max_length=50_000)
     recent_messages: list[ConversationMessage] = Field(default_factory=list, max_length=20)
     project_files: list[ProjectFileSnapshot] = Field(default_factory=list, max_length=200)

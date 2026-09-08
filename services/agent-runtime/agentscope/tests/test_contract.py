@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 import pytest
@@ -12,6 +13,7 @@ from fastapi.testclient import TestClient
 from runtime import AGENTSCOPE_VERSION, CONTRACT_VERSION, RUNTIME_VERSION
 from runtime.adapter import (
     AgentScopeAdapter,
+    _ToolCallIdNormalizingStream,
     call_responses_with_chat_fallback,
     is_transient_response_input_parse_error,
     retry_transient_response_input_errors,
@@ -69,6 +71,59 @@ def test_official_grok_binding_uses_native_xai_protocol() -> None:
     assert not AgentScopeAdapter._is_official_xai_binding(
         "xai", "grok-4", "https://proxy.example.test/v1"
     )
+
+
+def test_openai_compatible_stream_fills_and_reuses_missing_tool_call_id() -> None:
+    class FakeStream:
+        def __init__(self) -> None:
+            self.chunks = iter(
+                [
+                    SimpleNamespace(
+                        choices=[
+                            SimpleNamespace(
+                                delta=SimpleNamespace(
+                                    tool_calls=[SimpleNamespace(index=0, id=None)]
+                                )
+                            )
+                        ]
+                    ),
+                    SimpleNamespace(
+                        choices=[
+                            SimpleNamespace(
+                                delta=SimpleNamespace(
+                                    tool_calls=[SimpleNamespace(index=0, id=None)]
+                                )
+                            )
+                        ]
+                    ),
+                ]
+            )
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, exc_type, exc, traceback):
+            return None
+
+        def __aiter__(self):
+            return self
+
+        async def __anext__(self):
+            try:
+                return next(self.chunks)
+            except StopIteration as exc:
+                raise StopAsyncIteration from exc
+
+    async def collect_ids() -> list[str | None]:
+        ids: list[str | None] = []
+        async with _ToolCallIdNormalizingStream(FakeStream()) as stream:
+            async for chunk in stream:
+                ids.append(chunk.choices[0].delta.tool_calls[0].id)
+        return ids
+
+    ids = asyncio.run(collect_ids())
+    assert ids[0]
+    assert ids[1] == ids[0]
 
 
 class FailingAdapter:

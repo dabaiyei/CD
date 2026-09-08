@@ -35,6 +35,7 @@ AssetSelectionTarget = Literal["listed_assets", "active_chapter_extraction", "al
 async def resolve_general_agent_text_model(
     session: AsyncSession,
     tenant_id: str,
+    project: Project | None = None,
 ) -> tuple[AgentProfile, AIModel, Provider, str]:
     agent = await session.scalar(
         select(AgentProfile).where(
@@ -45,8 +46,9 @@ async def resolve_general_agent_text_model(
     )
     if agent is None:
         raise HTTPException(status_code=409, detail="管理员尚未配置可用的通用 AI")
-    model = await session.get(AIModel, agent.text_model_id) if agent.text_model_id else None
-    if model is None:
+    model_id = project.text_model_id if project and project.creation_mode == "ai" else agent.text_model_id
+    model = await session.get(AIModel, model_id) if model_id else None
+    if model is None and not (project and project.creation_mode == "ai"):
         model = await session.scalar(
             select(AIModel).where(
                 AIModel.tenant_id == tenant_id,
@@ -213,7 +215,9 @@ async def queue_asset_prompt_generation_task(
         if selected_ids.intersection(pending.request_payload.get("asset_ids") or []):
             raise HTTPException(status_code=409, detail="部分资产已有提示词任务正在处理")
 
-    agent, model, _provider, _api_key = await resolve_general_agent_text_model(session, user.tenant_id)
+    agent, model, _provider, _api_key = await resolve_general_agent_text_model(
+        session, user.tenant_id, project=project,
+    )
     pricing = await resolve_task_pricing(
         session,
         tenant_id=user.tenant_id,
@@ -279,6 +283,7 @@ async def queue_asset_image_generation_tasks(
         tenant_id=user.tenant_id,
         resolution=project.image_resolution,
         fallback_model_id=project.image_model_id,
+        prefer_fallback=project.creation_mode == "ai",
     )
     if image_model is None:
         raise HTTPException(

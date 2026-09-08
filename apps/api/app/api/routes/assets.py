@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from contextlib import suppress
+
 from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from sqlalchemy import func, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
@@ -55,14 +57,30 @@ from app.services.media import (
     MAX_COVER_BYTES,
     InvalidCoverImage,
     save_asset_image,
+    save_asset_reference_audio,
 )
-from app.services.object_storage import delete_media_file, persist_media_file
+from app.services.object_storage import (
+    delete_media_file,
+    object_key_from_media_url,
+    persist_media_file,
+)
 from app.services.task_events import publish_task_event
 from app.services.task_queue import enqueue_task
 from app.services.task_submission import active_tasks, create_queued_task
 
 router = APIRouter(tags=["assets"])
 DERIVABLE_ASSET_TYPES = {AssetType.CHARACTER, AssetType.SCENE, AssetType.PROP}
+ALLOWED_REFERENCE_AUDIO_TYPES = {
+    "audio/aac",
+    "audio/flac",
+    "audio/mp4",
+    "audio/mpeg",
+    "audio/ogg",
+    "audio/wav",
+    "audio/webm",
+    "audio/x-wav",
+}
+MAX_REFERENCE_AUDIO_BYTES = 32 * 1024 * 1024
 
 
 async def require_chapter_writable(session: AsyncSession, chapter: Chapter, user: User) -> None:
@@ -268,7 +286,9 @@ async def generate_asset_extraction(
             raise HTTPException(status_code=409, detail="该章节已有资产提取任务正在处理")
 
     agent = await general_agent(session, user.tenant_id)
-    model, _provider, _api_key = await resolve_text_model(session, agent, user.tenant_id)
+    model, _provider, _api_key = await resolve_text_model(
+        session, agent, user.tenant_id, project_id=project_id,
+    )
     pricing = await resolve_task_pricing(
         session,
         tenant_id=user.tenant_id,
@@ -567,6 +587,91 @@ async def upload_asset_image(
     return asset
 
 
+@router.post("/assets/{asset_id}/reference-audio/upload", response_model=AssetPublic)
+async def upload_asset_reference_audio(
+    asset_id: str,
+    file: UploadFile = File(...),
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> Asset:
+    asset = await asset_for_user(session, asset_id, user)
+    await require_assets_writable(session, [asset], user)
+    if asset.asset_type != AssetType.CHARACTER:
+        raise HTTPException(status_code=409, detail="只有人物资产可以绑定参考音频")
+    if asset.scope == AssetScope.PROJECT and asset.project_id:
+        await project_for_user(session, asset.project_id, user)
+    content_type = (file.content_type or "").lower()
+    if content_type not in ALLOWED_REFERENCE_AUDIO_TYPES:
+        raise HTTPException(status_code=415, detail="仅支持 MP3、WAV、M4A、AAC、OGG、WebM 或 FLAC 音频")
+    data = await file.read(MAX_REFERENCE_AUDIO_BYTES + 1)
+    await file.close()
+    if len(data) > MAX_REFERENCE_AUDIO_BYTES:
+        raise HTTPException(status_code=413, detail="人物参考音频不能超过 32 MB")
+    if not data:
+        raise HTTPException(status_code=422, detail="上传的参考音频为空")
+
+    _local_url, stored_path, normalized_type = await run_in_threadpool(
+        save_asset_reference_audio,
+        data,
+        uploads_root=get_settings().uploads_root,
+        tenant_id=user.tenant_id,
+        project_id=asset.project_id,
+        asset_id=asset.id,
+        content_type=content_type,
+    )
+    try:
+        storage_key, media_url = await persist_media_file(stored_path, normalized_type)
+    except Exception:
+        stored_path.unlink(missing_ok=True)
+        raise
+
+    asset.asset_metadata = {
+        **(asset.asset_metadata or {}),
+        "reference_audio_url": media_url,
+        "reference_audio_mime_type": normalized_type,
+        "reference_audio_filename": file.filename or "character-reference-audio",
+        "reference_audio_size_bytes": len(data),
+    }
+    asset.version += 1
+    await snapshot_asset_revision(session, asset, change_type="reference_audio_upload")
+    try:
+        await session.commit()
+    except Exception:
+        await delete_media_file(storage_key, stored_path)
+        await session.rollback()
+        raise
+    await session.refresh(asset)
+    return asset
+
+
+@router.delete("/assets/{asset_id}/reference-audio", response_model=AssetPublic)
+async def remove_asset_reference_audio(
+    asset_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> Asset:
+    asset = await asset_for_user(session, asset_id, user)
+    await require_assets_writable(session, [asset], user)
+    if asset.asset_type != AssetType.CHARACTER:
+        raise HTTPException(status_code=409, detail="只有人物资产可以绑定参考音频")
+    metadata = dict(asset.asset_metadata or {})
+    if not metadata.get("reference_audio_url"):
+        raise HTTPException(status_code=409, detail="该人物尚未绑定参考音频")
+    for key in (
+        "reference_audio_url",
+        "reference_audio_mime_type",
+        "reference_audio_filename",
+        "reference_audio_size_bytes",
+    ):
+        metadata.pop(key, None)
+    asset.asset_metadata = metadata
+    asset.version += 1
+    await snapshot_asset_revision(session, asset, change_type="reference_audio_remove")
+    await session.commit()
+    await session.refresh(asset)
+    return asset
+
+
 @router.get("/assets/{asset_id}/revisions", response_model=list[AssetRevisionPublic])
 async def list_asset_revisions(
     asset_id: str,
@@ -662,8 +767,37 @@ async def delete_asset(
             )
             .values(published=False)
         )
+    revision_metadata = (
+        await session.scalars(
+            select(AssetRevision.asset_metadata).where(AssetRevision.asset_id == asset.id)
+        )
+    ).all()
+    candidate_audio_urls = {
+        str(value)
+        for metadata in [asset.asset_metadata, *revision_metadata]
+        if isinstance(metadata, dict)
+        and isinstance((value := metadata.get("reference_audio_url")), str)
+        and value
+    }
     await session.delete(asset)
     await session.commit()
+    if candidate_audio_urls:
+        surviving_metadata = [
+            *(await session.scalars(select(Asset.asset_metadata))).all(),
+            *(await session.scalars(select(AssetRevision.asset_metadata))).all(),
+        ]
+        surviving_urls = {
+            str(value)
+            for metadata in surviving_metadata
+            if isinstance(metadata, dict)
+            and isinstance((value := metadata.get("reference_audio_url")), str)
+            and value
+        }
+        for media_url in candidate_audio_urls - surviving_urls:
+            storage_key = object_key_from_media_url(media_url)
+            if storage_key:
+                with suppress(Exception):
+                    await delete_media_file(storage_key)
 
 
 @router.post("/projects/{project_id}/assets/{asset_id}/export-global", response_model=AssetPublic)

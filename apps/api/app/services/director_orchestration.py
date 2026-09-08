@@ -46,7 +46,10 @@ from app.services.billing import refund_task_cost, resolve_task_pricing
 from app.services.composition import invalidate_compositions
 from app.services.image_model_routing import resolve_image_model
 from app.services.object_storage import materialize_media_file, object_key_from_media_url
-from app.services.provider_adapters import compatible_video_resolution
+from app.services.provider_adapters import (
+    compatible_video_resolution,
+    default_video_audio_enabled,
+)
 from app.services.task_events import publish_task_event, record_task_event
 from app.services.task_queue import enqueue_task
 from app.services.task_submission import create_queued_task
@@ -194,6 +197,7 @@ async def _agent_and_model(
     tenant_id: str,
     *,
     kind: AgentKind = AgentKind.SCREENPLAY,
+    project_id: str | None = None,
 ) -> tuple[AgentProfile, AIModel]:
     agent = await session.scalar(
         select(AgentProfile).where(
@@ -202,9 +206,11 @@ async def _agent_and_model(
             AgentProfile.enabled.is_(True),
         )
     )
-    if agent is None or not agent.text_model_id:
+    project = await session.get(Project, project_id) if project_id else None
+    selected_model_id = project.text_model_id if project and project.creation_mode == "ai" else None
+    if agent is None or not (selected_model_id or agent.text_model_id):
         raise RuntimeError("管理员尚未配置可用的导演 Agent 与文本模型")
-    model = await session.get(AIModel, agent.text_model_id)
+    model = await session.get(AIModel, selected_model_id or agent.text_model_id)
     if model is None or model.model_type != ModelType.TEXT or not model.enabled:
         raise RuntimeError("导演 Agent 绑定的文本模型不可用")
     return agent, model
@@ -230,7 +236,9 @@ async def _queue_child(
         raise RuntimeError("导演流程用户已不存在")
     agent: AgentProfile | None = None
     if model_id is None:
-        agent, model = await _agent_and_model(session, workflow.tenant_id, kind=agent_kind)
+        agent, model = await _agent_and_model(
+            session, workflow.tenant_id, kind=agent_kind, project_id=workflow.project_id,
+        )
         model_id = model.id
     pricing_payload: dict[str, Any] = {"unit_cost": "0", "quantity": quantity, "total_cost": "0"}
     cost = Decimal("0")
@@ -359,6 +367,203 @@ async def start_script_workflow(
     )
     chapter.status = ChapterStatus.SCRIPTING
     await _commit_and_dispatch(session, [(task, event)])
+    await session.refresh(workflow)
+    return workflow
+
+
+async def start_automatic_workflow_from_progress(
+    session: AsyncSession,
+    *,
+    chapter: Chapter,
+    user: User,
+    instruction: str,
+    chat_session_id: str | None,
+) -> DirectorWorkflowRun:
+    """Start automatic production at the first incomplete persisted chapter stage."""
+    if not chapter.original_content.strip():
+        raise ValueError("当前章节没有可供改编的原始文章内容")
+    existing = await session.scalar(
+        select(DirectorWorkflowRun).where(
+            DirectorWorkflowRun.chapter_id == chapter.id,
+            DirectorWorkflowRun.status.in_(ACTIVE_WORKFLOW_STATUSES),
+        )
+    )
+    if existing is not None:
+        raise ValueError("当前章节已有进行中的导演流程")
+
+    script = (
+        await session.get(ScriptVersion, chapter.active_script_version_id)
+        if chapter.active_script_version_id
+        else None
+    )
+    if (
+        script is None
+        or script.chapter_id != chapter.id
+        or script.tenant_id != user.tenant_id
+        or script.user_id != user.id
+        or not script.is_active
+    ):
+        return await start_script_workflow(
+            session,
+            chapter=chapter,
+            user=user,
+            instruction=instruction,
+            chat_session_id=chat_session_id,
+            automation_mode=True,
+        )
+
+    analysis = await session.scalar(
+        select(ChapterAnalysis)
+        .where(ChapterAnalysis.chapter_id == chapter.id)
+        .order_by(ChapterAnalysis.version.desc())
+        .limit(1)
+    )
+    workflow = DirectorWorkflowRun(
+        tenant_id=user.tenant_id,
+        user_id=user.id,
+        project_id=chapter.project_id,
+        chapter_id=chapter.id,
+        chat_session_id=chat_session_id,
+        stage=DirectorWorkflowStage.SCRIPT_REVIEWING,
+        status=DirectorWorkflowStatus.RUNNING,
+        automation_mode=True,
+        stop_requested=False,
+        script_version_id=script.id,
+        context_snapshot={
+            "source_hash": hashlib.sha256(chapter.original_content.encode("utf-8")).hexdigest(),
+            "analysis_id": analysis.id if analysis else None,
+            "instruction": instruction,
+            "script_version_count": 0,
+            "storyboard_version_count": 0,
+            "automation_mode": True,
+            "resumed_from_chapter_progress": True,
+        },
+        last_message=f"检测到生效剧本 v{script.version}，正在核验后续制作进度",
+    )
+    session.add(workflow)
+    await session.flush()
+
+    queued: list[tuple[AITask, TaskEvent]] = []
+    if script.status != "approved":
+        chapter.status = ChapterStatus.REVIEWING
+        queued.append(await _queue_review(session, workflow, target="script", parent=None))
+        await _commit_and_dispatch(session, queued)
+        await session.refresh(workflow)
+        return workflow
+
+    extraction = await session.scalar(
+        select(AssetExtraction)
+        .where(
+            AssetExtraction.tenant_id == user.tenant_id,
+            AssetExtraction.user_id == user.id,
+            AssetExtraction.project_id == chapter.project_id,
+            AssetExtraction.chapter_id == chapter.id,
+            AssetExtraction.script_version_id == script.id,
+            AssetExtraction.is_active.is_(True),
+        )
+        .order_by(AssetExtraction.version.desc())
+        .limit(1)
+    )
+    if extraction is None:
+        chapter.status = ChapterStatus.ASSETS
+        queued.append(await _queue_asset_extraction(session, workflow, None))
+        await _commit_and_dispatch(session, queued)
+        await session.refresh(workflow)
+        return workflow
+
+    workflow.asset_extraction_id = extraction.id
+    assets = await _extraction_assets(session, workflow)
+    if not assets:
+        chapter.status = ChapterStatus.ASSETS
+        queued.append(await _queue_asset_extraction(session, workflow, None))
+        await _commit_and_dispatch(session, queued)
+        await session.refresh(workflow)
+        return workflow
+
+    missing_assets = await _missing_ready_asset_names(assets)
+    if missing_assets:
+        chapter.status = ChapterStatus.ASSETS
+        queued.extend(await _queue_asset_preparation(session, workflow, assets))
+        await _commit_and_dispatch(session, queued)
+        await session.refresh(workflow)
+        return workflow
+
+    storyboard = await session.scalar(
+        select(StoryboardVersion)
+        .where(
+            StoryboardVersion.tenant_id == user.tenant_id,
+            StoryboardVersion.user_id == user.id,
+            StoryboardVersion.project_id == chapter.project_id,
+            StoryboardVersion.chapter_id == chapter.id,
+            StoryboardVersion.script_version_id == script.id,
+            StoryboardVersion.is_active.is_(True),
+        )
+        .order_by(StoryboardVersion.version.desc())
+        .limit(1)
+    )
+    shots = []
+    if storyboard is not None:
+        shots = list(
+            (
+                await session.scalars(
+                    select(StoryboardShot)
+                    .where(StoryboardShot.storyboard_version_id == storyboard.id)
+                    .order_by(StoryboardShot.order_index)
+                )
+            ).all()
+        )
+    if storyboard is None or not shots:
+        chapter.status = ChapterStatus.STORYBOARD
+        queued.append(await _queue_storyboard(session, workflow))
+        await _commit_and_dispatch(session, queued)
+        await session.refresh(workflow)
+        return workflow
+
+    workflow.storyboard_version_id = storyboard.id
+    missing_prompt_shots = [shot for shot in shots if not shot.video_prompt.strip()]
+    if missing_prompt_shots:
+        chapter.status = ChapterStatus.VIDEO
+        queued.append(
+            await _queue_video_prompts(
+                session,
+                workflow,
+                None,
+                shots=missing_prompt_shots,
+            )
+        )
+        await _commit_and_dispatch(session, queued)
+        await session.refresh(workflow)
+        return workflow
+
+    ready_video_shot_ids = set(
+        (
+            await session.scalars(
+                select(VideoClip.shot_id).where(
+                    VideoClip.storyboard_version_id == storyboard.id,
+                    VideoClip.is_active.is_(True),
+                    VideoClip.status == VideoClipStatus.READY,
+                    VideoClip.media_url.is_not(None),
+                )
+            )
+        ).all()
+    )
+    if all(shot.id in ready_video_shot_ids for shot in shots):
+        chapter.status = ChapterStatus.COMPLETED
+        workflow.stage = DirectorWorkflowStage.READY_FOR_VIDEO
+        workflow.status = DirectorWorkflowStatus.COMPLETED
+        workflow.current_task_id = None
+        workflow.last_error = None
+        workflow.last_message = f"检测到 {len(shots)} 个镜头视频均已完成，无需重复生成"
+        await session.commit()
+        await session.refresh(workflow)
+        return workflow
+
+    chapter.status = ChapterStatus.VIDEO
+    queued.extend(await _queue_video_generation(session, workflow, None))
+    if queued:
+        await _commit_and_dispatch(session, queued)
+    else:
+        await session.commit()
     await session.refresh(workflow)
     return workflow
 
@@ -557,7 +762,7 @@ async def recover_orphaned_agent_script_reviews() -> int:
 async def _queue_asset_extraction(
     session: AsyncSession,
     workflow: DirectorWorkflowRun,
-    parent: DirectorChildRun,
+    parent: DirectorChildRun | None,
 ) -> tuple[AITask, TaskEvent]:
     script = await session.get(ScriptVersion, workflow.script_version_id)
     if script is None:
@@ -871,9 +1076,12 @@ async def _queue_video_prompts(
     session: AsyncSession,
     workflow: DirectorWorkflowRun,
     parent: DirectorChildRun | None,
+    *,
+    shots: list[StoryboardShot] | None = None,
 ) -> tuple[AITask, TaskEvent]:
     project, video_model, video_provider = await _workflow_video_model(session, workflow)
-    storyboard, shots = await _workflow_storyboard_shots(session, workflow)
+    storyboard, storyboard_shots = await _workflow_storyboard_shots(session, workflow)
+    shots = shots or storyboard_shots
     resolution = str(project.video_resolution or "1080p")
     if video_model.capabilities.get("schema_version") == 1:
         resolution = compatible_video_resolution(
@@ -897,6 +1105,7 @@ async def _queue_video_prompts(
             "video_resolution": resolution,
             "requested_video_resolution": project.video_resolution,
             "aspect_ratio": project.aspect_ratio,
+            "audio_enabled": default_video_audio_enabled(video_model.capabilities),
             "target_video_model": {
                 "provider_code": video_provider.code,
                 "provider_name": video_provider.name,
@@ -925,7 +1134,28 @@ async def _queue_video_generation(
         raise RuntimeError("导演流程章节已不存在")
     queued: list[tuple[AITask, TaskEvent]] = []
     workflow.stage = DirectorWorkflowStage.VIDEO_GENERATING
-    for shot in shots:
+    ready_shot_ids = set(
+        (
+            await session.scalars(
+                select(VideoClip.shot_id).where(
+                    VideoClip.storyboard_version_id == storyboard.id,
+                    VideoClip.is_active.is_(True),
+                    VideoClip.status == VideoClipStatus.READY,
+                    VideoClip.media_url.is_not(None),
+                )
+            )
+        ).all()
+    )
+    pending_shots = [shot for shot in shots if shot.id not in ready_shot_ids]
+    if not pending_shots:
+        chapter.status = ChapterStatus.COMPLETED
+        workflow.stage = DirectorWorkflowStage.READY_FOR_VIDEO
+        workflow.status = DirectorWorkflowStatus.COMPLETED
+        workflow.current_task_id = None
+        workflow.last_error = None
+        workflow.last_message = f"检测到 {len(shots)} 个镜头视频均已完成，无需重复生成"
+        return queued
+    for shot in pending_shots:
         if not shot.video_prompt.strip():
             raise RuntimeError(f"镜头 {shot.order_index:02d} 缺少视频提示词")
         latest = await session.scalar(
@@ -970,6 +1200,7 @@ async def _queue_video_generation(
                 "requested_video_resolution": project.video_resolution,
                 "aspect_ratio": project.aspect_ratio,
                 "duration_seconds": float(shot.duration_seconds),
+                "audio_enabled": default_video_audio_enabled(video_model.capabilities),
             },
             message=f"镜头 {shot.order_index:02d} 视频生成",
             model_id=video_model.id,

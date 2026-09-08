@@ -21,6 +21,7 @@ import {
 } from 'lucide-vue-next'
 
 import BaseDialog from '@/components/BaseDialog.vue'
+import VideoConcatButton from '@/components/VideoConcatButton.vue'
 import { apiBlob } from '@/lib/api'
 import { useToastStore } from '@/stores/toast'
 import type { AssetItem, Chapter, DirectorWorkflowDetail, ScriptVersion, StoryboardShot, StoryboardVersionDetail, VideoClip } from '@/types'
@@ -87,113 +88,33 @@ const automationStageLabels: Record<string, string> = {
   cancelled: '全自动制作已停止',
 }
 
-const demoTimestamp = '2026-09-02T10:00:00+08:00'
-const demoScript = computed<ScriptVersion>(() => ({
-  id: 'demo-script-v1',
-  project_id: props.chapter.project_id,
-  chapter_id: props.chapter.id,
-  version: 1,
-  title: '第 1 集：寒门少年的选择',
-  content: `【场 1】韩家庄练武场 / 夜 / 外
-
-风雪压住远山。十六岁的韩宇将最后一块铁石推回木架，掌心已经磨出血痕。
-
-韩宇（喘息）：再来一次。
-
-远处传来家族子弟的笑声。韩宇没有回头，只把更重的铁石抱进怀里。
-
-【场 2】偏院 / 夜 / 内
-
-昏黄灯火下，韩子枫把一只生锈铁盒推到桌前。盒中那本无字古籍泛起微光。
-
-韩子枫：这是你母亲留下的。想见她，就走到阴阳境。
-
-韩宇抬眼。窗外风雪骤停，古籍在他掌中自行翻开第一页。`,
-  status: 'approved',
-  review_notes: '演示版本：强化前三分钟钩子，保留父子关系与无字古籍悬念。',
-  is_active: true,
-  created_at: demoTimestamp,
-  updated_at: demoTimestamp,
-}))
-const demoAssets = computed<AssetItem[]>(() => ([
-  {
-    id: 'demo-asset-hanyu', project_id: props.chapter.project_id, scope: 'project', asset_type: 'character', parent_asset_id: null,
-    name: '韩宇', description: '十六岁寒门少年，克制、倔强，练武服带有明显磨损。', generation_prompt: '少年武者，冬夜练武场，克制坚毅',
-    media_url: '/covers/second-farewell.jpg', status: 'ready', asset_metadata: {}, version: 1, created_at: demoTimestamp, updated_at: demoTimestamp,
-  },
-  {
-    id: 'demo-asset-father', project_id: props.chapter.project_id, scope: 'project', asset_type: 'character', parent_asset_id: null,
-    name: '韩子枫', description: '曾经的家族天才，重伤后气质沉静，目光仍有锋芒。', generation_prompt: '中年武者，旧伤，昏黄灯火，沉静威严',
-    media_url: '/covers/mist-harbor.jpg', status: 'ready', asset_metadata: {}, version: 1, created_at: demoTimestamp, updated_at: demoTimestamp,
-  },
-  {
-    id: 'demo-asset-yard', project_id: props.chapter.project_id, scope: 'project', asset_type: 'scene', parent_asset_id: null,
-    name: '韩家偏院', description: '风雪中的简陋院落，与远处繁华主宅形成强烈对照。', generation_prompt: '古代偏院，深冬夜景，灯笼，冷暖对比',
-    media_url: '/covers/changan-night.jpg', status: 'ready', asset_metadata: {}, version: 1, created_at: demoTimestamp, updated_at: demoTimestamp,
-  },
-  {
-    id: 'demo-asset-book', project_id: props.chapter.project_id, scope: 'project', asset_type: 'prop', parent_asset_id: null,
-    name: '无字古籍', description: '母亲留下的神秘典籍，靠近韩宇时会浮现微光。', generation_prompt: '无字古籍，暗金纹路，微弱灵光，旧铁盒',
-    media_url: null, status: 'prompt_ready', asset_metadata: {}, version: 1, created_at: demoTimestamp, updated_at: demoTimestamp,
-  },
-]))
-const demoStoryboard = computed<StoryboardVersionDetail>(() => {
-  const storyboardId = 'demo-storyboard-v1'
-  const shots: StoryboardShot[] = [
-    {
-      id: 'demo-shot-1', storyboard_version_id: storyboardId, order_index: 1, title: '风雪练武场', shot_type: '大全景', duration_seconds: '4.0',
-      scene_description: '风雪笼罩韩家庄，练武场只剩韩宇一人。', action_description: '镜头缓慢推进，韩宇从雪地中站起。', dialogue: '',
-      image_prompt: '古代练武场，暴雪夜，孤独少年，电影宽银幕', video_prompt: '低机位缓慢推进，雪粒横向掠过，少年起身看向铁石。',
-      asset_ids: ['demo-asset-hanyu', 'demo-asset-yard'], reference_image_url: '/covers/changan-night.jpg', version: 1, created_at: demoTimestamp, updated_at: demoTimestamp,
-    },
-    {
-      id: 'demo-shot-2', storyboard_version_id: storyboardId, order_index: 2, title: '血痕与铁石', shot_type: '特写', duration_seconds: '3.0',
-      scene_description: '粗粝铁石压在木架边，少年手掌渗出血痕。', action_description: '韩宇收紧手指，再次握住铁石。', dialogue: '韩宇：再来一次。',
-      image_prompt: '少年带血手掌，粗粝铁石，冷色电影光', video_prompt: '微距特写，手指逐渐收紧，血珠沿掌纹滑落。',
-      asset_ids: ['demo-asset-hanyu'], reference_image_url: '/covers/second-farewell.jpg', version: 1, created_at: demoTimestamp, updated_at: demoTimestamp,
-    },
-    {
-      id: 'demo-shot-3', storyboard_version_id: storyboardId, order_index: 3, title: '父亲的铁盒', shot_type: '中近景', duration_seconds: '5.0',
-      scene_description: '偏院内灯火昏黄，父子隔桌而坐。', action_description: '韩子枫将生锈铁盒推向韩宇。', dialogue: '韩子枫：这是你母亲留下的。',
-      image_prompt: '古代父子，木桌，旧铁盒，暖色烛光', video_prompt: '侧面双人构图，镜头随铁盒横移，最终停在少年眼神。',
-      asset_ids: ['demo-asset-hanyu', 'demo-asset-father', 'demo-asset-yard', 'demo-asset-book'], reference_image_url: '/covers/mist-harbor.jpg', version: 1, created_at: demoTimestamp, updated_at: demoTimestamp,
-    },
-    {
-      id: 'demo-shot-4', storyboard_version_id: storyboardId, order_index: 4, title: '古籍苏醒', shot_type: '俯拍特写', duration_seconds: '4.5',
-      scene_description: '无字古籍在韩宇掌中自行翻开。', action_description: '暗金纹路依次亮起，风雪声骤然停止。', dialogue: '',
-      image_prompt: '神秘古籍，暗金灵光，少年双手，俯拍', video_prompt: '',
-      asset_ids: ['demo-asset-hanyu', 'demo-asset-book'], reference_image_url: null, version: 1, created_at: demoTimestamp, updated_at: demoTimestamp,
-    },
-  ]
-  return {
-    version: {
-      id: storyboardId, project_id: props.chapter.project_id, chapter_id: props.chapter.id, script_version_id: demoScript.value.id,
-      version: 1, is_active: true, invalidated_reason: null, created_at: demoTimestamp, updated_at: demoTimestamp,
-    },
-    shots,
-    video_clips: [{
-      id: 'demo-clip-1', storyboard_version_id: storyboardId, shot_id: 'demo-shot-1', model_id: 'demo-video-model', version: 1,
-      status: 'generating', media_url: null, provider_job_id: null, error_message: null, is_active: false, invalidated_reason: null,
-      created_at: demoTimestamp, updated_at: demoTimestamp,
-    }],
-  }
-})
-const previewScripts = computed(() => props.scripts.length ? props.scripts : [demoScript.value])
-const previewAssets = computed(() => props.assets.length ? props.assets : demoAssets.value)
-const previewStoryboard = computed(() => props.storyboard ?? demoStoryboard.value)
-const demoStageActive = computed(() => (
-  (tab.value === 'script' && !props.scripts.length)
-  || (tab.value === 'assets' && !props.assets.length)
-  || ((tab.value === 'storyboard' || tab.value === 'video') && !props.storyboard)
+const storyboardShots = computed(() => props.storyboard?.shots ?? [])
+const storyboardClips = computed(() => props.storyboard?.video_clips ?? [])
+const activeScript = computed(() => props.scripts.find((item) => item.is_active) ?? props.scripts[0] ?? null)
+const readyAssets = computed(() => props.assets.filter((item) => Boolean(item.media_url)))
+const assetsById = computed(() => new Map(props.assets.map((asset) => [asset.id, asset])))
+const shotAssetsById = computed(() => new Map(
+  storyboardShots.value.map((shot) => [
+    shot.id,
+    shot.asset_ids.flatMap((assetId) => {
+      const asset = assetsById.value.get(assetId)
+      return asset ? [asset] : []
+    }),
+  ]),
 ))
-
-const activeScript = computed(() => previewScripts.value.find((item) => item.is_active) ?? previewScripts.value[0] ?? null)
-const readyAssets = computed(() => previewAssets.value.filter((item) => Boolean(item.media_url)))
+const shotFallbackImages = computed(() => new Map(
+  storyboardShots.value.map((shot) => [
+    shot.id,
+    shot.reference_image_url
+      || shotAssetsById.value.get(shot.id)?.find((asset) => Boolean(asset.media_url))?.media_url
+      || '',
+  ]),
+))
 const busyShotIdSet = computed(() => new Set(props.busyShotIds ?? []))
 const busyVideoPromptShotIdSet = computed(() => new Set(props.busyVideoPromptShotIds ?? []))
 const clipsByShot = computed(() => {
   const rows = new Map<string, VideoClip[]>()
-  previewStoryboard.value.video_clips.forEach((clip) => {
+  storyboardClips.value.forEach((clip) => {
     const list = rows.get(clip.shot_id) ?? []
     list.push(clip)
     rows.set(clip.shot_id, list)
@@ -203,7 +124,7 @@ const clipsByShot = computed(() => {
 })
 const activeClips = computed(() => {
   const rows = new Map<string, VideoClip>()
-  previewStoryboard.value.video_clips.forEach((clip) => {
+  storyboardClips.value.forEach((clip) => {
     const current = rows.get(clip.shot_id)
     if (
       clip.is_active
@@ -216,19 +137,19 @@ const activeClips = computed(() => {
   return rows
 })
 const readyVideoCount = computed(() => [...activeClips.value.values()].filter((clip) => clip.is_active && clip.status === 'ready').length)
-const shotsWithPromptCount = computed(() => previewStoryboard.value.shots.filter((shot) => Boolean(shot.video_prompt.trim())).length)
+const shotsWithPromptCount = computed(() => storyboardShots.value.filter((shot) => Boolean(shot.video_prompt.trim())).length)
 const selectedVideoShot = computed(() => (
-  previewStoryboard.value.shots.find((shot) => shot.id === selectedVideoShotId.value)
-  ?? previewStoryboard.value.shots[0]
+  storyboardShots.value.find((shot) => shot.id === selectedVideoShotId.value)
+  ?? storyboardShots.value[0]
   ?? null
 ))
 const selectedVideoShotAssets = computed(() => (
   selectedVideoShot.value ? shotAssets(selectedVideoShot.value) : []
 ))
-const allVideoShotsSelected = computed(() => Boolean(previewStoryboard.value.shots.length)
-  && previewStoryboard.value.shots.every((shot) => selectedVideoShotIds.value.includes(shot.id)))
+const allVideoShotsSelected = computed(() => Boolean(storyboardShots.value.length)
+  && storyboardShots.value.every((shot) => selectedVideoShotIds.value.includes(shot.id)))
 const selectedVideoShots = computed(() => {
-  const shots = previewStoryboard.value.shots
+  const shots = storyboardShots.value
   return selectedVideoShotIds.value.length
     ? shots.filter((shot) => selectedVideoShotIds.value.includes(shot.id))
     : shots
@@ -242,7 +163,7 @@ const videoEligibleShots = computed(() => selectedVideoShots.value.filter(
     && Boolean(shot.video_prompt.trim())
     && !(activeClips.value.get(shot.id)?.is_active && activeClips.value.get(shot.id)?.status === 'ready'),
 ))
-const downloadableVideoClips = computed(() => previewStoryboard.value.shots
+const downloadableVideoClips = computed(() => storyboardShots.value
   .map((shot) => activeClips.value.get(shot.id))
   .filter((clip): clip is VideoClip => Boolean(clip?.is_active && clip.status === 'ready' && clip.media_url)))
 const automaticWorkflowState = computed(() => props.automaticWorkflow?.workflow ?? null)
@@ -302,11 +223,11 @@ const emptyStageContent = computed(() => ({
 }[tab.value]))
 
 function shotAssets(shot: StoryboardShot): AssetItem[] {
-  return previewAssets.value.filter((asset) => shot.asset_ids.includes(asset.id))
+  return shotAssetsById.value.get(shot.id) ?? []
 }
 
 function shotFallbackImage(shot: StoryboardShot): string {
-  return shot.reference_image_url || shotAssets(shot).find((asset) => Boolean(asset.media_url))?.media_url || ''
+  return shotFallbackImages.value.get(shot.id) ?? ''
 }
 
 function assetTypeText(asset: AssetItem): string {
@@ -349,7 +270,7 @@ function toggleVideoShotSelection(shotId: string): void {
 }
 
 function toggleAllVideoShots(): void {
-  const ids = previewStoryboard.value.shots.map((shot) => shot.id)
+  const ids = storyboardShots.value.map((shot) => shot.id)
   selectedVideoShotIds.value = allVideoShotsSelected.value ? [] : ids
 }
 
@@ -419,9 +340,9 @@ watch(
 )
 
 watch(
-  () => previewStoryboard.value.version.id,
+  () => props.storyboard?.version.id,
   () => {
-    const shots = previewStoryboard.value.shots
+    const shots = storyboardShots.value
     selectedVideoShotId.value = shots[0]?.id ?? ''
     selectedVideoShotIds.value = []
   },
@@ -437,7 +358,6 @@ watch(
         <h2>{{ chapter.title }}</h2>
       </div>
       <div class="director-canvas__meta">
-        <span v-if="demoStageActive" class="director-preview-badge">演示预览</span>
         <span class="chapter-status" :data-status="chapter.status"><i></i>{{ chapterStatusText }}</span>
         <small><Check :size="13" />AI 自动编排</small>
         <button
@@ -481,9 +401,9 @@ watch(
 
     <nav class="director-canvas__tabs" aria-label="章节产物">
       <button type="button" :aria-pressed="tab === 'source'" @click="tab = 'source'"><BookOpenText :size="15" />原文</button>
-      <button type="button" :aria-pressed="tab === 'script'" @click="tab = 'script'"><FileText :size="15" />剧本<span class="tabular-nums">{{ previewScripts.length }}</span></button>
-      <button type="button" :aria-pressed="tab === 'assets'" @click="tab = 'assets'"><Boxes :size="15" />资产<span class="tabular-nums">{{ previewAssets.length }}</span></button>
-      <button type="button" :aria-pressed="tab === 'storyboard'" @click="tab = 'storyboard'"><Layers3 :size="15" />分镜<span class="tabular-nums">{{ previewStoryboard.shots.length }}</span></button>
+      <button type="button" :aria-pressed="tab === 'script'" @click="tab = 'script'"><FileText :size="15" />剧本<span class="tabular-nums">{{ scripts.length }}</span></button>
+      <button type="button" :aria-pressed="tab === 'assets'" @click="tab = 'assets'"><Boxes :size="15" />资产<span class="tabular-nums">{{ assets.length }}</span></button>
+      <button type="button" :aria-pressed="tab === 'storyboard'" @click="tab = 'storyboard'"><Layers3 :size="15" />分镜<span class="tabular-nums">{{ storyboardShots.length }}</span></button>
       <button type="button" :aria-pressed="tab === 'video'" @click="tab = 'video'"><Film :size="15" />生成视频<span class="tabular-nums">{{ readyVideoCount }}</span></button>
     </nav>
 
@@ -501,20 +421,20 @@ watch(
       <footer v-if="activeScript.review_notes"><strong>版本说明</strong><p>{{ activeScript.review_notes }}</p></footer>
     </section>
 
-    <section v-else-if="tab === 'assets'" class="director-asset-board">
-      <header><div><strong>本章塑造资产</strong><span>{{ readyAssets.length }} / {{ previewAssets.length }} 已定稿</span></div><button type="button" :disabled="automationLocked" @click="emit('openAssets')"><LockKeyhole v-if="automationLocked" :size="15" /><Boxes v-else :size="15" />{{ automationLocked ? '全自动运行中' : '管理资产' }}</button></header>
+    <section v-else-if="tab === 'assets' && assets.length" class="director-asset-board">
+      <header><div><strong>本章塑造资产</strong><span>{{ readyAssets.length }} / {{ assets.length }} 已定稿</span></div><button type="button" :disabled="automationLocked" @click="emit('openAssets')"><LockKeyhole v-if="automationLocked" :size="15" /><Boxes v-else :size="15" />{{ automationLocked ? '全自动运行中' : '管理资产' }}</button></header>
       <div>
-        <article v-for="asset in previewAssets" :key="asset.id">
+        <article v-for="asset in assets" :key="asset.id">
           <div><img v-if="asset.media_url" :src="asset.media_url" :alt="asset.name" /><span v-else><Image :size="22" /></span><i :data-ready="Boolean(asset.media_url)">{{ asset.media_url ? '已定稿' : asset.generation_prompt ? '待生图' : '待提示词' }}</i></div>
           <strong>{{ asset.name }}</strong><small>{{ asset.asset_type === 'character' ? '人物' : asset.asset_type === 'scene' ? '场景' : asset.asset_type === 'prop' ? '道具' : '素材' }}</small>
         </article>
       </div>
     </section>
 
-    <section v-else-if="tab === 'storyboard'" class="director-storyboard-board">
-      <header><div><strong>导演分镜 v{{ previewStoryboard.version.version }}</strong><span>{{ previewStoryboard.shots.length }} 个镜头</span></div><span><Sparkles :size="14" />已通过资产校验</span></header>
+    <section v-else-if="tab === 'storyboard' && storyboard" class="director-storyboard-board">
+      <header><div><strong>导演分镜 v{{ storyboard.version.version }}</strong><span>{{ storyboardShots.length }} 个镜头</span></div><span><Sparkles :size="14" />已通过资产校验</span></header>
       <div>
-        <article v-for="shot in previewStoryboard.shots" :key="shot.id">
+        <article v-for="shot in storyboardShots" :key="shot.id">
           <div><img v-if="shot.reference_image_url" :src="shot.reference_image_url" :alt="shot.title" /><span v-else><Camera :size="24" /></span><b class="tabular-nums">{{ String(shot.order_index).padStart(2, '0') }}</b></div>
           <header><strong>{{ shot.title }}</strong><small>{{ shot.shot_type }} · {{ shot.duration_seconds }}s</small></header>
           <p>{{ shot.action_description || shot.scene_description }}</p>
@@ -522,20 +442,21 @@ watch(
       </div>
     </section>
 
-    <section v-else-if="tab === 'video'" class="director-video-board">
+    <section v-else-if="tab === 'video' && storyboardShots.length" class="director-video-board">
       <header>
         <div>
           <strong>镜头视频生产</strong>
-          <span><b class="tabular-nums">{{ readyVideoCount }}</b> / {{ previewStoryboard.shots.length }} 已完成 · <b class="tabular-nums">{{ shotsWithPromptCount }}</b> 个镜头已有提示词</span>
+          <span><b class="tabular-nums">{{ readyVideoCount }}</b> / {{ storyboardShots.length }} 已完成 · <b class="tabular-nums">{{ shotsWithPromptCount }}</b> 个镜头已有提示词</span>
         </div>
         <div class="director-video-board__actions">
           <button type="button" class="button button--secondary" :disabled="!downloadableVideoClips.length || downloadingVideos" @click="downloadReadyVideos"><LoaderCircle v-if="downloadingVideos" class="spin" :size="15" /><Download v-else :size="15" />{{ downloadingVideos ? '正在打包' : '下载已完成' }}</button>
-          <button type="button" class="button button--secondary" :disabled="automationLocked || demoStageActive || !videoPromptEligibleShots.length || videoAction === 'videoPrompt' || videoPromptTaskActive" @click="queueVideoPrompts">
+          <VideoConcatButton v-if="storyboard" :project-id="chapter.project_id" :chapter-id="chapter.id" :storyboard-id="storyboard.version.id" :count="downloadableVideoClips.length" />
+          <button type="button" class="button button--secondary" :disabled="automationLocked || !videoPromptEligibleShots.length || videoAction === 'videoPrompt' || videoPromptTaskActive" @click="queueVideoPrompts">
             <LoaderCircle v-if="videoAction === 'videoPrompt' || videoPromptTaskActive" class="spin" :size="15" />
             <WandSparkles v-else :size="15" />
             批量提示词
           </button>
-          <button type="button" class="button button--primary" :disabled="automationLocked || demoStageActive || !videoEligibleShots.length || Boolean(videoAction)" @click="queueBatchVideos">
+          <button type="button" class="button button--primary" :disabled="automationLocked || !videoEligibleShots.length || Boolean(videoAction)" @click="queueBatchVideos">
             <LoaderCircle v-if="videoAction === 'batchVideo'" class="spin" :size="15" />
             <Play v-else :size="15" />
             批量生成视频
@@ -545,7 +466,7 @@ watch(
 
       <section v-if="selectedVideoShot" class="director-video-focus">
         <div class="director-video-focus__preview">
-          <video v-if="activeClips.get(selectedVideoShot.id)?.media_url" :src="activeClips.get(selectedVideoShot.id)?.media_url || undefined" controls playsinline preload="metadata"></video>
+          <video v-if="activeClips.get(selectedVideoShot.id)?.media_url" :src="activeClips.get(selectedVideoShot.id)?.media_url || undefined" :poster="shotFallbackImage(selectedVideoShot) || undefined" controls playsinline preload="metadata"></video>
           <img v-else-if="shotFallbackImage(selectedVideoShot)" :src="shotFallbackImage(selectedVideoShot)" :alt="selectedVideoShot.title" />
           <span v-else><Camera :size="28" />等待参考图</span>
           <i :data-status="activeClips.get(selectedVideoShot.id)?.status || 'idle'">{{ shotVideoStatus(selectedVideoShot) }}</i>
@@ -557,12 +478,12 @@ watch(
               <strong>{{ selectedVideoShot.title }}</strong>
             </div>
             <div class="director-video-focus__buttons">
-              <button type="button" class="button button--secondary" :disabled="automationLocked || demoStageActive || busyVideoPromptShotIdSet.has(selectedVideoShot.id) || busyShotIdSet.has(selectedVideoShot.id) || videoAction === 'videoPrompt' || videoPromptTaskActive" @click="queueSelectedVideoPrompt">
+              <button type="button" class="button button--secondary" :disabled="automationLocked || busyVideoPromptShotIdSet.has(selectedVideoShot.id) || busyShotIdSet.has(selectedVideoShot.id) || videoAction === 'videoPrompt' || videoPromptTaskActive" @click="queueSelectedVideoPrompt">
                 <LoaderCircle v-if="busyVideoPromptShotIdSet.has(selectedVideoShot.id) || videoAction === 'videoPrompt'" class="spin" :size="15" />
                 <WandSparkles v-else :size="15" />
                 {{ selectedVideoShot.video_prompt ? '重写提示词' : '生成提示词' }}
               </button>
-              <button type="button" class="button button--primary" :disabled="automationLocked || demoStageActive || !selectedVideoShot.video_prompt || busyShotIdSet.has(selectedVideoShot.id) || busyVideoPromptShotIdSet.has(selectedVideoShot.id) || videoAction === 'video'" @click="emit('queueShotVideo', selectedVideoShot)">
+              <button type="button" class="button button--primary" :disabled="automationLocked || !selectedVideoShot.video_prompt || busyShotIdSet.has(selectedVideoShot.id) || busyVideoPromptShotIdSet.has(selectedVideoShot.id) || videoAction === 'video'" @click="emit('queueShotVideo', selectedVideoShot)">
                 <LoaderCircle v-if="busyShotIdSet.has(selectedVideoShot.id)" class="spin" :size="15" />
                 <Play v-else :size="15" />
                 {{ activeClips.get(selectedVideoShot.id)?.is_active ? '重新生成' : '生成本镜头' }}
@@ -588,7 +509,7 @@ watch(
             </header>
             <div v-if="selectedVideoShotAssets.length">
               <article v-for="asset in selectedVideoShotAssets" :key="asset.id">
-                <span><img v-if="asset.media_url" :src="asset.media_url" :alt="asset.name" /><Image v-else :size="17" /></span>
+                <span><img v-if="asset.media_url" :src="asset.media_url" :alt="asset.name" loading="lazy" decoding="async" /><Image v-else :size="17" /></span>
                 <div><strong>{{ asset.name }}</strong><small>{{ assetTypeText(asset) }} · {{ asset.media_url ? '已作为参考图' : '缺少图片，生成视频前建议先定稿' }}</small></div>
               </article>
             </div>
@@ -611,15 +532,15 @@ watch(
 
       <div class="director-video-shot-grid">
         <article
-          v-for="shot in previewStoryboard.shots"
+          v-for="shot in storyboardShots"
           :key="shot.id"
+          v-memo="[shot.version, shotFallbackImage(shot), shot.video_prompt, selectedVideoShot?.id === shot.id, selectedVideoShotIds.includes(shot.id), busyShotIdSet.has(shot.id), busyVideoPromptShotIdSet.has(shot.id), activeClips.get(shot.id)?.id, activeClips.get(shot.id)?.status]"
           :class="{ active: selectedVideoShot?.id === shot.id, selected: selectedVideoShotIds.includes(shot.id) }"
           @click="selectVideoShot(shot)"
         >
           <button type="button" :aria-pressed="selectedVideoShotIds.includes(shot.id)" :title="selectedVideoShotIds.includes(shot.id) ? '取消选择' : '选择镜头'" @click.stop="toggleVideoShotSelection(shot.id)"><Check :size="13" /></button>
           <div>
-            <video v-if="activeClips.get(shot.id)?.media_url" :src="activeClips.get(shot.id)?.media_url || undefined" muted playsinline preload="metadata"></video>
-            <img v-else-if="shotFallbackImage(shot)" :src="shotFallbackImage(shot)" :alt="shot.title" />
+            <img v-if="shotFallbackImage(shot)" :src="shotFallbackImage(shot)" :alt="shot.title" loading="lazy" decoding="async" />
             <span v-else><Camera :size="20" /></span>
             <i :data-status="activeClips.get(shot.id)?.status || 'idle'">{{ shotVideoStatus(shot) }}</i>
           </div>

@@ -56,6 +56,7 @@ class AgentRuntimeRequest(BaseModel):
     skills: list[dict[str, Any]]
     memory_context: list[str]
     state_mode: str = "persistent"
+    tool_mode: str = "workspace"
     conversation_summary: str | None = None
     recent_messages: list[dict[str, str]] = Field(default_factory=list)
     project_files: list[AgentRuntimeProjectFileSnapshot] = Field(default_factory=list)
@@ -103,7 +104,21 @@ async def raise_for_runtime_status(response: httpx.Response) -> None:
     elif status_code in {401, 403}:
         message = "Agent Runtime 鉴权失败，请联系管理员检查内部配置"
     elif status_code >= 500:
-        message = "Agent Runtime 暂时不可用，请稍后重试"
+        try:
+            runtime_detail = response.json().get("detail")
+        except (ValueError, AttributeError):
+            runtime_detail = None
+        safe_prefixes = (
+            "模型",
+            "Grok",
+            "无法连接模型供应商",
+            "Agent Runtime 执行失败",
+        )
+        message = (
+            runtime_detail
+            if isinstance(runtime_detail, str) and runtime_detail.startswith(safe_prefixes)
+            else "Agent Runtime 暂时不可用，请稍后重试"
+        )
     else:
         message = "Agent Runtime 拒绝了本次请求，请联系管理员检查运行时配置"
     raise AgentRuntimeRequestError(message, status_code=status_code)
@@ -129,6 +144,7 @@ class AgentRuntimeClient:
                         "project_files",
                         "attachments",
                         "state_mode",
+                        "tool_mode",
                         "conversation_summary",
                         "recent_messages",
                     },

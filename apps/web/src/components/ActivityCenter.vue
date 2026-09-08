@@ -90,6 +90,7 @@ const taskMeta: Record<string, { title: string; category: string; icon: typeof S
   chapter_dialogue_extraction: { title: '章节台词提取', category: '台词', icon: MessageSquareText },
   dialogue_tts_generation: { title: '角色台词配音', category: '音频', icon: Music2 },
   chapter_composition_render: { title: '章节成片渲染', category: '成片', icon: FileOutput },
+  storyboard_video_concat: { title: '视频拼接下载', category: '成片', icon: FileOutput },
 }
 
 const filters: Array<{ value: TaskFilter; label: string }> = [

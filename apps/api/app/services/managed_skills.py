@@ -103,6 +103,12 @@ SYSTEM_PROMPTS = (
     ),
 )
 SYSTEM_PROMPT_CODES = frozenset(code for code, _name, _description in SYSTEM_PROMPTS)
+SYSTEM_PROMPT_BASELINE_VERSIONS = {
+    "storyboard-generation": 4,
+    "storyboard-review": 4,
+    "storyboard-repair": 4,
+    "video-prompt-generation": 8,
+}
 SYSTEM_PROMPT_TEMPLATE_ROOT = Path(__file__).with_name("system_prompt_templates")
 LEGACY_HANDBOOK_MARKERS = {
     "ToonFlow": "包含其它产品名称 ToonFlow",
@@ -111,6 +117,10 @@ LEGACY_HANDBOOK_MARKERS = {
 MARKDOWN_FILE_REFERENCE = re.compile(r"`([^`\r\n]+\.md)`", re.IGNORECASE)
 
 HANDBOOK_TASK_FILES: dict[str, dict[HandbookType, tuple[str, ...]]] = {
+    "project-ai-creation": {
+        HandbookType.VISUAL: ("README.md", "prefix.md", "technique-director-rules.md"),
+        HandbookType.DIRECTOR: ("README.md", "director-planning.md"),
+    },
     "chapter-analysis": {
         HandbookType.VISUAL: ("README.md", "prefix.md"),
         HandbookType.DIRECTOR: ("README.md", "director-planning.md"),
@@ -202,6 +212,17 @@ def default_system_prompt_content(code: str) -> str:
     content = path.read_text(encoding="utf-8").strip()
     if not content:
         raise ValueError(f"系统提示词模板不能为空：{code}")
+    return content
+
+
+def internal_system_prompt_content(filename: str) -> str:
+    """Load a non-admin protocol appendix kept outside the managed prompt catalog."""
+    if Path(filename).name != filename or not filename.endswith(".md"):
+        raise ValueError("内部系统提示词文件名无效")
+    path = SYSTEM_PROMPT_TEMPLATE_ROOT / filename
+    content = path.read_text(encoding="utf-8").strip()
+    if not content:
+        raise ValueError(f"内部系统提示词模板不能为空：{filename}")
     return content
 
 

@@ -39,10 +39,15 @@ async def resolve_image_model(
     tenant_id: str,
     resolution: str | None,
     fallback_model_id: str | None = None,
+    prefer_fallback: bool = False,
 ) -> AIModel | None:
     normalized = normalize_image_resolution(resolution)
     if normalized is None:
         return None
+    if prefer_fallback:
+        return await _usable_image_model(
+            session, tenant_id=tenant_id, model_id=fallback_model_id or "",
+        )
 
     route = await session.scalar(
         select(ImageResolutionModelRoute).where(

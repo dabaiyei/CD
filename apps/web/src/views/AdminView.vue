@@ -95,6 +95,7 @@ const testingProviderId = ref<string | null>(null)
 const testingModelId = ref<string | null>(null)
 const installingAutoDlPreset = ref(false)
 const installingAgnesPreset = ref(false)
+const installingDolaPreset = ref(false)
 const settingDefaultType = ref<ModelType | null>(null)
 const settingImageResolution = ref<ImageResolution | null>(null)
 const dialog = ref<DialogKind>(null)
@@ -181,9 +182,9 @@ function defaultVideoCapabilities(): VideoModelCapabilities {
     schema_version: 1,
     generation_modes: ['text_to_video'],
     reference_limits: {
-      image: { enabled: false, min_count: 0, max_count: 0 },
-      video: { enabled: false, min_count: 0, max_count: 0 },
-      audio: { enabled: false, min_count: 0, max_count: 0 },
+      image: { enabled: false, min_count: 0, max_count: 0, accepted_mime_types: [] },
+      video: { enabled: false, min_count: 0, max_count: 0, accepted_mime_types: [] },
+      audio: { enabled: false, min_count: 0, max_count: 0, accepted_mime_types: [] },
     },
     audio_policy: 'optional',
     duration_resolution_map: [{ durations: [5, 10], resolutions: ['720p', '1080p'] }],
@@ -327,6 +328,7 @@ const activeProvider = computed(() => (
 const activeProviderModels = computed(() => models.value.filter((item) => item.provider_id === activeProvider.value?.id))
 const autoDlPresetInstalled = computed(() => providers.value.some((item) => item.code === 'autodl-minimax-h3'))
 const agnesPresetInstalled = computed(() => providers.value.some((item) => item.code === 'agnes-ai'))
+const dolaPresetInstalled = computed(() => providers.value.some((item) => item.code === 'dola-local'))
 const activeProviderCredentialCount = computed(() => activeProvider.value?.configured_credentials.length ?? 0)
 const activeProviderHasAdapter = computed(() => Object.keys(activeProvider.value?.adapter_config ?? {}).length > 0)
 const videoCapabilitySummaries = computed<Record<string, string[]>>(() => Object.fromEntries(
@@ -704,7 +706,12 @@ function normalizedVideoCapabilities(value: unknown): VideoModelCapabilities {
     const enabled = typeof source.enabled === 'boolean' ? source.enabled : fallback.enabled
     const normalizedMin = enabled && Number.isFinite(minCount) ? Math.max(0, Math.trunc(minCount)) : 0
     const normalizedMax = enabled && Number.isFinite(maxCount) ? Math.max(normalizedMin, Math.trunc(maxCount)) : 0
-    return { enabled, min_count: normalizedMin, max_count: normalizedMax }
+    return {
+      enabled,
+      min_count: normalizedMin,
+      max_count: normalizedMax,
+      accepted_mime_types: stringList(source.accepted_mime_types),
+    }
   }
 
   const durations = Array.isArray(capabilities.durations) ? capabilities.durations.filter((item): item is number => typeof item === 'number') : [5, 10]
@@ -866,6 +873,24 @@ async function installAgnesPreset(): Promise<void> {
     toast.show('Agnes AI 添加失败', { message: error instanceof Error ? error.message : undefined, tone: 'error' })
   } finally {
     installingAgnesPreset.value = false
+  }
+}
+
+async function installDolaPreset(): Promise<void> {
+  if (installingDolaPreset.value || dolaPresetInstalled.value) return
+  installingDolaPreset.value = true
+  try {
+    const result = await api<{ provider: Provider }>('/admin/provider-presets/dola-local/install', { method: 'POST' })
+    await loadAll()
+    activeProviderId.value = result.provider.id
+    toast.show('Dola 本地中转已添加', {
+      message: '已预置 3 个视频模型。请填写业务 AUTH_TOKEN，启用平台与模型后测试连接。',
+      tone: 'success',
+    })
+  } catch (error) {
+    toast.show('Dola 本地中转添加失败', { message: error instanceof Error ? error.message : undefined, tone: 'error' })
+  } finally {
+    installingDolaPreset.value = false
   }
 }
 
@@ -1372,6 +1397,7 @@ async function saveSkill(): Promise<void> {
         <header class="section-heading">
           <div><h2>模型服务</h2><p>供应商接入、万能适配协议与模型能力在同一工作台维护</p></div>
           <div class="section-actions">
+            <button class="button button--secondary" type="button" :disabled="installingDolaPreset || dolaPresetInstalled" @click="installDolaPreset"><LoaderCircle v-if="installingDolaPreset" class="spin" :size="17" /><Film v-else :size="17" />{{ dolaPresetInstalled ? 'Dola 已添加' : '添加 Dola' }}</button>
             <button class="button button--secondary" type="button" :disabled="installingAgnesPreset || agnesPresetInstalled" @click="installAgnesPreset"><LoaderCircle v-if="installingAgnesPreset" class="spin" :size="17" /><Sparkles v-else :size="17" />{{ agnesPresetInstalled ? 'Agnes AI 已添加' : '添加 Agnes AI' }}</button>
             <button class="button button--secondary" type="button" :disabled="installingAutoDlPreset || autoDlPresetInstalled" @click="installAutoDlPreset"><LoaderCircle v-if="installingAutoDlPreset" class="spin" :size="17" /><Film v-else :size="17" />{{ autoDlPresetInstalled ? 'AutoDL H3 已添加' : '添加 AutoDL H3' }}</button>
             <button class="button button--secondary" type="button" @click="openProvider()"><Plus :size="17" />接入供应商</button>

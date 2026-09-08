@@ -121,6 +121,106 @@ AGNES_TEXT_MODEL_ID = "agnes-2.5-flash"
 AGNES_IMAGE_21_MODEL_ID = "agnes-image-2.1-flash"
 AGNES_IMAGE_MODEL_ID = "agnes-image-2.5-flash"
 AGNES_VIDEO_MODEL_ID = "agnes-video-2.5-flash"
+DOLA_PROVIDER_CODE = "dola-local"
+DOLA_VIDEO_MODELS = (
+    "Dreamina Seedance 2.0 Fast",
+    "Dreamina Seedance 2.5",
+    "Dreamina Seedance 1.0",
+)
+
+
+def dola_video_adapter_config() -> dict[str, Any]:
+    """Return Dola local account-pool discovery and async video contract."""
+    return ProviderAdapterConfig.model_validate(
+        {
+            "schema_version": 1,
+            "credential_fields": [],
+            "connectivity": {"method": "GET", "path": "api/video-pool"},
+            "catalog": {
+                "request": {"method": "GET", "path": "api/video-pool"},
+                "items_path": "model_costs",
+                "model_id_path": "model",
+                "name_path": "model",
+                "owner_path": "",
+            },
+            "video": {
+                "create": {
+                    "method": "POST",
+                    "path": "api/video-tasks",
+                    "body": {
+                        "prompt": "{{prompt}}",
+                        "model": "{{model}}",
+                        "duration": "{{duration}}",
+                        "ratio": "{{aspect_ratio}}",
+                        "timeout_seconds": 900,
+                    },
+                },
+                "poll": {"method": "GET", "path": "api/video-tasks/{{job_id}}"},
+                "response": {
+                    "task_id_path": "id",
+                    "status_path": "status",
+                    "result_url_path": "",
+                    "result_base64_path": "",
+                    "error_path": "error",
+                    "success_values": ["completed"],
+                    "pending_values": [
+                        "queued",
+                        "starting",
+                        "preparing",
+                        "submitting",
+                        "generating",
+                        "downloading",
+                        "waiting_verification",
+                    ],
+                    "failed_values": [
+                        "failed",
+                        "needs_login",
+                        "needs_review",
+                        "cancelled",
+                    ],
+                },
+                "references": [
+                    {
+                        "media_type": "image",
+                        "strategy": "array",
+                        "field": "attachment_ids",
+                        "source": "data_uri",
+                    }
+                ],
+                "poll_interval_seconds": 3,
+                "poll_timeout_seconds": 3600,
+            },
+        }
+    ).model_dump(exclude_none=True)
+
+
+def dola_video_capabilities() -> dict[str, Any]:
+    """Use conservative durations verified in the current Dola web controls."""
+    return VideoModelCapabilities.model_validate(
+        {
+            "schema_version": 1,
+            "generation_modes": ["text_to_video", "first_frame", "multi_shot"],
+            "reference_limits": {
+                "image": {
+                    "enabled": True,
+                    "min_count": 0,
+                    "max_count": 9,
+                    "accepted_mime_types": ["image/jpeg", "image/png", "image/webp"],
+                },
+                "video": {"enabled": False, "min_count": 0, "max_count": 0},
+                "audio": {"enabled": False, "min_count": 0, "max_count": 0},
+            },
+            "audio_policy": "optional",
+            "duration_resolution_map": [
+                {"durations": [5, 10], "resolutions": ["720p"]}
+            ],
+            "aspect_ratios": ["1:1", "3:4", "4:3", "9:16", "16:9", "21:9"],
+            "prompt_languages": ["zh-CN", "en"],
+            "preferred_prompt_language": "zh-CN",
+            "negative_prompt_supported": False,
+            "asynchronous": True,
+        }
+    ).model_dump()
 
 
 def agnes_video_adapter_config() -> dict[str, Any]:
@@ -191,20 +291,31 @@ def agnes_video_capabilities() -> dict[str, Any]:
             "schema_version": 1,
             "generation_modes": ["text_to_video", "first_frame"],
             "reference_limits": {
-                "image": {"enabled": True, "min_count": 1, "max_count": 5},
+                "image": {
+                    "enabled": True,
+                    "min_count": 1,
+                    "max_count": 5,
+                    "accepted_mime_types": ["image/jpeg", "image/png", "image/webp"],
+                },
                 "video": {"enabled": False, "min_count": 0, "max_count": 0},
-                "audio": {"enabled": True, "min_count": 0, "max_count": 3},
+                "audio": {
+                    "enabled": True,
+                    "min_count": 0,
+                    "max_count": 3,
+                    "accepted_mime_types": ["audio/mpeg", "audio/wav", "audio/mp4"],
+                },
             },
             "audio_policy": "optional",
             "duration_resolution_map": [
                 {
-                    "durations": [4, 5, 6, 7, 8, 9, 10, 11, 12],
+                    "durations": [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
                     # Agnes Video 2.5 Flash currently accepts 720P only.
                     "resolutions": ["720p"],
                 }
             ],
             "aspect_ratios": ["21:9", "16:9", "4:3", "1:1", "3:4", "9:16"],
             "prompt_languages": ["zh-CN", "en"],
+            "preferred_prompt_language": "zh-CN",
             "negative_prompt_supported": False,
             "asynchronous": True,
             "provider_mode_map": {"text_to_video": "text", "first_frame": "reference"},
@@ -326,7 +437,12 @@ def autodl_minimax_h3_capabilities() -> dict[str, Any]:
             "schema_version": 1,
             "generation_modes": ["first_frame", "multi_shot"],
             "reference_limits": {
-                "image": {"enabled": True, "min_count": 1, "max_count": 9},
+                "image": {
+                    "enabled": True,
+                    "min_count": 1,
+                    "max_count": 9,
+                    "accepted_mime_types": ["image/jpeg", "image/png", "image/webp"],
+                },
                 "video": {"enabled": False, "min_count": 0, "max_count": 0},
                 "audio": {"enabled": False, "min_count": 0, "max_count": 0},
             },
@@ -339,6 +455,8 @@ def autodl_minimax_h3_capabilities() -> dict[str, Any]:
             ],
             "aspect_ratios": ["9:16", "16:9", "1:1"],
             "prompt_languages": ["zh-CN", "en"],
+            "preferred_prompt_language": "en",
+            "video_prompt_protocol": "minimax_h3",
             "negative_prompt_supported": False,
             "asynchronous": True,
         }
@@ -351,6 +469,15 @@ class ReferenceLimit(BaseModel):
     enabled: bool = False
     min_count: int = Field(default=0, ge=0, le=32)
     max_count: int = Field(default=0, ge=0, le=32)
+    accepted_mime_types: list[str] = Field(default_factory=list, max_length=30)
+
+    @field_validator("accepted_mime_types")
+    @classmethod
+    def valid_mime_types(cls, values: list[str]) -> list[str]:
+        cleaned = [value.strip().lower() for value in values if value.strip()]
+        if any("/" not in value for value in cleaned):
+            raise ValueError("参考媒体格式必须使用 MIME 类型")
+        return list(dict.fromkeys(cleaned))
 
     @model_validator(mode="after")
     def valid_range(self) -> ReferenceLimit:
@@ -553,17 +680,32 @@ def validate_video_generation_request(
     if aspect_ratio not in parsed.aspect_ratios:
         raise ValueError(f"当前视频模型不支持画幅比例：{aspect_ratio}")
     for media_type, limit in parsed.reference_limits.items():
-        count = sum(1 for item in reference_media if item.get("type") == media_type)
+        selected_media = [item for item in reference_media if item.get("type") == media_type]
+        count = len(selected_media)
         if not limit.enabled and count:
             raise ValueError(f"当前视频模型不支持 {media_type} 参考媒体")
         if limit.enabled and not limit.min_count <= count <= limit.max_count:
             raise ValueError(
                 f"{media_type} 参考媒体数量必须在 {limit.min_count} 到 {limit.max_count} 之间"
             )
+        if limit.accepted_mime_types:
+            for item in selected_media:
+                mime_type = str(item.get("mime_type") or "").strip().lower()
+                if mime_type and mime_type not in limit.accepted_mime_types:
+                    raise ValueError(
+                        f"当前视频模型不支持 {mime_type} 格式的 {media_type} 参考媒体；"
+                        f"支持格式：{', '.join(limit.accepted_mime_types)}"
+                    )
     if parsed.audio_policy == "required" and not audio_enabled:
         raise ValueError("当前视频模型要求输出音频")
     if parsed.audio_policy == "disabled" and audio_enabled:
         raise ValueError("当前视频模型仅支持无声视频")
+
+
+def default_video_audio_enabled(capabilities: dict[str, Any] | None) -> bool:
+    """Enable audio whenever the selected video model declares audio support."""
+    policy = str((capabilities or {}).get("audio_policy") or "optional").strip().lower()
+    return policy != "disabled"
 
 
 def extract_path(document: Any, path: str) -> Any:

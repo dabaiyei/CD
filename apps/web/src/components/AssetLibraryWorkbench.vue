@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import {
   ArrowDownToLine,
   ArrowUpFromLine,
+  AudioLines,
   Boxes,
   Check,
   ChevronDown,
@@ -18,7 +19,9 @@ import {
   LoaderCircle,
   MapPinned,
   PackageSearch,
+  Pause,
   Pencil,
+  Play,
   Plus,
   RefreshCw,
   RotateCcw,
@@ -70,10 +73,17 @@ const editorAssetId = ref('')
 const revisions = ref<AssetRevision[]>([])
 const selectedRevisionId = ref('')
 const loadingRevisions = ref(false)
-const action = ref<'save' | 'prompt' | 'image' | 'upload' | 'restore' | 'transfer' | ''>('')
+const action = ref<
+  'save' | 'prompt' | 'image' | 'upload' | 'audio_upload' | 'audio_remove' | 'restore' | 'transfer' | ''
+>('')
 const deleteTargets = ref<AssetItem[]>([])
 const deleting = ref(false)
 const imageInput = ref<HTMLInputElement | null>(null)
+const audioInput = ref<HTMLInputElement | null>(null)
+const audioPlayer = ref<HTMLAudioElement | null>(null)
+const audioPlaying = ref(false)
+const audioCurrentTime = ref(0)
+const audioDuration = ref(0)
 const pendingImage = ref<File | null>(null)
 const pendingImagePreview = ref('')
 
@@ -124,6 +134,10 @@ const selectedRevision = computed(() => revisions.value.find((item) => item.id =
 const latestRevision = computed(() => revisions.value[0] ?? null)
 const imageRevisions = computed(() => revisions.value.filter((item) => Boolean(item.media_url)))
 const previewImage = computed(() => pendingImagePreview.value || selectedRevision.value?.media_url || editorAsset.value?.media_url || '')
+const referenceAudioUrl = computed(() => metadataString(editorAsset.value, 'reference_audio_url'))
+const referenceAudioName = computed(() => metadataString(editorAsset.value, 'reference_audio_filename'))
+const referenceAudioMime = computed(() => metadataString(editorAsset.value, 'reference_audio_mime_type'))
+const referenceAudioSize = computed(() => Number(editorAsset.value?.asset_metadata.reference_audio_size_bytes || 0))
 const parentCandidates = computed(() => sourceAssets.value.filter((asset) => (
   !asset.parent_asset_id
   && asset.asset_type === form.asset_type
@@ -210,8 +224,22 @@ function resetPendingImage(): void {
   if (imageInput.value) imageInput.value.value = ''
 }
 
+function metadataString(asset: AssetItem | null, key: string): string {
+  const value = asset?.asset_metadata[key]
+  return typeof value === 'string' ? value : ''
+}
+
+function resetAudioPlayer(): void {
+  audioPlayer.value?.pause()
+  audioPlaying.value = false
+  audioCurrentTime.value = 0
+  audioDuration.value = 0
+  if (audioInput.value) audioInput.value.value = ''
+}
+
 function openEditor(asset?: AssetItem, parent?: AssetItem): void {
   resetPendingImage()
+  resetAudioPlayer()
   editorAssetId.value = asset?.id ?? ''
   Object.assign(form, {
     asset_type: asset?.asset_type ?? parent?.asset_type ?? (typeFilter.value === 'all' ? 'character' : typeFilter.value),
@@ -231,6 +259,7 @@ function closeEditor(): void {
   editorAssetId.value = ''
   revisions.value = []
   resetPendingImage()
+  resetAudioPlayer()
 }
 
 async function loadRevisions(assetId: string, selectedId = ''): Promise<void> {
@@ -284,6 +313,83 @@ async function uploadCurrentImage(): Promise<void> {
   } finally {
     action.value = ''
   }
+}
+
+async function chooseReferenceAudio(event: Event): Promise<void> {
+  const input = event.target as HTMLInputElement
+  const file = input.files?.[0]
+  if (!file || !editorAssetId.value) return
+  action.value = 'audio_upload'
+  const body = new FormData()
+  body.set('file', file)
+  try {
+    await api<AssetItem>(`/assets/${editorAssetId.value}/reference-audio/upload`, {
+      method: 'POST',
+      body,
+    })
+    resetAudioPlayer()
+    await Promise.all([refreshAssets(), loadRevisions(editorAssetId.value)])
+    toast.show('人物参考音频已绑定', {
+      message: '支持音频输入的视频模型会自动携带该文件',
+      tone: 'success',
+    })
+  } catch (error) {
+    toast.show('参考音频上传失败', {
+      message: error instanceof Error ? error.message : undefined,
+      tone: 'error',
+    })
+  } finally {
+    action.value = ''
+    input.value = ''
+  }
+}
+
+async function removeReferenceAudio(): Promise<void> {
+  if (!editorAssetId.value || !referenceAudioUrl.value) return
+  action.value = 'audio_remove'
+  try {
+    resetAudioPlayer()
+    await api<AssetItem>(`/assets/${editorAssetId.value}/reference-audio`, {
+      method: 'DELETE',
+    })
+    await Promise.all([refreshAssets(), loadRevisions(editorAssetId.value)])
+    toast.show('人物参考音频已移除', { tone: 'success' })
+  } catch (error) {
+    toast.show('参考音频移除失败', {
+      message: error instanceof Error ? error.message : undefined,
+      tone: 'error',
+    })
+  } finally {
+    action.value = ''
+  }
+}
+
+async function toggleReferenceAudio(): Promise<void> {
+  const player = audioPlayer.value
+  if (!player) return
+  if (player.paused) await player.play()
+  else player.pause()
+}
+
+function seekReferenceAudio(event: Event): void {
+  const player = audioPlayer.value
+  if (!player) return
+  const next = Number((event.target as HTMLInputElement).value)
+  player.currentTime = next
+  audioCurrentTime.value = next
+}
+
+function formatAudioTime(value: number): string {
+  if (!Number.isFinite(value) || value < 0) return '00:00'
+  const minutes = Math.floor(value / 60)
+  const seconds = Math.floor(value % 60)
+  return `${String(minutes).padStart(2, '0')}:${String(seconds).padStart(2, '0')}`
+}
+
+function fileSize(bytes: number): string {
+  if (!bytes) return '0 KB'
+  if (bytes < 1024 * 1024) return `${Math.max(1, Math.round(bytes / 1024))} KB`
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`
 }
 
 async function saveAsset(closeAfter = false): Promise<AssetItem | null> {
@@ -458,7 +564,10 @@ function setAssetType(type: AssetType): void {
   if (!derivableTypes.includes(type)) form.parent_asset_id = ''
 }
 
-onBeforeUnmount(resetPendingImage)
+onBeforeUnmount(() => {
+  resetPendingImage()
+  resetAudioPlayer()
+})
 </script>
 
 <template>
@@ -510,7 +619,7 @@ onBeforeUnmount(resetPendingImage)
             <span v-else class="asset-record__expand asset-record__expand--empty"></span>
             <button v-if="scope === 'project'" class="asset-check" type="button" :aria-label="`选择${group.root.name}`" :aria-pressed="selectedIds.includes(group.root.id)" @click="toggleSelection(group.root.id)"><Check :size="13" /></button>
             <button class="asset-record__preview" type="button" @click="openEditor(group.root)"><img v-if="group.root.media_url" :src="group.root.media_url" :alt="group.root.name" /><component :is="typeIcon[group.root.asset_type]" v-else :size="22" /><i v-if="busyAssetIds.has(group.root.id)"><LoaderCircle class="spin" :size="17" /></i></button>
-            <div class="asset-record__identity"><strong>{{ group.root.name }}</strong><span><em>{{ typeLabel[group.root.asset_type] }}</em><i :data-status="group.root.status">{{ busyAssetIds.has(group.root.id) ? '处理中' : statusLabel[group.root.status] }}</i><small v-if="group.children.length"><GitBranchPlus :size="12" />{{ group.children.length }} 个衍生</small></span></div>
+            <div class="asset-record__identity"><strong>{{ group.root.name }}</strong><span><em>{{ typeLabel[group.root.asset_type] }}</em><i :data-status="group.root.status">{{ busyAssetIds.has(group.root.id) ? '处理中' : statusLabel[group.root.status] }}</i><small v-if="metadataString(group.root, 'reference_audio_url')"><AudioLines :size="12" />参考音频</small><small v-if="group.children.length"><GitBranchPlus :size="12" />{{ group.children.length }} 个衍生</small></span></div>
             <p class="asset-record__prompt">{{ group.root.generation_prompt || '尚未生成提示词，可手动填写或调用 AI 生成' }}</p>
             <p class="asset-record__description">{{ group.root.description || '暂无资产说明' }}</p>
             <div class="asset-record__actions">
@@ -527,7 +636,7 @@ onBeforeUnmount(resetPendingImage)
               <span class="asset-record__expand asset-record__expand--empty"></span>
               <button v-if="scope === 'project'" class="asset-check" type="button" :aria-label="`选择${child.name}`" :aria-pressed="selectedIds.includes(child.id)" @click="toggleSelection(child.id)"><Check :size="13" /></button>
               <button class="asset-record__preview" type="button" @click="openEditor(child)"><img v-if="child.media_url" :src="child.media_url" :alt="child.name" /><component :is="typeIcon[child.asset_type]" v-else :size="20" /></button>
-              <div class="asset-record__identity"><strong>{{ child.name }}</strong><span><em>衍生{{ typeLabel[child.asset_type] }}</em><i :data-status="child.status">{{ busyAssetIds.has(child.id) ? '处理中' : statusLabel[child.status] }}</i></span></div>
+              <div class="asset-record__identity"><strong>{{ child.name }}</strong><span><em>衍生{{ typeLabel[child.asset_type] }}</em><i :data-status="child.status">{{ busyAssetIds.has(child.id) ? '处理中' : statusLabel[child.status] }}</i><small v-if="metadataString(child, 'reference_audio_url')"><AudioLines :size="12" />参考音频</small></span></div>
               <p class="asset-record__prompt">{{ child.generation_prompt || '尚未生成提示词' }}</p>
               <p class="asset-record__description">{{ child.description || '暂无衍生形态说明' }}</p>
               <div class="asset-record__actions"><button v-if="scope === 'project' && child.asset_type !== 'audio'" type="button" :disabled="busyAssetIds.has(child.id)" @click="child.generation_prompt ? queueImages([child.id]) : queuePrompts([child.id])"><WandSparkles :size="15" />{{ child.generation_prompt ? '生图' : '提示词' }}</button><button type="button" @click="openEditor(child)"><Pencil :size="15" />编辑</button><button class="danger" type="button" title="删除衍生资产" @click="requestDelete([child])"><Trash2 :size="15" /></button></div>
@@ -556,6 +665,36 @@ onBeforeUnmount(resetPendingImage)
           <div v-else-if="imageRevisions.length" class="asset-image-history__rail"><button v-for="revision in imageRevisions" :key="revision.id" type="button" :aria-pressed="selectedRevisionId === revision.id" :title="`v${revision.version} · ${revisionLabel[revision.change_type] || revision.change_type}`" @click="selectedRevisionId = revision.id"><img :src="revision.media_url!" :alt="`v${revision.version}`" /><span class="tabular-nums">v{{ revision.version }}</span></button></div>
           <p v-else>上传或生成图片后，历史版本会显示在这里。</p>
           <button v-if="selectedRevision && selectedRevision.version !== revisions[0]?.version" class="asset-restore-button" type="button" :disabled="action === 'restore'" @click="restoreRevision"><RotateCcw :size="15" />恢复当前选择为新版本</button>
+        </section>
+
+        <section v-if="form.asset_type === 'character'" class="asset-reference-audio">
+          <header><span><AudioLines :size="16" />人物参考音频</span><small>视频声音身份</small></header>
+          <template v-if="editorAssetId && referenceAudioUrl">
+            <audio
+              ref="audioPlayer"
+              :src="referenceAudioUrl"
+              preload="metadata"
+              @loadedmetadata="audioDuration = audioPlayer?.duration || 0"
+              @timeupdate="audioCurrentTime = audioPlayer?.currentTime || 0"
+              @play="audioPlaying = true"
+              @pause="audioPlaying = false"
+              @ended="audioPlaying = false"
+            ></audio>
+            <div class="asset-reference-audio__player">
+              <button type="button" :aria-label="audioPlaying ? '暂停参考音频' : '播放参考音频'" @click="toggleReferenceAudio">
+                <Pause v-if="audioPlaying" :size="16" /><Play v-else :size="16" />
+              </button>
+              <div><strong>{{ referenceAudioName || '人物参考音频' }}</strong><span>{{ referenceAudioMime || '音频文件' }} · {{ fileSize(referenceAudioSize) }}</span></div>
+              <span class="tabular-nums">{{ formatAudioTime(audioCurrentTime) }} / {{ formatAudioTime(audioDuration) }}</span>
+            </div>
+            <input class="asset-reference-audio__progress" type="range" min="0" :max="audioDuration || 0" step="0.05" :value="audioCurrentTime" aria-label="参考音频播放进度" @input="seekReferenceAudio" />
+          </template>
+          <p v-else>{{ editorAssetId ? '尚未绑定。支持音频参考的视频模型生成包含该人物的镜头时会自动使用。' : '请先保存人物资产，再上传参考音频。' }}</p>
+          <footer>
+            <button type="button" :disabled="!editorAssetId || action === 'audio_upload'" @click="audioInput?.click()"><LoaderCircle v-if="action === 'audio_upload'" class="spin" :size="15" /><Upload v-else :size="15" />{{ referenceAudioUrl ? '替换音频' : '上传音频' }}</button>
+            <button v-if="referenceAudioUrl" class="danger" type="button" :disabled="action === 'audio_remove'" @click="removeReferenceAudio"><Trash2 :size="15" />移除</button>
+            <input ref="audioInput" class="sr-only" type="file" accept="audio/mpeg,audio/wav,audio/x-wav,audio/mp4,audio/aac,audio/ogg,audio/webm,audio/flac" @change="chooseReferenceAudio" />
+          </footer>
         </section>
 
         <form id="asset-workbench-form" class="asset-detail-form" @submit.prevent="saveAsset(false)">
@@ -714,6 +853,28 @@ onBeforeUnmount(resetPendingImage)
 .asset-hero-preview footer button, .asset-restore-button { display: inline-flex; min-height: 38px; align-items: center; gap: 6px; padding: 0 9px; border: 0; border-radius: 5px; color: #087f7a; background: transparent; cursor: pointer; font-size: 9px; font-weight: 700; transition-property: color, background-color, scale, opacity; transition-duration: 150ms; }
 .asset-hero-preview footer button:hover { background: #e9f6f4; }
 .asset-hero-preview footer button:disabled { cursor: not-allowed; opacity: .4; }
+.asset-reference-audio { margin-top: 12px; padding: 12px; border-radius: 10px; background: #f7f9f9; box-shadow: 0 0 0 1px rgb(21 31 36 / 7%), 0 4px 14px rgb(21 31 36 / 4%); }
+.asset-reference-audio > header { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.asset-reference-audio > header > span { display: inline-flex; align-items: center; gap: 7px; color: #26363b; font-size: 11px; font-weight: 750; }
+.asset-reference-audio > header > span svg { color: #087f7a; }
+.asset-reference-audio > header small { color: #879196; font-size: 9px; }
+.asset-reference-audio > p { margin: 12px 0 2px; color: #748087; font-size: 10px; line-height: 1.65; text-wrap: pretty; }
+.asset-reference-audio > audio { display: none; }
+.asset-reference-audio__player { display: grid; grid-template-columns: 40px minmax(0, 1fr) auto; align-items: center; gap: 9px; margin-top: 11px; }
+.asset-reference-audio__player > button { display: grid; width: 40px; height: 40px; place-items: center; border: 0; border-radius: 8px; color: #fff; background: #087f7a; box-shadow: 0 7px 16px rgb(8 127 122 / 20%); cursor: pointer; transition-property: scale, box-shadow; transition-duration: 150ms; }
+.asset-reference-audio__player > button:active { scale: .96; }
+.asset-reference-audio__player > button svg { margin-left: 1px; }
+.asset-reference-audio__player > div { min-width: 0; }
+.asset-reference-audio__player strong, .asset-reference-audio__player div > span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.asset-reference-audio__player strong { color: #253338; font-size: 10px; }
+.asset-reference-audio__player div > span { margin-top: 3px; color: #899398; font-size: 8px; }
+.asset-reference-audio__player > span { color: #6f7b80; font-size: 9px; }
+.asset-reference-audio__progress { width: 100%; height: 18px; margin: 7px 0 0; accent-color: #087f7a; cursor: pointer; }
+.asset-reference-audio > footer { display: flex; justify-content: flex-end; gap: 5px; margin-top: 8px; }
+.asset-reference-audio > footer button { display: inline-flex; min-height: 40px; align-items: center; gap: 6px; padding: 0 10px; border: 0; border-radius: 6px; color: #087f7a; background: #e9f4f3; cursor: pointer; font-size: 9px; font-weight: 750; transition-property: color, background-color, scale, opacity; transition-duration: 150ms; }
+.asset-reference-audio > footer button.danger { color: #c94747; background: #faeeee; }
+.asset-reference-audio > footer button:active:not(:disabled) { scale: .96; }
+.asset-reference-audio > footer button:disabled { cursor: not-allowed; opacity: .45; }
 .asset-image-history { display: grid; gap: 8px; margin-top: 16px; }
 .asset-image-history > header { display: flex; align-items: center; justify-content: space-between; color: #435156; font-size: 10px; font-weight: 700; }
 .asset-image-history > header span { display: inline-flex; align-items: center; gap: 6px; }

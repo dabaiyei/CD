@@ -36,6 +36,9 @@ const agentOnly = computed(() => route.name === 'workspace')
 const projectsOnly = computed(() => route.name === 'projects')
 
 const emptyForm = (): Partial<ProjectPayload> & Pick<ProjectPayload, 'name'> => ({
+  creation_mode: 'import',
+  cinematic: false,
+  text_model_id: null,
   name: '',
   description: '',
   cover_url: null,
@@ -54,20 +57,50 @@ const coverPrice = computed(() => Number(
 ).toFixed(2))
 const imageModelOptions = computed(() => (projectStore.options?.image_models ?? []).map((item) => ({ value: item.id, label: item.name, description: item.is_default ? '默认生图模型' : '图片生成模型', icon: ImageIcon })))
 const videoModelOptions = computed(() => (projectStore.options?.video_models ?? []).map((item) => ({ value: item.id, label: item.name, description: '视频生成模型', icon: Film })))
-const videoResolutionOptions = computed(() => (projectStore.options?.video_resolutions ?? []).map((item) => ({ value: item, label: item, description: '视频输出清晰度', icon: MonitorUp })))
-const aspectRatioOptions = computed(() => (projectStore.options?.aspect_ratios ?? []).map((item) => ({ value: item, label: item, description: '成片画幅比例', icon: Ratio })))
-const imageResolutionOptions = computed(() => (projectStore.options?.image_resolutions ?? []).map((item) => ({ value: item, label: item, description: '图片输出清晰度', icon: ImageIcon })))
+const textModelOptions = computed(() => (projectStore.options?.text_models ?? []).map((item) => ({ value: item.id, label: item.name, icon: Sparkles })))
+const selectedVideoCapabilities = computed(() => projectStore.options?.video_models.find((item) => item.id === form.video_model_id)?.capabilities ?? {})
+const selectedImageCapabilities = computed(() => projectStore.options?.image_models.find((item) => item.id === form.image_model_id)?.capabilities ?? {})
+function capabilityStrings(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [] }
+const videoResolutionOptions = computed(() => {
+  const rows = selectedVideoCapabilities.value.duration_resolution_map
+  const values = Array.isArray(rows) ? [...new Set(rows.flatMap((row) => capabilityStrings(row.resolutions)))] : capabilityStrings(selectedVideoCapabilities.value.resolutions)
+  return (values.length ? values : projectStore.options?.video_resolutions ?? []).map((item) => ({ value: item, label: item, icon: MonitorUp }))
+})
+const aspectRatioOptions = computed(() => {
+  const videoRatios = capabilityStrings(selectedVideoCapabilities.value.aspect_ratios)
+  const imageRatios = capabilityStrings(selectedImageCapabilities.value.aspect_ratios)
+  const values = videoRatios.length ? videoRatios : projectStore.options?.aspect_ratios ?? []
+  return values.filter((item) => !imageRatios.length || imageRatios.includes(item)).map((item) => ({ value: item, label: item, icon: Ratio }))
+})
+const imageResolutionOptions = computed(() => {
+  const available = capabilityStrings(selectedImageCapabilities.value.resolutions)
+  return (projectStore.options?.image_resolutions ?? []).filter((item) => !available.length || available.includes(item)).map((item) => ({ value: item, label: item, icon: ImageIcon }))
+})
+watch([videoResolutionOptions, imageResolutionOptions, aspectRatioOptions], () => {
+  if (!dialogOpen.value) return
+  if (!videoResolutionOptions.value.some((item) => item.value === form.video_resolution)) form.video_resolution = videoResolutionOptions.value[0]?.value
+  if (!imageResolutionOptions.value.some((item) => item.value === form.image_resolution)) form.image_resolution = imageResolutionOptions.value[0]?.value
+  if (!editingId.value && !aspectRatioOptions.value.some((item) => item.value === form.aspect_ratio)) form.aspect_ratio = aspectRatioOptions.value[0]?.value
+})
 const projectConfigurationReady = computed(() => Boolean(
   form.image_model_id
   && form.video_model_id
   && form.visual_handbook_id
   && form.director_handbook_id,
-))
+  ) && (form.creation_mode !== 'ai' || Boolean(form.text_model_id))
+    && aspectRatioOptions.value.some((item) => item.value === form.aspect_ratio)
+    && videoResolutionOptions.value.some((item) => item.value === form.video_resolution)
+    && imageResolutionOptions.value.some((item) => item.value === form.image_resolution),
+)
 const missingConfigurationLabels = computed(() => [
+  form.creation_mode === 'ai' && !form.text_model_id ? '创作文本模型' : '',
   !form.image_model_id ? '图片模型' : '',
   !form.video_model_id ? '视频模型' : '',
   !form.visual_handbook_id ? '视觉手册' : '',
   !form.director_handbook_id ? '导演手册' : '',
+  !aspectRatioOptions.value.some((item) => item.value === form.aspect_ratio) ? '图片与视频共有画幅' : '',
+  !videoResolutionOptions.value.some((item) => item.value === form.video_resolution) ? '可用视频分辨率' : '',
+  !imageResolutionOptions.value.some((item) => item.value === form.image_resolution) ? '可用图片分辨率' : '',
 ].filter(Boolean))
 
 const filteredProjects = computed(() => {
@@ -151,6 +184,7 @@ function resetForm(): void {
   clearPendingCover()
   Object.assign(form, emptyForm())
   const options = projectStore.options
+  form.text_model_id = options?.text_models.find((item) => item.is_default)?.id ?? options?.text_models[0]?.id ?? null
   form.image_model_id = options?.image_models.find((item) => item.is_default)?.id ?? options?.image_models[0]?.id ?? null
   form.video_model_id = options?.video_models.find((item) => item.is_default)?.id ?? options?.video_models[0]?.id ?? null
   form.visual_handbook_id = options?.visual_handbooks[0]?.id ?? null
@@ -165,6 +199,11 @@ function openCreate(): void {
   editingId.value = null
   resetForm()
   dialogOpen.value = true
+}
+
+function openAiCreate(): void {
+  openCreate()
+  form.creation_mode = 'ai'
 }
 
 function openSettings(project: Project): void {
@@ -299,6 +338,7 @@ async function generateCover(): Promise<void> {
               <input v-model="query" type="search" placeholder="搜索项目" aria-label="搜索项目" />
             </label>
             <span class="result-count tabular-nums">{{ filteredProjects.length }} 个项目</span>
+            <button class="button button--secondary workspace-create-button" type="button" @click="openAiCreate"><Sparkles :size="17" /><span>AI 创作</span></button>
             <button class="button button--primary workspace-create-button" type="button" @click="openCreate">
               <Plus :size="17" />
               <span>新建项目</span>
@@ -339,13 +379,22 @@ async function generateCover(): Promise<void> {
 
     <BaseDialog
       v-model:open="dialogOpen"
-      :title="editingId ? '项目设置' : '创建短剧项目'"
+      :title="editingId ? '项目设置' : form.creation_mode === 'ai' ? '从一个想法开始创作' : '创建短剧项目'"
       :description="editingId ? '调整当前项目的生成模型与创作手册' : '设置项目基础信息与生成偏好'"
       content-class="dialog-content--project"
       wide
     >
       <form id="project-form" class="project-form" @submit.prevent="saveProject">
         <div class="project-form__main">
+          <div v-if="form.creation_mode === 'ai'" class="field field--full">
+            <span>创作文本模型</span>
+            <UiSelect :model-value="form.text_model_id ?? ''" :options="textModelOptions" placeholder="选择创作模型" @update:model-value="form.text_model_id = $event" />
+          </div>
+          <div v-if="!editingId" class="field field--full">
+            <button class="button" :class="form.cinematic ? 'button--primary' : 'button--secondary'" type="button" role="switch" :aria-checked="Boolean(form.cinematic)" @click="form.cinematic = !form.cinematic"><Film :size="18" /><span>电影质感</span><small>{{ form.cinematic ? '已开启' : '未开启' }}</small></button>
+            <small>以电影级叙事、动作、镜头、光影与声音规范贯穿创作。创建后不可更改。</small>
+          </div>
+          <div v-else class="field field--full"><span>{{ form.cinematic ? '电影质感已开启' : '标准创作模式' }}</span><small>此配置在创建时确定，不可修改。</small></div>
           <label class="field field--full">
             <span class="field-caption">项目名称</span>
             <div class="project-text-control">
@@ -374,7 +423,8 @@ async function generateCover(): Promise<void> {
           </div>
           <div class="field">
             <span>影片比例</span>
-            <UiSelect :model-value="form.aspect_ratio ?? ''" :options="aspectRatioOptions" placeholder="选择影片比例" @update:model-value="form.aspect_ratio = $event" />
+            <UiSelect :disabled="Boolean(editingId && form.creation_mode === 'ai')" :model-value="form.aspect_ratio ?? ''" :options="aspectRatioOptions" placeholder="选择影片比例" @update:model-value="form.aspect_ratio = $event" />
+            <small v-if="form.creation_mode === 'ai'">图片与视频统一使用此画幅，创建后锁定。</small>
           </div>
           <div class="field">
             <span>图片分辨率</span>

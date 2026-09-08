@@ -648,11 +648,17 @@ async def resolve_text_model(
     agent: AgentProfile,
     tenant_id: str,
     model_id: str | None = None,
+    *,
+    project_id: str | None = None,
 ) -> tuple[AIModel, Provider, str]:
+    if project_id:
+        project = await db.get(Project, project_id)
+        if project and project.tenant_id == tenant_id and project.creation_mode == "ai":
+            model_id = project.text_model_id
     model = await db.get(AIModel, model_id) if model_id else None
     if model is None and not model_id:
         model = await db.get(AIModel, agent.text_model_id) if agent.text_model_id else None
-    if model is None:
+    if model is None and not model_id:
         model = await db.scalar(
             select(AIModel).where(
                 AIModel.tenant_id == tenant_id,
@@ -1218,6 +1224,7 @@ async def apply_storyboard_version_command(
         asset_ids = [asset.id for asset in linked_assets]
         reference_url = next((asset.media_url for asset in linked_assets if asset.media_url), None)
         values = payload.model_dump(mode="json", exclude={"asset_names"})
+        values["video_prompt"] = ""
         shot = StoryboardShot(
             tenant_id=user.tenant_id,
             user_id=user.id,
@@ -1232,7 +1239,14 @@ async def apply_storyboard_version_command(
         db.add(shot)
         await db.flush()
         records.append(shot)
-        content.append({"order_index": index, **payload.model_dump(mode="json"), "asset_ids": asset_ids})
+        content.append(
+            {
+                "order_index": index,
+                **values,
+                "asset_names": payload.asset_names,
+                "asset_ids": asset_ids,
+            }
+        )
     storyboard.content = content
     serialized = json.dumps({"shots": content}, ensure_ascii=False, indent=2)
     project_file = ProjectFile(
@@ -1900,6 +1914,9 @@ async def send_message(
             or chapter.user_id != user.id
         ):
             raise HTTPException(status_code=404, detail="当前导演台章节不存在")
+        from app.services.ai_creation import require_ai_chapter_unlocked
+
+        await require_ai_chapter_unlocked(db, chapter)
         from app.services.director_orchestration import ensure_chapter_not_automating
 
         try:
@@ -2332,7 +2349,7 @@ async def send_message(
             task=task_public,
         )
 
-    model, _provider, _api_key = await resolve_text_model(db, agent, user.tenant_id)
+    model, _provider, _api_key = await resolve_text_model(db, agent, user.tenant_id, project_id=project_id)
     pricing = await resolve_task_pricing(
         db,
         tenant_id=user.tenant_id,

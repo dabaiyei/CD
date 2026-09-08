@@ -285,12 +285,19 @@ def compose_prompt(
     *,
     include_conversation_context: bool = True,
 ) -> str:
-    sections = [
-        "Platform context:",
-        f"- The task workspace is {workspace}.",
-        "- Authoritative skill snapshots are exposed as AgentScope skills and are read-only.",
-        "- Their checksums and versions are in .cineforge/execution-manifest.json.",
-    ]
+    sections = ["Platform context:"]
+    if request.tool_mode == "workspace":
+        sections.extend(
+            [
+                f"- The task workspace is {workspace}.",
+                "- Authoritative skill snapshots are exposed as AgentScope skills and are read-only.",
+                "- Their checksums and versions are in .cineforge/execution-manifest.json.",
+            ]
+        )
+    else:
+        sections.append(
+            "- Required authoritative skill content is already embedded in the task as read-only context."
+        )
     if request.project_files:
         sections.extend(
             [

@@ -10,6 +10,7 @@ from app.services.task_queue import publish_user_event
 
 TERMINAL_STATUSES = {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELLED}
 TASK_TITLES = {
+    "project_ai_creation": "AI 项目创作",
     "agent_chat_run": "Agent 创作回复",
     "project_cover_generation": "项目封面生成",
     "chapter_analysis_generation": "章节分析",
@@ -23,6 +24,7 @@ TASK_TITLES = {
     "chapter_dialogue_extraction": "章节台词提取",
     "dialogue_tts_generation": "角色台词配音",
     "chapter_composition_render": "章节成片渲染",
+    "storyboard_video_concat": "视频拼接下载",
 }
 
 

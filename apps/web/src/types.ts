@@ -119,6 +119,10 @@ export interface SecurityEventPage {
 }
 
 export interface Project {
+  creation_mode: 'import' | 'ai'
+  cinematic: boolean
+  text_model_id: string | null
+  creation_state: Record<string, unknown>
   id: string
   tenant_id: string
   owner_id: string
@@ -175,6 +179,7 @@ export interface ReferenceLimit {
   enabled: boolean
   min_count: number
   max_count: number
+  accepted_mime_types: string[]
 }
 
 export interface DurationResolutionGroup {
@@ -241,6 +246,7 @@ export interface Handbook {
 }
 
 export interface ProjectOptions {
+  text_models: AIModel[]
   image_models: AIModel[]
   video_models: AIModel[]
   visual_handbooks: Handbook[]
@@ -356,6 +362,8 @@ export interface ProjectFileDetail extends ProjectFileItem {
 }
 
 export interface Chapter {
+  locked?: boolean
+  script_created?: boolean
   id: string
   project_id: string
   source_file_id: string

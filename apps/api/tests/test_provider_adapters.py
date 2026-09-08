@@ -19,6 +19,7 @@ from app.services.provider_adapters import (
     AGNES_PROVIDER_CODE,
     AGNES_VIDEO_MODEL_ID,
     AUTODL_MINIMAX_H3_MODEL_ID,
+    DOLA_PROVIDER_CODE,
     VideoModelCapabilities,
     agnes_image_21_capabilities,
     agnes_image_capabilities,
@@ -27,6 +28,8 @@ from app.services.provider_adapters import (
     autodl_minimax_h3_adapter_config,
     autodl_minimax_h3_capabilities,
     closest_supported_video_duration,
+    dola_video_adapter_config,
+    dola_video_capabilities,
     extract_path,
     render_template,
     supported_video_durations,
@@ -105,6 +108,47 @@ class FakeResilientAdapterClient(FakeAdapterClient):
                     request=httpx.Request(method, url),
                 )
         return await super().request(method, url, **kwargs)
+
+
+class FakeDolaClient:
+    requests: list[dict] = []
+
+    def __init__(self, **_kwargs) -> None:
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args) -> None:
+        return None
+
+    async def request(self, method: str, url: str, **kwargs) -> FakeResponse:
+        self.requests.append({"method": method, "url": url, **kwargs})
+        if url.endswith("/api/video-pool"):
+            return FakeResponse(
+                {"model_costs": [{"model": "Dreamina Seedance 2.5", "credits": 2}]}
+            )
+        if url.endswith("/api/video-accounts"):
+            return FakeResponse(
+                {
+                    "accounts": [
+                        {
+                            "id": "a" * 32,
+                            "pool_eligible": True,
+                            "credits_available": 4,
+                        }
+                    ]
+                }
+            )
+        if "/attachments" in url:
+            return FakeResponse({"id": "b" * 32, "account_id": "a" * 32})
+        if url.endswith("/api/video-tasks"):
+            return FakeResponse({"id": "c" * 32, "status": "queued", "error": ""})
+        if url.endswith(f"/api/video-tasks/{'c' * 32}/file"):
+            return FakeResponse(content=b"\x00\x00\x00\x18ftypmp42dola", content_type="video/mp4")
+        if url.endswith(f"/api/video-tasks/{'c' * 32}"):
+            return FakeResponse({"id": "c" * 32, "status": "completed", "error": ""})
+        raise AssertionError(f"Unexpected Dola request: {method} {url}")
 
 
 class FakeRetryImageClient:
@@ -241,7 +285,12 @@ def test_video_generation_request_must_match_configured_capabilities() -> None:
         {
             "generation_modes": ["first_frame"],
             "reference_limits": {
-                "image": {"enabled": True, "min_count": 1, "max_count": 2},
+                "image": {
+                    "enabled": True,
+                    "min_count": 1,
+                    "max_count": 2,
+                    "accepted_mime_types": ["image/png"],
+                },
                 "video": {"enabled": False, "min_count": 0, "max_count": 0},
                 "audio": {"enabled": False, "min_count": 0, "max_count": 0},
             },
@@ -256,7 +305,13 @@ def test_video_generation_request_must_match_configured_capabilities() -> None:
         duration_seconds=5,
         resolution="768p横",
         aspect_ratio="16:9",
-        reference_media=[{"type": "image", "url": "https://assets.example.test/frame.png"}],
+        reference_media=[
+            {
+                "type": "image",
+                "url": "https://assets.example.test/frame.png",
+                "mime_type": "image/png",
+            }
+        ],
         audio_enabled=False,
     )
     with pytest.raises(ValueError, match="不支持 10 秒"):
@@ -267,6 +322,22 @@ def test_video_generation_request_must_match_configured_capabilities() -> None:
             resolution="768p横",
             aspect_ratio="16:9",
             reference_media=[{"type": "image", "url": "https://assets.example.test/frame.png"}],
+            audio_enabled=False,
+        )
+    with pytest.raises(ValueError, match="image/jpeg"):
+        validate_video_generation_request(
+            capabilities,
+            generation_mode="first_frame",
+            duration_seconds=5,
+            resolution="768p横",
+            aspect_ratio="16:9",
+            reference_media=[
+                {
+                    "type": "image",
+                    "url": "https://assets.example.test/frame.jpg",
+                    "mime_type": "image/jpeg",
+                }
+            ],
             audio_enabled=False,
         )
 
@@ -350,6 +421,89 @@ def test_declarative_video_adapter_retries_rate_limit_and_poll_network_error(mon
     assert completed.status == "succeeded"
     assert FakeResilientAdapterClient.post_attempts == 2
     assert FakeResilientAdapterClient.get_attempts == 2
+
+
+def test_dola_preset_uploads_references_polls_and_downloads_video(monkeypatch) -> None:
+    FakeDolaClient.requests.clear()
+    monkeypatch.setattr(media_gateway.httpx, "AsyncClient", FakeDolaClient)
+    gateway = OpenAICompatibleMediaGateway(
+        base_url="http://127.0.0.1:8199",
+        api_key="dola-service-token",
+        extra_headers={},
+        provider_code=DOLA_PROVIDER_CODE,
+        adapter_config=dola_video_adapter_config(),
+    )
+    request = VideoGenerationRequest(
+        model="Dreamina Seedance 2.5",
+        prompt="海边日出，镜头缓慢向前推进",
+        resolution="720p",
+        aspect_ratio="16:9",
+        duration_seconds=10,
+        reference_image_url=None,
+        reference_media=[
+            {
+                "type": "image",
+                "mime_type": "image/png",
+                "data_uri": "data:image/png;base64," + base64.b64encode(b"png-image").decode(),
+            }
+        ],
+        capabilities=dola_video_capabilities(),
+        idempotency_key="dola-video-task-1",
+        generation_mode="first_frame",
+        audio_enabled=True,
+    )
+
+    submitted = asyncio.run(gateway.submit_video(request))
+    assert submitted.status == "pending"
+    assert submitted.provider_job_id == "c" * 32
+    upload = next(item for item in FakeDolaClient.requests if "/attachments" in item["url"])
+    assert upload["content"] == b"png-image"
+    assert upload["params"] == {"filename": "reference-1.png"}
+    create = next(item for item in FakeDolaClient.requests if item["url"].endswith("/api/video-tasks"))
+    assert create["headers"]["Authorization"] == "Bearer dola-service-token"
+    assert create["headers"]["Idempotency-Key"] == "dola-video-task-1"
+    assert create["json"] == {
+        "prompt": "海边日出，镜头缓慢向前推进",
+        "model": "Dreamina Seedance 2.5",
+        "duration": 10,
+        "ratio": "16:9",
+        "timeout_seconds": 900,
+        "attachment_ids": ["b" * 32],
+        "account_id": "a" * 32,
+    }
+
+    completed = asyncio.run(gateway.poll_video(request, submitted.provider_job_id or ""))
+    assert completed.status == "succeeded"
+    assert completed.provider_job_id == "c" * 32
+    assert completed.video_data == b"\x00\x00\x00\x18ftypmp42dola"
+    assert completed.content_type == "video/mp4"
+
+
+def test_dola_verification_keeps_original_task_pending() -> None:
+    gateway = OpenAICompatibleMediaGateway(
+        base_url="http://127.0.0.1:8199",
+        api_key="test-token",
+        extra_headers={},
+        provider_code=DOLA_PROVIDER_CODE,
+        adapter_config=dola_video_adapter_config(),
+    )
+    result = asyncio.run(gateway._dola_video_result(
+        None,
+        {"id": "c" * 32, "status": "waiting_verification"},
+    ))
+    assert result.status == "pending"
+    assert result.provider_job_id == "c" * 32
+    assert "waiting_verification" in dola_video_adapter_config()["video"]["response"]["pending_values"]
+
+
+def test_dola_preset_exposes_conservative_video_capabilities() -> None:
+    capabilities = dola_video_capabilities()
+    assert capabilities["duration_resolution_map"] == [
+        {"durations": [5.0, 10.0], "resolutions": ["720p"]}
+    ]
+    assert capabilities["reference_limits"]["image"]["max_count"] == 9
+    assert capabilities["reference_limits"]["audio"]["enabled"] is False
+    assert capabilities["aspect_ratios"] == ["1:1", "3:4", "4:3", "9:16", "16:9", "21:9"]
 
 
 class FakeAgnesClient:
@@ -470,7 +624,7 @@ def test_agnes_flash_video_capabilities_only_advertise_supported_720p() -> None:
     capabilities = agnes_video_capabilities()
 
     assert capabilities["duration_resolution_map"] == [
-        {"durations": [4, 5, 6, 7, 8, 9, 10, 11, 12], "resolutions": ["720p"]}
+        {"durations": [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], "resolutions": ["720p"]}
     ]
     assert capabilities["provider_resolution_map"] == {"720p": "720P"}
 

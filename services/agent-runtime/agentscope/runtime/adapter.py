@@ -9,6 +9,7 @@ from importlib.util import find_spec
 from pathlib import Path
 from typing import Any, Protocol
 from urllib.parse import urlparse
+from uuid import uuid4
 
 from runtime.config import Settings
 from runtime.context import (
@@ -34,6 +35,45 @@ Do not create repositories, dependency files, scratch projects or unrelated docu
 
 RESPONSE_INPUT_PARSE_ATTEMPTS = 3
 logger = logging.getLogger(__name__)
+
+
+class _ToolCallIdNormalizingStream:
+    """Fill missing tool-call IDs from loosely OpenAI-compatible streams."""
+
+    def __init__(self, source: Any) -> None:
+        self.source = source
+        self.iterator: Any = None
+        self.tool_call_ids: dict[tuple[int, int], str] = {}
+
+    async def __aenter__(self) -> _ToolCallIdNormalizingStream:
+        entered = await self.source.__aenter__()
+        self.iterator = entered.__aiter__()
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc: Any, traceback: Any) -> Any:
+        return await self.source.__aexit__(exc_type, exc, traceback)
+
+    def __aiter__(self) -> _ToolCallIdNormalizingStream:
+        return self
+
+    async def __anext__(self) -> Any:
+        chunk = await self.iterator.__anext__()
+        for choice_index, choice in enumerate(getattr(chunk, "choices", None) or []):
+            delta = getattr(choice, "delta", None)
+            for position, tool_call in enumerate(getattr(delta, "tool_calls", None) or []):
+                raw_index = getattr(tool_call, "index", None)
+                index = raw_index if isinstance(raw_index, int) else position
+                key = (choice_index, index)
+                tool_call_id = getattr(tool_call, "id", None)
+                if isinstance(tool_call_id, str) and tool_call_id:
+                    self.tool_call_ids[key] = tool_call_id
+                    continue
+                normalized_id = self.tool_call_ids.setdefault(
+                    key,
+                    f"call_cineforge_{uuid4().hex}",
+                )
+                tool_call.id = normalized_id
+        return chunk
 
 
 def is_transient_response_input_parse_error(exc: Exception) -> bool:
@@ -126,6 +166,12 @@ class AgentScopeAdapter:
         from agentscope.tool import Edit, Glob, Grep, Read, Toolkit, Write
         from agentscope.workspace import LocalWorkspace
 
+        class CineForgeOpenAIChatModel(OpenAIChatModel):
+            async def _parse_stream_response(self, start_datetime: Any, response: Any) -> Any:
+                normalized_stream = _ToolCallIdNormalizingStream(response)
+                async for chunk in super()._parse_stream_response(start_datetime, normalized_stream):
+                    yield chunk
+
         context = await asyncio.to_thread(prepare_run_context, self.settings.absolute_data_root, request)
         if request.state_mode == "persistent":
             state, resumed, receipt = await asyncio.to_thread(
@@ -181,10 +227,10 @@ class AgentScopeAdapter:
                 "timeout": self.settings.request_timeout_seconds,
                 "default_headers": binding.extra_headers or None,
             }
-            chat_fallback = OpenAIChatModel(
+            chat_fallback = CineForgeOpenAIChatModel(
                 credential=credential,
                 model=binding.model,
-                parameters=OpenAIChatModel.Parameters(**parameters),
+                parameters=CineForgeOpenAIChatModel.Parameters(**parameters),
                 stream=True,
                 context_size=self.settings.model_context_size,
                 client_kwargs=client_kwargs,
@@ -211,10 +257,10 @@ class AgentScopeAdapter:
                 api_key=binding.api_key.get_secret_value(),
                 base_url=str(binding.base_url).rstrip("/") if binding.base_url else None,
             )
-            model = OpenAIChatModel(
+            model = CineForgeOpenAIChatModel(
                 credential=credential,
                 model=binding.model,
-                parameters=OpenAIChatModel.Parameters(**parameters),
+                parameters=CineForgeOpenAIChatModel.Parameters(**parameters),
                 stream=True,
                 context_size=self.settings.model_context_size,
                 client_kwargs={
@@ -231,20 +277,24 @@ class AgentScopeAdapter:
             skill_paths=[str(path) for path in context.skill_packages],
             instructions=CINEFORGE_WORKSPACE_INSTRUCTIONS,
         ) as workspace:
-            guard = self._path_guard(context)
-            backend = workspace.get_backend()
-            tools = [
-                Read(backend=backend, middlewares=[guard]),
-                Write(backend=backend, middlewares=[guard]),
-                Edit(backend=backend, middlewares=[guard]),
-                Glob(backend=backend, middlewares=[guard]),
-                Grep(backend=backend, middlewares=[guard]),
-            ]
-            toolkit = Toolkit(
-                tools=tools,
-                skills_or_loaders=await workspace.list_skills(agent_id="cineforge-agent"),
-            )
-            system_prompt = f"{request.system_prompt}\n\n{await workspace.get_instructions()}"
+            if request.tool_mode == "workspace":
+                guard = self._path_guard(context)
+                backend = workspace.get_backend()
+                tools = [
+                    Read(backend=backend, middlewares=[guard]),
+                    Write(backend=backend, middlewares=[guard]),
+                    Edit(backend=backend, middlewares=[guard]),
+                    Glob(backend=backend, middlewares=[guard]),
+                    Grep(backend=backend, middlewares=[guard]),
+                ]
+                toolkit = Toolkit(
+                    tools=tools,
+                    skills_or_loaders=await workspace.list_skills(agent_id="cineforge-agent"),
+                )
+                system_prompt = f"{request.system_prompt}\n\n{await workspace.get_instructions()}"
+            else:
+                toolkit = Toolkit()
+                system_prompt = request.system_prompt
             agent = Agent(
                 name="CineForgeAgent",
                 system_prompt=system_prompt,

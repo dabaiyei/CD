@@ -36,6 +36,9 @@ class ResolvedTaskPricing:
 
 
 DEFAULT_PRICING_RULES = (
+    PricingDefinition(
+        "project_ai_creation", "AI 项目创作", "剧集提案或大纲章节规划", "次", Decimal("10"), 15,
+    ),
     PricingDefinition("agent_chat_run", "Agent 对话", "创作台 Agent 多轮协作运行", "轮", Decimal("0"), 10),
     PricingDefinition(
         "project_cover_generation",

@@ -2425,6 +2425,15 @@
 }
 
 @media (max-width: 760px) {
+  .activity-panel,
+  body > div:has(> .activity-panel) {
+    right: 0 !important;
+    left: 0 !important;
+    width: 100% !important;
+    max-width: none !important;
+    margin-inline: 0 !important;
+  }
+
   .app-shell.app-shell--agent-home .shell-main {
     padding-bottom: 0;
   }
@@ -2443,7 +2452,8 @@
   }
 
   .app-shell--agent-home .workspace-agent-stage--home .agent-thread {
-    padding: 8px 10px max(112px, calc(var(--agent-composer-height, 112px) + 10px));
+    padding: 8px 10px 16px;
+    scroll-padding-bottom: 16px;
   }
 
   .app-shell--agent-home .workspace-agent-stage--home .agent-workspace-body {
@@ -2451,12 +2461,11 @@
   }
 
   .app-shell--agent-home .workspace-agent-stage--home .agent-composer {
-    position: absolute;
-    right: 8px;
-    bottom: 0;
-    left: 8px;
-    width: auto;
-    margin: 0;
+    position: relative;
+    inset: auto;
+    width: calc(100% - 16px);
+    flex: 0 0 auto;
+    margin: 0 8px;
     padding: 7px 8px;
   }
 
@@ -2580,5 +2589,106 @@
     overflow: visible;
     padding-right: 0;
     -webkit-line-clamp: unset;
+  }
+
+  /* Keep chapter navigation compact and independently swipeable on H5. */
+  .app-shell .director-page .chapter-rail {
+    width: 100%;
+    min-width: 0;
+    overflow: hidden;
+    border-right: 0;
+    border-bottom: 1px solid var(--line);
+  }
+
+  .app-shell .director-page .chapter-rail > header {
+    min-height: 48px;
+    padding: 6px 12px;
+  }
+
+  .app-shell .director-page .chapter-list {
+    display: flex;
+    width: 100%;
+    height: auto;
+    max-height: none;
+    align-items: stretch;
+    gap: 8px;
+    overflow-x: auto;
+    overflow-y: hidden;
+    padding: 8px 12px 11px;
+    scroll-padding-inline: 12px;
+    scroll-snap-type: x proximity;
+    scrollbar-width: none;
+    overscroll-behavior-x: contain;
+    touch-action: pan-x;
+  }
+
+  .app-shell .director-page .chapter-list::-webkit-scrollbar {
+    display: none;
+  }
+
+  .app-shell .director-page .chapter-item-row {
+    flex: 0 0 clamp(260px, calc(100vw - 48px), 304px);
+    width: clamp(260px, calc(100vw - 48px), 304px);
+    min-width: 0;
+    grid-template-columns: minmax(0, 1fr) 84px;
+    overflow: hidden;
+    border: 1px solid var(--line);
+    border-radius: 7px;
+    background: var(--surface-subtle);
+    box-shadow: 0 3px 12px rgb(0 0 0 / 5%);
+    scroll-snap-align: start;
+  }
+
+  .app-shell .director-page .chapter-item-row.active {
+    border-color: color-mix(in srgb, var(--brand) 38%, var(--line));
+    background: color-mix(in srgb, var(--brand-soft) 58%, var(--surface));
+  }
+
+  .app-shell .director-page .chapter-item-row .chapter-item {
+    width: 100%;
+    min-width: 0;
+    min-height: 62px;
+    flex-basis: auto;
+    grid-template-columns: 34px minmax(0, 1fr);
+    gap: 9px;
+    padding: 8px 6px 8px 9px;
+    border-radius: 0;
+    background: transparent;
+    box-shadow: none;
+    transform: none;
+  }
+
+  .app-shell .director-page .chapter-item-row .chapter-item.active {
+    color: var(--ink);
+    border-color: transparent;
+    background: transparent;
+    box-shadow: none;
+  }
+
+  .app-shell .director-page .chapter-item__copy {
+    min-width: 0;
+  }
+
+  .app-shell .director-page .chapter-item__copy strong,
+  .app-shell .director-page .chapter-item__copy small {
+    max-width: 100%;
+  }
+
+  .app-shell .director-page .chapter-item__actions {
+    width: 84px;
+    max-width: 84px;
+    margin: 0;
+    justify-content: center;
+    gap: 2px;
+    overflow: visible;
+    opacity: 1;
+    transform: none;
+  }
+
+  .app-shell .director-page .chapter-item__actions button {
+    flex: 0 0 40px;
+    width: 40px;
+    height: 40px;
+    border-radius: 6px;
   }
 }

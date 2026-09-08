@@ -4,7 +4,7 @@ from datetime import datetime
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_validator, model_validator
+from pydantic import BaseModel, ConfigDict, Field, HttpUrl, field_serializer, field_validator, model_validator
 
 from app.db.models import (
     AgentKind,
@@ -509,6 +509,9 @@ class HandbookPublic(ApiModel):
 
 
 class ProjectCreate(BaseModel):
+    creation_mode: Literal["import", "ai"] = "import"
+    cinematic: bool = False
+    text_model_id: str | None = Field(default=None, max_length=36)
     name: str = Field(min_length=1, max_length=120)
     description: str = Field(default="", max_length=4000)
     cover_url: str | None = Field(default=None, max_length=500)
@@ -520,8 +523,17 @@ class ProjectCreate(BaseModel):
     visual_handbook_id: str = Field(min_length=1, max_length=36)
     director_handbook_id: str = Field(min_length=1, max_length=36)
 
+    @model_validator(mode="after")
+    def require_ai_text_model(self) -> ProjectCreate:
+        if self.creation_mode == "ai" and not self.text_model_id:
+            raise ValueError("AI 创作项目必须选择文本模型")
+        return self
+
 
 class ProjectUpdate(BaseModel):
+    text_model_id: str | None = None
+    creation_mode: Literal["import", "ai"] | None = None
+    cinematic: bool | None = None
     name: str | None = Field(default=None, min_length=1, max_length=120)
     description: str | None = Field(default=None, max_length=4000)
     cover_url: str | None = Field(default=None, max_length=500)
@@ -535,6 +547,10 @@ class ProjectUpdate(BaseModel):
 
 
 class ProjectPublic(ApiModel):
+    creation_mode: str
+    cinematic: bool
+    text_model_id: str | None
+    creation_state: dict[str, Any]
     id: str
     tenant_id: str
     owner_id: str
@@ -551,8 +567,14 @@ class ProjectPublic(ApiModel):
     created_at: datetime
     updated_at: datetime
 
+    @field_serializer("creation_state")
+    def summarize_creation_state(self, value: dict[str, Any]) -> dict[str, Any]:
+        # Full conversation and checkpoints are loaded only in the creation workspace.
+        return {key: value[key] for key in ("phase", "revision", "task_id", "chapter_count") if key in value}
+
 
 class ProjectOptions(BaseModel):
+    text_models: list[ModelPublic] = Field(default_factory=list)
     image_models: list[ModelPublic]
     video_models: list[ModelPublic]
     visual_handbooks: list[HandbookPublic]
@@ -592,6 +614,8 @@ class ProjectFileDetail(ProjectFilePublic):
 
 
 class ChapterPublic(ApiModel):
+    locked: bool = False
+    script_created: bool = False
     id: str
     project_id: str
     source_file_id: str

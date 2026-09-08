@@ -18,6 +18,7 @@ from app.db.models import (
     HandbookType,
     ModelType,
     Project,
+    Provider,
     TaskStatus,
     User,
 )
@@ -73,6 +74,7 @@ async def validate_project_relations(
     session: AsyncSession, tenant_id: str, values: dict[str, object]
 ) -> None:
     checks = [
+        ("text_model_id", AIModel, ModelType.TEXT),
         ("image_model_id", AIModel, ModelType.IMAGE),
         ("video_model_id", AIModel, ModelType.VIDEO),
         ("visual_handbook_id", Handbook, HandbookType.VISUAL),
@@ -97,6 +99,10 @@ async def validate_project_relations(
             raise HTTPException(
                 status_code=422, detail=f"{field} 不是当前租户可用的{expected_type.value}配置"
             )
+        if isinstance(record, AIModel):
+            provider = await session.get(Provider, record.provider_id)
+            if provider is None or not provider.enabled or provider.tenant_id != tenant_id:
+                raise HTTPException(status_code=422, detail=f"{field} 的模型平台不可用")
 
 
 @router.get("", response_model=list[ProjectPublic])
@@ -120,6 +126,9 @@ async def create_project(
     values = payload.model_dump()
     await require_core_models_ready(session, user.tenant_id)
     await validate_project_relations(session, user.tenant_id, values)
+    from app.services.ai_creation import validate_creation_capabilities
+
+    await validate_creation_capabilities(session, values)
     project = Project(tenant_id=user.tenant_id, owner_id=user.id, **values)
     session.add(project)
     await session.commit()
@@ -135,7 +144,10 @@ async def project_options(
     models = list(
         (
             await session.scalars(
-                select(AIModel).where(AIModel.tenant_id == user.tenant_id, AIModel.enabled.is_(True))
+                select(AIModel).join(Provider, Provider.id == AIModel.provider_id).where(
+                    AIModel.tenant_id == user.tenant_id, AIModel.enabled.is_(True),
+                    Provider.tenant_id == user.tenant_id, Provider.enabled.is_(True),
+                )
             )
         ).all()
     )
@@ -147,6 +159,9 @@ async def project_options(
         ).all()
     )
     return ProjectOptions(
+        text_models=[
+            ModelPublic.model_validate(item) for item in models if item.model_type == ModelType.TEXT
+        ],
         image_models=[
             ModelPublic.model_validate(item) for item in models if item.model_type == ModelType.IMAGE
         ],
@@ -184,9 +199,25 @@ async def update_project(
 ) -> Project:
     project = await project_for_user(session, project_id, user)
     values = payload.model_dump(exclude_unset=True)
+    for field in ("creation_mode", "cinematic"):
+        if field in values and values[field] != getattr(project, field):
+            raise HTTPException(status_code=422, detail="创作模式与电影质感只能在创建项目时设置")
+    if project.creation_mode == "ai":
+        if "aspect_ratio" in values and values["aspect_ratio"] != project.aspect_ratio:
+            raise HTTPException(status_code=422, detail="AI 创作项目的画幅在创建后不可更改")
+        if "text_model_id" in values and not values["text_model_id"]:
+            raise HTTPException(status_code=422, detail="AI 创作项目必须保留文本模型")
     await validate_project_relations(session, user.tenant_id, values)
     for field, value in values.items():
         setattr(project, field, value)
+    from app.services.ai_creation import validate_creation_capabilities
+
+    await validate_creation_capabilities(session, {
+        field: getattr(project, field) for field in (
+            "creation_mode", "image_model_id", "video_model_id", "aspect_ratio",
+            "image_resolution", "video_resolution",
+        )
+    })
     await session.commit()
     await session.refresh(project)
     return project
@@ -322,6 +353,7 @@ async def generate_project_cover(
         tenant_id=user.tenant_id,
         resolution=project.image_resolution,
         fallback_model_id=project.image_model_id,
+        prefer_fallback=project.creation_mode == "ai",
     )
     if image_model is None:
         raise HTTPException(

@@ -1,6 +1,8 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
+import logging
 from pathlib import Path
 from urllib.parse import quote
 from uuid import uuid4
@@ -52,6 +54,7 @@ from app.domain.schemas import (
     TaskPublic,
 )
 from app.services.billing import resolve_task_pricing
+from app.services.chapter_cleanup import ChapterHasActiveTasksError, purge_chapter_production
 from app.services.composition import invalidate_compositions
 from app.services.director_orchestration import ensure_chapter_not_automating
 from app.services.object_storage import delete_media_file, materialize_media_file, object_storage
@@ -68,6 +71,7 @@ from app.services.task_submission import active_tasks, create_queued_task
 
 router = APIRouter(prefix="/projects", tags=["director-workspace"])
 settings = get_settings()
+logger = logging.getLogger(__name__)
 
 
 async def require_chapter_writable(session: AsyncSession, chapter: Chapter, user: User) -> None:
@@ -152,6 +156,9 @@ async def chapter_for_user(
         or chapter.user_id != user.id
     ):
         raise HTTPException(status_code=404, detail="章节不存在")
+    from app.services.ai_creation import require_ai_chapter_unlocked
+
+    await require_ai_chapter_unlocked(session, chapter)
     return chapter
 
 
@@ -339,9 +346,9 @@ async def list_chapters(
     project_id: str,
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
-) -> list[Chapter]:
-    await project_for_user(session, project_id, user)
-    return list(
+) -> list[ChapterPublic]:
+    project = await project_for_user(session, project_id, user)
+    chapters = list(
         (
             await session.scalars(
                 select(Chapter)
@@ -350,10 +357,84 @@ async def list_chapters(
                     Chapter.tenant_id == user.tenant_id,
                     Chapter.user_id == user.id,
                 )
-                .order_by(Chapter.created_at, Chapter.order_index)
+                .order_by(Chapter.order_index, Chapter.created_at)
             )
         ).all()
     )
+    scripted = set((await session.scalars(select(ScriptVersion.chapter_id).where(
+        ScriptVersion.project_id == project_id,
+        func.length(func.trim(ScriptVersion.content)) > 0,
+    ))).all())
+    unlocked = True
+    result = []
+    for chapter in chapters:
+        row = ChapterPublic.model_validate(chapter)
+        row.script_created = chapter.id in scripted
+        row.locked = project.creation_mode == "ai" and not unlocked
+        unlocked = unlocked and row.script_created
+        result.append(row)
+    return result
+
+
+async def cleanup_chapter_media(storage_paths: set[str], chapter_id: str) -> None:
+    if not storage_paths:
+        return
+    results = await asyncio.gather(
+        *(delete_media_file(storage_path) for storage_path in storage_paths),
+        return_exceptions=True,
+    )
+    for storage_path, result in zip(storage_paths, results, strict=True):
+        if isinstance(result, Exception):
+            logger.warning(
+                "Failed to delete chapter media %s for chapter %s: %s",
+                storage_path,
+                chapter_id,
+                result,
+            )
+
+
+@router.post("/{project_id}/chapters/{chapter_id}/redo", response_model=ChapterPublic)
+async def redo_chapter(
+    project_id: str,
+    chapter_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> Chapter:
+    chapter = await chapter_for_user(session, project_id, chapter_id, user)
+    await require_chapter_writable(session, chapter, user)
+    try:
+        cleanup = await purge_chapter_production(
+            session,
+            chapter=chapter,
+            delete_chapter=False,
+        )
+    except ChapterHasActiveTasksError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    await session.commit()
+    await session.refresh(chapter)
+    await cleanup_chapter_media(cleanup.storage_paths, chapter.id)
+    return chapter
+
+
+@router.delete("/{project_id}/chapters/{chapter_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_chapter(
+    project_id: str,
+    chapter_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> None:
+    chapter = await chapter_for_user(session, project_id, chapter_id, user)
+    await require_chapter_writable(session, chapter, user)
+    try:
+        cleanup = await purge_chapter_production(
+            session,
+            chapter=chapter,
+            delete_chapter=True,
+        )
+    except ChapterHasActiveTasksError as error:
+        raise HTTPException(status_code=409, detail=str(error)) from error
+    await session.commit()
+    await cleanup_chapter_media(cleanup.storage_paths, chapter_id)
 
 
 @router.get(
@@ -402,7 +483,9 @@ async def generate_chapter_analysis(
         if pending.request_payload.get("chapter_id") == chapter.id:
             raise HTTPException(status_code=409, detail="该章节已有分析任务正在处理")
     agent = await screenplay_agent(session, user.tenant_id)
-    model, _provider, _api_key = await resolve_text_model(session, agent, user.tenant_id)
+    model, _provider, _api_key = await resolve_text_model(
+        session, agent, user.tenant_id, project_id=project_id,
+    )
     pricing = await resolve_task_pricing(
         session,
         tenant_id=user.tenant_id,
@@ -509,7 +592,9 @@ async def generate_script_version(
         if pending.request_payload.get("chapter_id") == chapter.id:
             raise HTTPException(status_code=409, detail="该章节已有剧本生成任务正在处理")
     agent = await screenplay_agent(session, user.tenant_id)
-    model, _provider, _api_key = await resolve_text_model(session, agent, user.tenant_id)
+    model, _provider, _api_key = await resolve_text_model(
+        session, agent, user.tenant_id, project_id=project_id,
+    )
     pricing = await resolve_task_pricing(
         session,
         tenant_id=user.tenant_id,
@@ -749,7 +834,9 @@ async def import_source(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> SourceImportResult:
-    await project_for_user(session, project_id, user)
+    project = await project_for_user(session, project_id, user)
+    if project.creation_mode == "ai" and project.creation_state.get("phase") != "ready":
+        raise HTTPException(status_code=409, detail="请先完成 AI 创作引导，再追加章节内容")
     if file is None and not (pasted_text or "").strip():
         raise HTTPException(status_code=422, detail="请上传 TXT/EPUB 文件或粘贴文本")
 
@@ -817,6 +904,11 @@ async def import_source(
     session.add(source_file)
     await session.flush()
     parsed = await run_in_threadpool(extract_chapters, text, Path(source_filename).stem)
+    offset = 0
+    if project.creation_mode == "ai":
+        offset = await session.scalar(select(func.max(Chapter.order_index)).where(
+            Chapter.project_id == project_id,
+        )) or 0
     chapters = [
         Chapter(
             tenant_id=user.tenant_id,
@@ -828,7 +920,7 @@ async def import_source(
             title=item.title,
             original_content=item.content,
         )
-        for index, item in enumerate(parsed, start=1)
+        for index, item in enumerate(parsed, start=offset + 1)
     ]
     session.add_all(chapters)
     try:

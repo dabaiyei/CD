@@ -36,6 +36,7 @@ from app.db.models import (
     ScriptVersion,
     StoryboardShot,
     StoryboardVersion,
+    TaskStatus,
     User,
     VideoClip,
     VideoClipStatus,
@@ -59,10 +60,19 @@ from app.services.director_orchestration import (
     start_storyboard_workflow_for_chapter,
 )
 from app.services.object_storage import materialize_media_file, object_key_from_media_url
-from app.services.provider_adapters import closest_supported_video_duration, compatible_video_resolution
-from app.services.task_events import publish_task_event
+from app.services.provider_adapters import (
+    closest_supported_video_duration,
+    compatible_video_resolution,
+    default_video_audio_enabled,
+)
+from app.services.task_events import publish_task_event, record_task_event
 from app.services.task_queue import enqueue_task
 from app.services.task_submission import active_tasks, create_queued_task
+from app.services.video_references import (
+    build_shot_audio_references,
+    build_shot_image_references,
+    load_shot_assets_with_parents,
+)
 
 router = APIRouter(prefix="/projects", tags=["storyboard-production"])
 
@@ -333,6 +343,7 @@ async def storyboard_text_agent_and_model(
     session: AsyncSession,
     *,
     user: User,
+    project_id: str | None = None,
 ) -> tuple[AgentProfile, AIModel]:
     agent = await session.scalar(
         select(AgentProfile).where(
@@ -341,9 +352,11 @@ async def storyboard_text_agent_and_model(
             AgentProfile.enabled.is_(True),
         )
     )
-    if agent is None or not agent.text_model_id:
+    project = await session.get(Project, project_id) if project_id else None
+    selected_model_id = project.text_model_id if project and project.creation_mode == "ai" else None
+    if agent is None or not (selected_model_id or agent.text_model_id):
         raise HTTPException(status_code=409, detail="管理员尚未配置可用的导演 Agent 与文本模型")
-    model = await session.get(AIModel, agent.text_model_id)
+    model = await session.get(AIModel, selected_model_id or agent.text_model_id)
     if model is None or model.model_type != ModelType.TEXT or not model.enabled:
         raise HTTPException(status_code=409, detail="导演 Agent 绑定的文本模型不可用")
     return agent, model
@@ -439,6 +452,14 @@ async def queue_shot_video_task(
         duration_seconds=float(shot.duration_seconds),
         project=project,
     )
+    assets_by_id = await load_shot_assets_with_parents(
+        session,
+        shots=[shot],
+        tenant_id=user.tenant_id,
+    )
+    image_references = build_shot_image_references(shot, assets_by_id)
+    audio_references = build_shot_audio_references(shot, assets_by_id, model.capabilities or {})
+    audio_enabled = default_video_audio_enabled(model.capabilities)
     task, event = await create_queued_task(
         session,
         user=user,
@@ -456,6 +477,9 @@ async def queue_shot_video_task(
             "requested_video_resolution": project.video_resolution,
             "aspect_ratio": project.aspect_ratio,
             "duration_seconds": float(shot.duration_seconds),
+            "audio_enabled": audio_enabled,
+            "reference_media": [*image_references, *audio_references],
+            "reference_audio_characters": [item.get("character_name", "") for item in audio_references],
             "pricing": pricing.as_payload(),
         },
         message=f"镜头 {shot.order_index:02d} 视频生成",
@@ -613,6 +637,138 @@ async def download_storyboard_videos(
     )
 
 
+@router.post("/{project_id}/chapters/{chapter_id}/storyboards/{storyboard_id}/videos/concat")
+async def queue_video_concat(
+    project_id: str,
+    chapter_id: str,
+    storyboard_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    chapter, storyboard = await storyboard_for_user(
+        session,
+        project_id=project_id,
+        chapter_id=chapter_id,
+        storyboard_id=storyboard_id,
+        user=user,
+    )
+    if not storyboard.is_active:
+        raise HTTPException(status_code=409, detail="只能拼接当前生效分镜的视频")
+    rows = (
+        await session.execute(
+            select(StoryboardShot, VideoClip)
+            .join(
+                VideoClip,
+                VideoClip.shot_id == StoryboardShot.id,
+            )
+            .where(
+                StoryboardShot.storyboard_version_id == storyboard.id,
+                StoryboardShot.user_id == user.id,
+                VideoClip.storyboard_version_id == storyboard.id,
+                VideoClip.user_id == user.id,
+                VideoClip.status == VideoClipStatus.READY,
+                VideoClip.is_active.is_(True),
+            )
+            .order_by(StoryboardShot.order_index, StoryboardShot.id)
+        )
+    ).all()
+    if not rows:
+        raise HTTPException(status_code=409, detail="没有已完成的生效视频可拼接")
+    clips = []
+    for shot, clip in rows:
+        key = object_key_from_media_url(clip.media_url)
+        if not key:
+            raise HTTPException(status_code=409, detail=f"镜头 {shot.order_index} 的视频文件不可用")
+        clips.append({"clip_id": clip.id, "storage_key": key})
+    # Reuse an identical persisted job across refreshes and duplicate clicks.
+    await active_tasks(session, project_id=project_id, task_type="storyboard_video_concat")
+    previous = (
+        await session.scalars(
+            select(AITask)
+            .where(
+                AITask.project_id == project_id,
+                AITask.user_id == user.id,
+                AITask.task_type == "storyboard_video_concat",
+                AITask.status.in_([TaskStatus.QUEUED, TaskStatus.RUNNING, TaskStatus.SUCCEEDED]),
+            )
+            .order_by(AITask.created_at.desc())
+        )
+    ).all()
+    project = await session.get(Project, project_id)
+    for task in previous:
+        if (
+            task.request_payload.get("storyboard_id") == storyboard_id
+            and task.request_payload.get("clips") == clips
+            and task.request_payload.get("resolution") == (project.video_resolution or "1080p")
+            and task.request_payload.get("ratio") == project.aspect_ratio
+        ):
+            if task.status == TaskStatus.SUCCEEDED:
+                try:
+                    await materialize_media_file((task.result_payload or {})["storage_key"])
+                except (FileNotFoundError, ValueError, KeyError):
+                    continue
+            return {"id": task.id, "status": task.status.value}
+    task = AITask(
+        tenant_id=user.tenant_id,
+        user_id=user.id,
+        project_id=project_id,
+        task_type="storyboard_video_concat",
+        cost=Decimal("0"),
+        request_payload={
+            "chapter_id": chapter_id,
+            "storyboard_id": storyboard_id,
+            "clips": clips,
+            "resolution": project.video_resolution or "1080p",
+            "ratio": project.aspect_ratio,
+            "filename": safe_archive_name(chapter.title, fallback="chapter") + "-拼接视频.mp4",
+        },
+    )
+    session.add(task)
+    await session.flush()
+    task.idempotency_key = task.id
+    event = record_task_event(
+        session, task, status=TaskStatus.QUEUED, progress=0, message="视频拼接已进入队列"
+    )
+    await session.commit()
+    await publish_task_event(task, event)
+    await enqueue_task(task.id)
+    return {"id": task.id, "status": task.status.value}
+
+
+@router.get(
+    "/{project_id}/chapters/{chapter_id}/storyboards/{storyboard_id}/videos/concat/{task_id}/download"
+)
+async def download_video_concat(
+    project_id: str,
+    chapter_id: str,
+    storyboard_id: str,
+    task_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> FileResponse:
+    await storyboard_for_user(
+        session, project_id=project_id, chapter_id=chapter_id, storyboard_id=storyboard_id, user=user
+    )
+    task = await session.get(AITask, task_id)
+    if (
+        not task
+        or task.user_id != user.id
+        or task.tenant_id != user.tenant_id
+        or task.project_id != project_id
+        or task.task_type != "storyboard_video_concat"
+        or task.request_payload.get("storyboard_id") != storyboard_id
+        or task.request_payload.get("chapter_id") != chapter_id
+    ):
+        raise HTTPException(status_code=404, detail="拼接任务不存在")
+    if task.status != TaskStatus.SUCCEEDED:
+        raise HTTPException(status_code=409, detail="视频尚未拼接完成")
+    try:
+        path = await materialize_media_file(task.result_payload["storage_key"])
+    except (FileNotFoundError, ValueError, KeyError) as exc:
+        raise HTTPException(status_code=404, detail="拼接视频文件不存在") from exc
+    return FileResponse(path, media_type="video/mp4", filename=task.result_payload["filename"])
+
+
 @router.post(
     "/{project_id}/chapters/{chapter_id}/storyboards",
     response_model=StoryboardVersionDetail,
@@ -766,11 +922,7 @@ async def update_storyboard_shot(
     if not storyboard.is_active:
         raise HTTPException(status_code=409, detail="只能编辑当前生效分镜")
     shot = await session.get(StoryboardShot, shot_id)
-    if (
-        shot is None
-        or shot.storyboard_version_id != storyboard.id
-        or shot.user_id != user.id
-    ):
+    if shot is None or shot.storyboard_version_id != storyboard.id or shot.user_id != user.id:
         raise HTTPException(status_code=404, detail="镜头不存在")
     for pending in await active_tasks(
         session,
@@ -890,13 +1042,11 @@ async def generate_storyboard_video_prompts(
         task_type="shot_video_prompt_generation",
     ):
         pending_ids = {
-            str(item)
-            for item in (pending.request_payload.get("shot_ids") or [])
-            if isinstance(item, str)
+            str(item) for item in (pending.request_payload.get("shot_ids") or []) if isinstance(item, str)
         }
         if selected_ids & pending_ids:
             raise HTTPException(status_code=409, detail="所选镜头已有视频提示词任务正在处理")
-    agent, model = await storyboard_text_agent_and_model(session, user=user)
+    agent, model = await storyboard_text_agent_and_model(session, user=user, project_id=project_id)
     video_model = await video_model_for_project(session, project=project, user=user)
     video_provider = await session.get(Provider, video_model.provider_id)
     if video_provider is None or video_provider.tenant_id != user.tenant_id:
@@ -929,6 +1079,7 @@ async def generate_storyboard_video_prompts(
             "video_resolution": resolved_resolution,
             "requested_video_resolution": project.video_resolution,
             "aspect_ratio": project.aspect_ratio,
+            "audio_enabled": default_video_audio_enabled(video_model.capabilities),
             "target_video_model": {
                 "provider_code": video_provider.code,
                 "provider_name": video_provider.name,
@@ -1035,11 +1186,7 @@ async def generate_shot_video(
     if not storyboard.is_active or storyboard.script_version_id != chapter.active_script_version_id:
         raise HTTPException(status_code=409, detail="只能为当前生效分镜生成视频")
     shot = await session.get(StoryboardShot, shot_id)
-    if (
-        shot is None
-        or shot.storyboard_version_id != storyboard.id
-        or shot.user_id != user.id
-    ):
+    if shot is None or shot.storyboard_version_id != storyboard.id or shot.user_id != user.id:
         raise HTTPException(status_code=404, detail="镜头不存在")
     model = await video_model_for_project(session, project=project, user=user)
     task, event = await queue_shot_video_task(

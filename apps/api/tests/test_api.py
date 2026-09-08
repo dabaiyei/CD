@@ -48,9 +48,11 @@ from app.db.models import (
     ModelType,
     Notification,
     Project,
+    ProjectFile,
     Provider,
     ProviderType,
     RefreshSession,
+    ScriptVersion,
     SecurityEvent,
     TaskStatus,
     Tenant,
@@ -80,10 +82,16 @@ from app.services.media_gateway import (
     VideoGenerationResult,
 )
 from app.services.object_storage import object_storage
-from app.services.provider_adapters import autodl_minimax_h3_adapter_config
+from app.services.provider_adapters import (
+    agnes_video_adapter_config,
+    agnes_video_capabilities,
+    autodl_minimax_h3_adapter_config,
+    default_video_audio_enabled,
+)
 from app.services.task_worker import (
     _safe_error_message,
     claim_task,
+    enforce_video_audio_policy,
     ensure_video_prompt_dialogue_locks,
     ensure_video_prompt_reference_locks,
     fail_task,
@@ -92,6 +100,8 @@ from app.services.task_worker import (
     process_task,
     recover_stale_tasks,
     signal_task_activity,
+    video_model_execution_contract,
+    video_prompt_protocol,
 )
 
 
@@ -191,6 +201,43 @@ def test_autodl_reference_media_detects_image_type_without_extension() -> None:
     asyncio.run(run())
 
 
+def test_character_audio_reference_is_embedded_for_video_provider() -> None:
+    async def run() -> None:
+        key = "test/video-reference/character.wav"
+        await object_storage().put_bytes(key, b"RIFF-reference-voice", "audio/wav")
+        try:
+            provider = Provider(
+                tenant_id="tenant-test",
+                code="audio-reference-test",
+                name="Audio reference test",
+                provider_type=ProviderType.CUSTOM,
+                base_url="https://video.example.test",
+                adapter_config=agnes_video_adapter_config(),
+                extra_headers={},
+                enabled=False,
+            )
+            prepared = await prepare_adapter_reference_media(
+                provider,
+                [
+                    {
+                        "type": "audio",
+                        "url": f"/uploads/{key}",
+                        "mime_type": "audio/wav",
+                        "token": "<Audio 1>",
+                        "character_name": "林遥",
+                    }
+                ],
+            )
+            assert prepared[0]["data_uri"] == (
+                "data:audio/wav;base64," + base64.b64encode(b"RIFF-reference-voice").decode()
+            )
+            assert prepared[0]["character_name"] == "林遥"
+        finally:
+            await object_storage().delete(key)
+
+    asyncio.run(run())
+
+
 def test_video_prompt_reference_locks_are_inserted_when_model_omits_tokens() -> None:
     prompt = (
         "For the target video, at 0.00 seconds into the target video, <Picture 1> "
@@ -227,6 +274,134 @@ def test_video_prompt_dialogue_locks_keep_original_chinese_lines() -> None:
     assert "Dialogue locks:" in enriched
     assert "<d>[Chinese]阿贝尔：你为什么还在这里？</d>" in enriched
     assert "integrated_multimodal_description: Dialogue locks:" in enriched
+
+
+def test_generic_video_prompt_protocol_prefers_chinese_without_h3_contract() -> None:
+    protocol = video_prompt_protocol(
+        {
+            "provider_code": "agnes-ai",
+            "model_id": "agnes-video-2.5-flash",
+            "capabilities": {"prompt_languages": ["zh-CN", "en"]},
+        }
+    )
+    assert protocol == {
+        "name": "generic",
+        "preferred_prompt_language": "zh-CN",
+        "dialogue_language_policy": "preserve_original",
+    }
+    enriched = ensure_video_prompt_reference_locks(
+        "人物缓慢转身。",
+        [{"token": "<Picture 1>", "role": "first_frame"}],
+        language="zh-CN",
+    )
+    assert enriched.startswith("参考图锁定：")
+    assert "Reference locks:" not in enriched
+
+
+def test_h3_video_prompt_protocol_is_selected_only_for_h3_target() -> None:
+    protocol = video_prompt_protocol(
+        {
+            "provider_code": "custom-provider",
+            "model_id": "custom-video",
+            "capabilities": {
+                "video_prompt_protocol": "minimax_h3",
+                "prompt_languages": ["zh-CN", "en"],
+            },
+        }
+    )
+    assert protocol["name"] == "minimax_h3"
+    assert protocol["preferred_prompt_language"] == "en"
+
+
+def test_video_model_execution_contract_uses_actual_capabilities() -> None:
+    model = AIModel(
+        id="video-model-contract",
+        tenant_id="tenant-contract",
+        provider_id="provider-contract",
+        model_type=ModelType.VIDEO,
+        model_id="video-any-duration",
+        name="Dynamic Video",
+        capabilities={
+            "schema_version": 1,
+            "generation_modes": ["text_to_video", "first_frame"],
+            "reference_limits": {
+                "image": {
+                    "enabled": True,
+                    "min_count": 0,
+                    "max_count": 3,
+                    "accepted_mime_types": ["image/png"],
+                }
+            },
+            "audio_policy": "disabled",
+            "duration_resolution_map": [
+                {"durations": [2, 7, 21], "resolutions": ["540p", "1080p"]}
+            ],
+            "aspect_ratios": ["16:9"],
+            "prompt_languages": ["zh-CN"],
+        },
+    )
+    contract = video_model_execution_contract(
+        model,
+        requested_resolution="1080p",
+        aspect_ratio="16:9",
+    )
+    assert contract["supported_durations_seconds"] == [2.0, 7.0, 21.0]
+    assert contract["reference_limits"]["image"]["max_count"] == 3
+    assert contract["reference_limits"]["image"]["accepted_mime_types"] == ["image/png"]
+    assert contract["audio_enabled_for_this_task"] is False
+
+
+def test_silent_h3_prompt_removes_dialogue_and_all_audio_descriptions() -> None:
+    prompt = (
+        "integrated_multimodal_description: Abel says <d>[Chinese]阿贝尔：快走！</d>.\n\n"
+        "overall_soundscape: Voices overlap with rain and footsteps.\n\n"
+        "non_diegetic_music: Loud orchestral music."
+    )
+    silent = enforce_video_audio_policy(
+        prompt,
+        "阿贝尔：快走！",
+        audio_enabled=False,
+        protocol_name="minimax_h3",
+        language="en",
+    )
+    assert "阿贝尔：快走！" not in silent
+    assert "overall_soundscape: N/A" in silent
+    assert "non_diegetic_music: N/A" in silent
+    assert "no speech" in silent
+
+
+def test_video_audio_defaults_to_enabled_for_supported_models() -> None:
+    assert default_video_audio_enabled({"audio_policy": "optional"}) is True
+    assert default_video_audio_enabled({"audio_policy": "required"}) is True
+    assert default_video_audio_enabled({"audio_policy": "disabled"}) is False
+
+
+def test_audio_enabled_without_dialogue_forbids_invented_voice_and_sound() -> None:
+    prompt = "A locked-off classroom shot with restrained movement."
+    constrained = enforce_video_audio_policy(
+        prompt,
+        "",
+        audio_enabled=True,
+        protocol_name="generic",
+        language="en",
+    )
+    assert "no locked dialogue" in constrained
+    assert "Do not generate speech" in constrained
+    assert "Do not invent music, ambience, or sound effects" in constrained
+
+
+def test_audio_enabled_removes_legacy_system_silence_instruction() -> None:
+    constrained = enforce_video_audio_policy(
+        "雨夜街道，车辆缓慢驶过。\n\n"
+        "本任务关闭音频：生成完全无声的视频，不得出现对白、旁白、歌唱、音乐、环境声、"
+        "音效或任何虚构语言；人物不得开口说话。",
+        "",
+        audio_enabled=True,
+        protocol_name="generic",
+        language="zh-CN",
+    )
+    assert "本任务关闭音频" not in constrained
+    assert "雨夜街道" in constrained
 
 
 class FakeCompositionRenderer:
@@ -2096,11 +2271,11 @@ def test_tenant_pricing_rules_snapshot_new_task_costs(
     assert forbidden.status_code == 403
     public_rules = client.get("/api/v1/pricing", headers=creator_headers)
     assert public_rules.status_code == 200
-    assert len(public_rules.json()) == 12
+    assert len(public_rules.json()) == 13
 
     rules = client.get("/api/v1/admin/pricing-rules", headers=admin_headers)
     assert rules.status_code == 200
-    assert len(rules.json()) == 12
+    assert len(rules.json()) == 13
     cover_rule = next(rule for rule in rules.json() if rule["task_type"] == "project_cover_generation")
     updated = client.patch(
         "/api/v1/admin/pricing-rules/project_cover_generation",
@@ -2170,6 +2345,7 @@ def test_autodl_h3_preset_install_is_idempotent(
         "enabled": True,
         "min_count": 1,
         "max_count": 9,
+        "accepted_mime_types": ["image/jpeg", "image/png", "image/webp"],
     }
 
     second = client.post(
@@ -2215,6 +2391,47 @@ def test_autodl_h3_preset_install_is_idempotent(
     ).status_code == 204
     assert client.delete(
         f"/api/v1/admin/providers/{first_body['provider']['id']}", headers=admin_headers
+    ).status_code == 204
+
+
+def test_dola_local_preset_install_is_idempotent(
+    client: TestClient,
+    admin_headers: dict[str, str],
+) -> None:
+    first = client.post(
+        "/api/v1/admin/provider-presets/dola-local/install",
+        headers=admin_headers,
+    )
+    assert first.status_code == 200
+    body = first.json()
+    assert body["provider"]["code"] == "dola-local"
+    assert body["provider"]["base_url"] == "http://127.0.0.1:8199"
+    assert body["provider"]["enabled"] is False
+    assert body["provider"]["adapter_config"]["connectivity"]["path"] == "api/video-pool"
+    assert [model["model_id"] for model in body["models"]] == [
+        "Dreamina Seedance 2.0 Fast",
+        "Dreamina Seedance 2.5",
+        "Dreamina Seedance 1.0",
+    ]
+    assert all(model["model_type"] == "video" for model in body["models"])
+    assert all(model["enabled"] is False for model in body["models"])
+
+    second = client.post(
+        "/api/v1/admin/provider-presets/dola-local/install",
+        headers=admin_headers,
+    )
+    assert second.status_code == 200
+    assert second.json()["provider"]["id"] == body["provider"]["id"]
+    assert [model["id"] for model in second.json()["models"]] == [
+        model["id"] for model in body["models"]
+    ]
+
+    for model in body["models"]:
+        assert client.delete(
+            f"/api/v1/admin/models/{model['id']}", headers=admin_headers
+        ).status_code == 204
+    assert client.delete(
+        f"/api/v1/admin/providers/{body['provider']['id']}", headers=admin_headers
     ).status_code == 204
 
 
@@ -3813,6 +4030,221 @@ def test_director_source_import_and_project_file_workflow(
     )
 
 
+def test_chapter_redo_and_delete_clear_production_but_preserve_source(
+    client: TestClient,
+    creator_headers: dict[str, str],
+) -> None:
+    project_id = client.get("/api/v1/projects", headers=creator_headers).json()[0]["id"]
+    imported = client.post(
+        f"/api/v1/projects/{project_id}/sources/import",
+        headers=creator_headers,
+        data={
+            "mode": "novel",
+            "source_name": "章节清理测试",
+            "pasted_text": "第一章 雨夜\n港口响起汽笛。\n第二章 来信\n她拆开那封旧信。",
+        },
+    ).json()
+    source_file_id = imported["source_file"]["id"]
+    chapter = imported["chapters"][0]
+    sibling = imported["chapters"][1]
+    chapter_id = chapter["id"]
+    script_path = f"/api/v1/projects/{project_id}/chapters/{chapter_id}/scripts"
+    assert client.post(
+        script_path,
+        headers=creator_headers,
+        json={"title": "雨夜剧本", "content": "外景，港口，雨夜。", "activate": True},
+    ).status_code == 201
+    extraction = client.post(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/asset-extractions",
+        headers=creator_headers,
+        json={
+            "assets": [
+                {"asset_type": "character", "name": "清理测试角色", "description": "雨夜旅人"}
+            ]
+        },
+    )
+    assert extraction.status_code == 201
+    asset = extraction.json()["assets"][0]
+    derivative = client.post(
+        f"/api/v1/projects/{project_id}/assets",
+        headers=creator_headers,
+        json={
+            "asset_type": "character",
+            "name": "清理测试角色雨衣造型",
+            "parent_asset_id": asset["id"],
+        },
+    )
+    assert derivative.status_code == 201
+
+    media_key = f"test/chapter-cleanup/{asset['id']}.webp"
+    generated_key = f"test/chapter-cleanup/{chapter_id}.json"
+
+    async def seed_generated_records() -> str:
+        await object_storage().put_bytes(media_key, b"shared-asset-image", "image/webp")
+        await object_storage().put_bytes(generated_key, b"generated-analysis", "application/json")
+        async with SessionLocal() as session:
+            asset_row = await session.get(Asset, asset["id"])
+            assert asset_row is not None
+            asset_row.status = AssetStatus.READY
+            asset_row.media_url = f"/uploads/{media_key}"
+            task = AITask(
+                tenant_id=asset_row.tenant_id,
+                user_id=asset_row.user_id,
+                project_id=project_id,
+                task_type="chapter_cleanup_probe",
+                status=TaskStatus.SUCCEEDED,
+                request_payload={"chapter_id": chapter_id},
+            )
+            session.add(task)
+            await session.flush()
+            session.add(
+                ProjectFile(
+                    tenant_id=asset_row.tenant_id,
+                    user_id=asset_row.user_id,
+                    project_id=project_id,
+                    name="章节清理生成文件.json",
+                    kind="analysis",
+                    mime_type="application/json",
+                    size_bytes=18,
+                    storage_path=generated_key,
+                    editable=True,
+                    file_metadata={"chapter_id": chapter_id, "source_task_id": task.id},
+                )
+            )
+            await session.commit()
+            return task.id
+
+    task_id = asyncio.run(seed_generated_records())
+    exported = client.post(
+        f"/api/v1/projects/{project_id}/assets/{asset['id']}/export-global",
+        headers=creator_headers,
+    )
+    assert exported.status_code == 200
+    global_asset_id = exported.json()["id"]
+
+    storyboard = client.post(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/storyboards",
+        headers=creator_headers,
+        json={
+            "shots": [
+                {
+                    "title": "港口雨夜",
+                    "duration_seconds": 5,
+                    "scene_description": "雨中的港口",
+                    "action_description": "旅人抬头",
+                }
+            ]
+        },
+    )
+    assert storyboard.status_code == 201
+
+    redone = client.post(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/redo",
+        headers=creator_headers,
+    )
+    assert redone.status_code == 200
+    assert redone.json()["status"] == "uninitialized"
+    assert redone.json()["title"] == chapter["title"]
+    assert redone.json()["original_content"] == chapter["original_content"]
+    assert redone.json()["source_file_id"] == source_file_id
+    assert client.get(script_path, headers=creator_headers).json() == []
+    assert client.get(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/asset-extractions",
+        headers=creator_headers,
+    ).json() == []
+    assert client.get(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/storyboards",
+        headers=creator_headers,
+    ).json() == []
+    remaining_assets = client.get(
+        f"/api/v1/projects/{project_id}/assets", headers=creator_headers
+    ).json()
+    remaining_asset_ids = {item["id"] for item in remaining_assets}
+    assert asset["id"] not in remaining_asset_ids
+    assert derivative.json()["id"] not in remaining_asset_ids
+    assert client.get(f"/api/v1/tasks/{task_id}", headers=creator_headers).status_code == 404
+    remaining_files = client.get(
+        f"/api/v1/projects/{project_id}/files", headers=creator_headers
+    ).json()
+    assert source_file_id in {item["id"] for item in remaining_files}
+
+    async def verify_storage_and_global_copy() -> None:
+        assert await object_storage().get_bytes(media_key) == b"shared-asset-image"
+        with pytest.raises(FileNotFoundError):
+            await object_storage().get_bytes(generated_key)
+        async with SessionLocal() as session:
+            global_asset = await session.get(Asset, global_asset_id)
+            assert global_asset is not None
+            assert global_asset.media_url == f"/uploads/{media_key}"
+
+    asyncio.run(verify_storage_and_global_copy())
+
+    deleted = client.delete(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}", headers=creator_headers
+    )
+    assert deleted.status_code == 204
+    chapters = client.get(
+        f"/api/v1/projects/{project_id}/chapters", headers=creator_headers
+    ).json()
+    assert chapter_id not in {item["id"] for item in chapters}
+    assert sibling["id"] in {item["id"] for item in chapters}
+    assert source_file_id in {
+        item["id"]
+        for item in client.get(
+            f"/api/v1/projects/{project_id}/files", headers=creator_headers
+        ).json()
+    }
+
+
+def test_chapter_cleanup_rejects_active_tasks(
+    client: TestClient,
+    creator_headers: dict[str, str],
+) -> None:
+    project_id = client.get("/api/v1/projects", headers=creator_headers).json()[0]["id"]
+    imported = client.post(
+        f"/api/v1/projects/{project_id}/sources/import",
+        headers=creator_headers,
+        data={"mode": "script", "pasted_text": "第一场 候场\n演员正在等待开机。"},
+    ).json()
+    chapter_id = imported["chapters"][0]["id"]
+
+    async def create_active_task() -> str:
+        async with SessionLocal() as session:
+            chapter = await session.get(Chapter, chapter_id)
+            assert chapter is not None
+            task = AITask(
+                tenant_id=chapter.tenant_id,
+                user_id=chapter.user_id,
+                project_id=project_id,
+                task_type="chapter_cleanup_active_probe",
+                status=TaskStatus.RUNNING,
+                request_payload={"chapter_id": chapter_id},
+            )
+            session.add(task)
+            await session.commit()
+            return task.id
+
+    task_id = asyncio.run(create_active_task())
+    try:
+        redo = client.post(
+            f"/api/v1/projects/{project_id}/chapters/{chapter_id}/redo",
+            headers=creator_headers,
+        )
+        assert redo.status_code == 409
+        assert "进行中" in redo.json()["detail"]
+        deleted = client.delete(
+            f"/api/v1/projects/{project_id}/chapters/{chapter_id}", headers=creator_headers
+        )
+        assert deleted.status_code == 409
+    finally:
+        async def cleanup() -> None:
+            async with SessionLocal() as session:
+                await session.execute(delete(AITask).where(AITask.id == task_id))
+                await session.commit()
+
+        asyncio.run(cleanup())
+
+
 def test_epub_import_preserves_original_and_extracts_chapters(
     client: TestClient,
     creator_headers: dict[str, str],
@@ -4165,6 +4597,152 @@ def test_asset_image_upload_creates_history_and_prompt_edit_keeps_ready_status(
     assert prompt_updated.json()["media_url"] == uploaded.json()["media_url"]
 
 
+def test_character_reference_audio_flows_into_video_prompt_and_generation_task(
+    client: TestClient,
+    creator_headers: dict[str, str],
+    admin_headers: dict[str, str],
+) -> None:
+    provider_id = client.get("/api/v1/admin/providers", headers=admin_headers).json()[0]["id"]
+    assert client.patch(
+        f"/api/v1/admin/providers/{provider_id}",
+        headers=admin_headers,
+        json={"api_key": "test-character-audio-key"},
+    ).status_code == 200
+    project_id = client.get("/api/v1/projects", headers=creator_headers).json()[0]["id"]
+    imported = client.post(
+        f"/api/v1/projects/{project_id}/sources/import",
+        headers=creator_headers,
+        data={"mode": "script", "pasted_text": "第一场 雨夜站台\n林遥轻声说：列车到了。"},
+    ).json()
+    chapter_id = imported["chapters"][0]["id"]
+    script = client.post(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/scripts",
+        headers=creator_headers,
+        json={"title": "雨夜站台", "content": "林遥：列车到了。", "activate": True},
+    )
+    assert script.status_code == 201
+    extraction = client.post(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/asset-extractions",
+        headers=creator_headers,
+        json={
+            "assets": [
+                {"asset_type": "character", "name": "音频测试林遥", "description": "短发女性"}
+            ]
+        },
+    )
+    assert extraction.status_code == 201
+    character = extraction.json()["assets"][0]
+    image = BytesIO()
+    Image.new("RGB", (640, 640), "#315c64").save(image, format="PNG")
+    assert client.post(
+        f"/api/v1/assets/{character['id']}/image/upload",
+        headers=creator_headers,
+        files={"file": ("linyao.png", image.getvalue(), "image/png")},
+    ).status_code == 200
+    audio = client.post(
+        f"/api/v1/assets/{character['id']}/reference-audio/upload",
+        headers=creator_headers,
+        files={"file": ("linyao.wav", b"RIFF-reference-voice", "audio/wav")},
+    )
+    assert audio.status_code == 200
+    assert audio.json()["asset_metadata"]["reference_audio_mime_type"] == "audio/wav"
+    assert audio.json()["asset_metadata"]["reference_audio_filename"] == "linyao.wav"
+
+    storyboard = client.post(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/storyboards",
+        headers=creator_headers,
+        json={
+            "shots": [
+                {
+                    "title": "林遥候车",
+                    "duration_seconds": 5,
+                    "scene_description": "雨夜站台",
+                    "action_description": "林遥望向进站列车",
+                    "dialogue": "林遥：列车到了。",
+                    "image_prompt": "雨夜站台上的林遥",
+                    "video_prompt": "林遥望向进站列车并说出台词。",
+                    "asset_ids": [character["id"]],
+                }
+            ]
+        },
+    )
+    assert storyboard.status_code == 201
+    storyboard_id = storyboard.json()["version"]["id"]
+    shot_id = storyboard.json()["shots"][0]["id"]
+
+    async def enable_audio_reference_capability() -> tuple[str, dict]:
+        async with SessionLocal() as session:
+            project = await session.get(Project, project_id)
+            assert project is not None and project.video_model_id
+            model = await session.get(AIModel, project.video_model_id)
+            assert model is not None
+            original = json.loads(json.dumps(model.capabilities))
+            capabilities = json.loads(json.dumps(model.capabilities))
+            capabilities["audio_policy"] = "optional"
+            limits = capabilities.setdefault("reference_limits", {})
+            limits["audio"] = {
+                "enabled": True,
+                "min_count": 0,
+                "max_count": 2,
+                "accepted_mime_types": ["audio/wav"],
+            }
+            model.capabilities = capabilities
+            await session.commit()
+            return model.id, original
+
+    model_id, original_capabilities = asyncio.run(enable_audio_reference_capability())
+    queued_task_ids: list[str] = []
+    try:
+        prompt_task = client.post(
+            f"/api/v1/projects/{project_id}/chapters/{chapter_id}/storyboards/"
+            f"{storyboard_id}/video-prompts/generate",
+            headers=creator_headers,
+            json={"shot_ids": [shot_id], "overwrite": True},
+        )
+        assert prompt_task.status_code == 202
+        runtime = FakeWorkflowRuntime()
+        assert asyncio.run(
+            process_task(prompt_task.json()["id"], runtime_factory=lambda: runtime)
+        ) is True
+        assert '"reference_audio_map"' in runtime.requests[-1].prompt
+        assert '"character_name": "音频测试林遥"' in runtime.requests[-1].prompt
+        detail = client.get(
+            f"/api/v1/projects/{project_id}/chapters/{chapter_id}/storyboards/{storyboard_id}",
+            headers=creator_headers,
+        ).json()
+        assert "<Audio 1>" in detail["shots"][0]["video_prompt"]
+        assert "音频测试林遥" in detail["shots"][0]["video_prompt"]
+
+        video_tasks = client.post(
+            f"/api/v1/projects/{project_id}/chapters/{chapter_id}/storyboards/"
+            f"{storyboard_id}/videos/generate",
+            headers=creator_headers,
+            json={"shot_ids": [shot_id], "only_missing": True},
+        )
+        assert video_tasks.status_code == 202
+        queued_task_ids = [item["id"] for item in video_tasks.json()]
+        payload = video_tasks.json()[0]["request_payload"]
+        audio_references = [
+            item for item in payload["reference_media"] if item["type"] == "audio"
+        ]
+        assert payload["audio_enabled"] is True
+        assert payload["reference_audio_characters"] == ["音频测试林遥"]
+        assert audio_references[0]["character_name"] == "音频测试林遥"
+        assert audio_references[0]["mime_type"] == "audio/wav"
+        assert audio_references[0]["url"].startswith("/uploads/")
+    finally:
+        async def restore_model_and_remove_tasks() -> None:
+            async with SessionLocal() as session:
+                model = await session.get(AIModel, model_id)
+                assert model is not None
+                model.capabilities = original_capabilities
+                if queued_task_ids:
+                    await session.execute(delete(AITask).where(AITask.id.in_(queued_task_ids)))
+                await session.commit()
+
+        asyncio.run(restore_model_and_remove_tasks())
+
+
 def test_script_review_decisions_are_audited_and_approval_can_activate(
     client: TestClient,
     creator_headers: dict[str, str],
@@ -4491,6 +5069,9 @@ def test_automatic_director_workflow_completes_chapter_to_ready_videos(
 
     assert detail["workflow"]["status"] == "completed", detail
     assert detail["workflow"]["stage"] == "ready_for_video"
+    assert video_gateway.requests
+    assert all(request.audio_enabled is True for request in video_gateway.requests)
+    assert all("完全无声" not in request.prompt for request in video_gateway.requests)
     assert all(child["max_attempts"] == 5 for child in detail["child_runs"])
     child_task_ids = [child["task_id"] for child in detail["child_runs"]]
     assert len(child_task_ids) == len(set(child_task_ids))
@@ -4535,6 +5116,19 @@ def test_automatic_director_workflow_completes_chapter_to_ready_videos(
         f"/api/v1/projects/{project_id}/chapters", headers=creator_headers
     ).json()
     assert next(chapter for chapter in chapters if chapter["id"] == chapter_id)["status"] == "completed"
+
+    resumed = client.post(
+        f"{workflow_path}/automatic",
+        headers=creator_headers,
+        json={"instruction": "从当前完成状态继续"},
+    )
+    assert resumed.status_code == 202, resumed.text
+    resumed_detail = resumed.json()
+    assert resumed_detail["workflow"]["id"] != detail["workflow"]["id"]
+    assert resumed_detail["workflow"]["stage"] == "ready_for_video"
+    assert resumed_detail["workflow"]["status"] == "completed"
+    assert resumed_detail["workflow"]["context_snapshot"]["resumed_from_chapter_progress"] is True
+    assert resumed_detail["child_runs"] == []
 
 
 def test_automatic_director_workflow_can_stop_and_unlock_chapter(
@@ -4590,6 +5184,68 @@ def test_automatic_director_workflow_can_stop_and_unlock_chapter(
         },
     )
     assert unlocked_script.status_code == 201
+
+
+def test_automatic_director_workflow_resumes_from_approved_script(
+    client: TestClient,
+    creator_headers: dict[str, str],
+    admin_headers: dict[str, str],
+) -> None:
+    grant_creator_test_credits(client, creator_headers, admin_headers)
+    provider_id = client.get("/api/v1/admin/providers", headers=admin_headers).json()[0]["id"]
+    assert client.patch(
+        f"/api/v1/admin/providers/{provider_id}",
+        headers=admin_headers,
+        json={"api_key": "test-resume-automatic-director-key"},
+    ).status_code == 200
+    project_id = client.get("/api/v1/projects", headers=creator_headers).json()[1]["id"]
+    imported = client.post(
+        f"/api/v1/projects/{project_id}/sources/import",
+        headers=creator_headers,
+        data={
+            "mode": "novel",
+            "source_name": "全自动断点续作测试",
+            "pasted_text": "第一章 已有剧本\n林遥已经完成剧本审核，准备提取资产。",
+        },
+    ).json()
+    chapter_id = imported["chapters"][0]["id"]
+    user_id = str(decode_access_token(creator_headers["Authorization"].removeprefix("Bearer "))["sub"])
+
+    async def seed_approved_script() -> str:
+        async with SessionLocal() as session:
+            chapter = await session.get(Chapter, chapter_id)
+            user = await session.get(User, user_id)
+            assert chapter is not None and user is not None
+            script = ScriptVersion(
+                tenant_id=user.tenant_id,
+                user_id=user.id,
+                project_id=project_id,
+                chapter_id=chapter_id,
+                version=1,
+                title="已审核剧本",
+                content="第一场，修复室，夜。林遥推门进入。",
+                status="approved",
+                review_notes="已通过导演审核",
+                is_active=True,
+            )
+            session.add(script)
+            await session.flush()
+            chapter.active_script_version_id = script.id
+            await session.commit()
+            return script.id
+
+    script_id = asyncio.run(seed_approved_script())
+    started = client.post(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/director-workflow/automatic",
+        headers=creator_headers,
+        json={"instruction": "从当前制作进度继续"},
+    )
+    assert started.status_code == 202, started.text
+    detail = started.json()
+    assert detail["workflow"]["script_version_id"] == script_id
+    assert detail["workflow"]["stage"] == "asset_extracting"
+    assert detail["workflow"]["context_snapshot"]["resumed_from_chapter_progress"] is True
+    assert [child["kind"] for child in detail["child_runs"]] == ["asset_extraction"]
 
 
 def test_automatic_director_workflow_recovers_after_worker_restart(
@@ -5145,6 +5801,7 @@ def test_storyboard_and_restart_safe_video_pipeline(
     client: TestClient,
     creator_headers: dict[str, str],
     admin_headers: dict[str, str],
+    monkeypatch,
 ) -> None:
     provider_id = client.get("/api/v1/admin/providers", headers=admin_headers).json()[0]["id"]
     assert (
@@ -5293,8 +5950,27 @@ def test_storyboard_and_restart_safe_video_pipeline(
     detail = client.get(detail_path, headers=creator_headers).json()
     assert [shot["title"] for shot in detail["shots"]] == ["雨夜推门", "旧相机特写"]
     assert len(detail["shots"][0]["asset_ids"]) == 2
+    assert all(shot["video_prompt"] == "" for shot in detail["shots"])
 
     shot = detail["shots"][0]
+    prompt_task = client.post(
+        f"{detail_path}/video-prompts/generate",
+        headers=creator_headers,
+        json={"shot_ids": [shot["id"]], "overwrite": False},
+    )
+    assert prompt_task.status_code == 202
+    assert (
+        asyncio.run(
+            process_task(
+                prompt_task.json()["id"],
+                runtime_factory=lambda: FakeWorkflowRuntime(),
+            )
+        )
+        is True
+    )
+    detail = client.get(detail_path, headers=creator_headers).json()
+    shot = next(item for item in detail["shots"] if item["id"] == shot["id"])
+    assert shot["video_prompt"]
     video_path = f"{detail_path}/shots/{shot['id']}/videos/generate"
     video_task = client.post(video_path, headers=creator_headers)
     assert video_task.status_code == 202
@@ -5329,6 +6005,28 @@ def test_storyboard_and_restart_safe_video_pipeline(
         assert bundle.namelist() == ["001-雨夜推门-v1.mp4"]
         assert bundle.read(bundle.namelist()[0]) == b"\x00\x00\x00\x18ftypmp42test-video"
     assert client.get(f"{detail_path}/videos/download", headers=admin_headers).status_code == 404
+
+    async def fake_concat(paths, output, **kwargs):
+        assert len(paths) == 1
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"concatenated-video")
+        await kwargs["progress"](85, "拼接测试")
+
+    monkeypatch.setattr("app.services.video_concat.concatenate_videos", fake_concat)
+    concat = client.post(f"{detail_path}/videos/concat", headers=creator_headers)
+    assert concat.status_code == 200, concat.text
+    concat_id = concat.json()["id"]
+    assert client.post(f"{detail_path}/videos/concat", headers=creator_headers).json()["id"] == concat_id
+    assert client.post(f"{detail_path}/videos/concat", headers=admin_headers).status_code == 404
+    concat_download = f"{detail_path}/videos/concat/{concat_id}/download"
+    assert client.get(concat_download, headers=creator_headers).status_code == 409
+    assert asyncio.run(process_task(concat_id))
+    combined = client.get(concat_download, headers=creator_headers)
+    assert combined.status_code == 200
+    assert combined.content == b"concatenated-video"
+    assert combined.headers["content-type"] == "video/mp4"
+    assert client.get(concat_download, headers=admin_headers).status_code == 404
+    assert client.post(f"{detail_path}/videos/concat", headers=creator_headers).json()["id"] == concat_id
 
     edited = client.patch(
         f"{detail_path}/shots/{shot['id']}",
@@ -5515,6 +6213,11 @@ def test_storyboard_batch_video_prompt_and_video_queue(
     assert len(prompt_task.json()["request_payload"]["shot_ids"]) == 2
     runtime = FakeWorkflowRuntime()
     assert asyncio.run(process_task(prompt_task.json()["id"], runtime_factory=lambda: runtime)) is True
+    prompt_request = runtime.requests[-1]
+    assert '"name": "generic"' in prompt_request.prompt
+    assert '"preferred_prompt_language": "zh-CN"' in prompt_request.prompt
+    assert "subject_definitions:" not in prompt_request.prompt
+    assert "For the target video, at 0.00 seconds" not in prompt_request.prompt
     prompted_storyboard = client.get(
         f"/api/v1/projects/{project_id}/chapters/{chapter_id}/storyboards/{storyboard_id}",
         headers=creator_headers,
@@ -6713,6 +7416,7 @@ def test_director_agent_publishes_formal_storyboard_version_for_bound_chapter(
     ).json()
     assert detail["shots"][0]["title"] == "雨夜推门"
     assert len(detail["shots"][0]["asset_ids"]) == 2
+    assert detail["shots"][0]["video_prompt"] == ""
 
     chat_detail = client.get(
         f"/api/v1/projects/{project_id}/agent/sessions/{session_id}",
@@ -6787,6 +7491,12 @@ def test_agent_chat_queues_asset_prompt_and_image_tasks_from_platform_command(
     image_task = client.get(f"/api/v1/tasks/{image_task_ids[0]}", headers=creator_headers).json()
     assert image_task["task_type"] == "asset_image_generation"
     assert image_task["status"] == "queued"
+    project = next(
+        item
+        for item in client.get("/api/v1/projects", headers=creator_headers).json()
+        if item["id"] == project_id
+    )
+    assert image_task["request_payload"]["aspect_ratio"] == project["aspect_ratio"]
     generated_assets = client.get(
         f"/api/v1/projects/{project_id}/assets",
         headers=creator_headers,
@@ -6796,15 +7506,17 @@ def test_agent_chat_queues_asset_prompt_and_image_tasks_from_platform_command(
     assert generated_asset["status"] == "generating"
     assert generated_asset["generation_prompt"]
 
+    image_gateway = FakeAssetImageGateway()
     assert (
         asyncio.run(
             process_task(
                 image_task_ids[0],
-                gateway_factory=lambda _provider: FakeAssetImageGateway(),
+                gateway_factory=lambda _provider: image_gateway,
             )
         )
         is True
     )
+    assert image_gateway.requests[0].aspect_ratio == project["aspect_ratio"]
     generated_assets = client.get(
         f"/api/v1/projects/{project_id}/assets",
         headers=creator_headers,
@@ -7069,6 +7781,25 @@ def test_worker_hides_internal_http_details_from_persisted_task_errors() -> None
     assert "internal/v2" not in message
 
 
+def test_storyboard_duration_contract_uses_narrative_bands_without_shortening() -> None:
+    model = AIModel(
+        name="Agnes Video 2.5 Flash",
+        model_id="agnes-video-2.5-flash",
+        capabilities=agnes_video_capabilities(),
+    )
+
+    contract = task_worker.storyboard_duration_contract(model)
+
+    assert contract["supported_durations_seconds"] == [float(value) for value in range(4, 16)]
+    assert contract["duration_bands_seconds"] == {
+        "short": [4.0, 5.0, 6.0],
+        "standard": [7.0, 8.0, 9.0, 10.0, 11.0],
+        "long": [12.0, 13.0, 14.0, 15.0],
+    }
+    assert "不得因示例值" in "".join(contract["selection_guide"])
+    assert task_worker.normalize_storyboard_duration_for_model(Decimal("6.2"), model) == Decimal("7.0")
+
+
 def test_runtime_validation_error_is_not_reported_as_provider_failure() -> None:
     request = httpx.Request("POST", "http://agent-runtime:8010/internal/v2/runs/stream")
     response = httpx.Response(
@@ -7092,6 +7823,20 @@ def test_runtime_validation_error_is_not_reported_as_provider_failure() -> None:
     assert _safe_error_message(raised.value) == (
         "Agent Runtime 请求校验失败：项目文件路径与标识不一致"
     )
+
+
+def test_runtime_safe_provider_error_is_preserved() -> None:
+    request = httpx.Request("POST", "http://agent-runtime:8010/internal/v2/runs")
+    response = httpx.Response(
+        502,
+        request=request,
+        json={"detail": "模型供应商的流式响应意外中断，请重试"},
+    )
+
+    with pytest.raises(AgentRuntimeRequestError) as raised:
+        asyncio.run(raise_for_runtime_status(response))
+
+    assert raised.value.public_message == "模型供应商的流式响应意外中断，请重试"
 
 
 def test_agent_chat_rejects_duplicate_active_run(

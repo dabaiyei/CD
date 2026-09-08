@@ -25,11 +25,20 @@ from app.db.models import (
 from app.db.session import SessionLocal
 from app.services.billing import ensure_pricing_rules
 from app.services.managed_skills import (
+    SYSTEM_PROMPT_BASELINE_VERSIONS,
     SYSTEM_PROMPT_CODES,
     SYSTEM_PROMPTS,
     default_system_prompt_content,
     ensure_handbook_package,
     ensure_prompt_file,
+    write_prompt_file,
+)
+from app.services.provider_adapters import (
+    AGNES_PROVIDER_CODE,
+    AGNES_VIDEO_MODEL_ID,
+    AUTODL_MINIMAX_H3_PROVIDER_CODE,
+    agnes_video_capabilities,
+    autodl_minimax_h3_capabilities,
 )
 
 
@@ -59,7 +68,59 @@ async def seed_missing_prompts(session, tenant_id: str) -> None:
     for prompt in prompts:
         if prompt.code not in SYSTEM_PROMPT_CODES:
             continue
-        ensure_prompt_file(prompt)
+        baseline_version = SYSTEM_PROMPT_BASELINE_VERSIONS.get(prompt.code)
+        if baseline_version is not None and prompt.version < baseline_version:
+            prompt.content = default_system_prompt_content(prompt.code)
+            prompt.version = baseline_version
+            write_prompt_file(prompt)
+        else:
+            ensure_prompt_file(prompt)
+
+
+async def upgrade_managed_model_capabilities(session) -> None:
+    rows = (
+        await session.execute(
+            select(AIModel, Provider.code)
+            .join(Provider, Provider.id == AIModel.provider_id)
+            .where(AIModel.model_type == ModelType.VIDEO)
+        )
+    ).all()
+    old_durations = [float(value) for value in range(4, 13)]
+    upgraded_capabilities = agnes_video_capabilities()
+    for model, provider_code in rows:
+        if provider_code == AGNES_PROVIDER_CODE:
+            defaults = agnes_video_capabilities()
+        elif provider_code == AUTODL_MINIMAX_H3_PROVIDER_CODE:
+            defaults = autodl_minimax_h3_capabilities()
+        else:
+            continue
+        capabilities = dict(model.capabilities or {})
+        duration_map = capabilities.get("duration_resolution_map")
+        if (
+            model.model_id == AGNES_VIDEO_MODEL_ID
+            and isinstance(duration_map, list)
+            and len(duration_map) == 1
+        ):
+            durations = (
+                duration_map[0].get("durations") if isinstance(duration_map[0], dict) else None
+            )
+            if durations == old_durations or durations == list(range(4, 13)):
+                capabilities["duration_resolution_map"] = upgraded_capabilities[
+                    "duration_resolution_map"
+                ]
+        reference_limits = dict(capabilities.get("reference_limits") or {})
+        for media_type, default_limit in defaults["reference_limits"].items():
+            current_limit = dict(reference_limits.get(media_type) or {})
+            if "accepted_mime_types" not in current_limit:
+                current_limit["accepted_mime_types"] = default_limit.get(
+                    "accepted_mime_types", []
+                )
+            reference_limits[media_type] = current_limit
+        capabilities["reference_limits"] = reference_limits
+        for field in ("preferred_prompt_language", "video_prompt_protocol"):
+            if field in defaults and field not in capabilities:
+                capabilities[field] = defaults[field]
+        model.capabilities = capabilities
 
 
 async def ensure_managed_skills(session, tenant_id: str) -> None:
@@ -69,6 +130,7 @@ async def ensure_managed_skills(session, tenant_id: str) -> None:
     for handbook in handbooks:
         ensure_handbook_package(handbook)
     await seed_missing_prompts(session, tenant_id)
+    await upgrade_managed_model_capabilities(session)
 
 
 async def seed_demo_data() -> None:

@@ -26,6 +26,7 @@ from app.db.models import (
     CompositionVersion,
     DialogueLine,
     DialogueVersion,
+    Project,
     ScriptVersion,
     StoryboardShot,
     StoryboardVersion,
@@ -241,26 +242,18 @@ async def cancel_task(
     task = await task_for_user(session, task_id, user, for_update=True)
     if task.status not in {TaskStatus.QUEUED, TaskStatus.RUNNING}:
         raise HTTPException(status_code=409, detail="只有排队中或运行中的任务可以取消")
-    if task.status == TaskStatus.RUNNING and task.task_type != "agent_chat_run":
+    if task.status == TaskStatus.RUNNING and task.task_type not in {"agent_chat_run", "project_ai_creation"}:
         raise HTTPException(status_code=409, detail="当前仅支持停止运行中的 Agent 对话任务")
     was_running = task.status == TaskStatus.RUNNING
     task.status = TaskStatus.CANCELLED
     task.error_message = "用户取消任务"
     if task.task_type == "asset_image_generation":
         asset = await session.get(Asset, str(task.request_payload.get("asset_id") or ""))
-        if (
-            asset is not None
-            and asset.user_id == task.user_id
-            and asset.status == AssetStatus.GENERATING
-        ):
+        if asset is not None and asset.user_id == task.user_id and asset.status == AssetStatus.GENERATING:
             asset.status = AssetStatus.READY if asset.media_url else AssetStatus.PROMPT_READY
     elif task.task_type == "shot_video_generation":
         clip = await session.get(VideoClip, str(task.request_payload.get("video_clip_id") or ""))
-        if (
-            clip is not None
-            and clip.user_id == task.user_id
-            and clip.status == VideoClipStatus.QUEUED
-        ):
+        if clip is not None and clip.user_id == task.user_id and clip.status == VideoClipStatus.QUEUED:
             clip.status = VideoClipStatus.CANCELLED
             clip.error_message = "用户取消任务"
     elif task.task_type == "dialogue_tts_generation":
@@ -309,6 +302,10 @@ async def retry_task(
     task = await task_for_user(session, task_id, user, for_update=True)
     if task.status not in {TaskStatus.FAILED, TaskStatus.CANCELLED}:
         raise HTTPException(status_code=409, detail="只有失败或已取消的任务可以重试")
+    if task.task_type == "project_ai_creation":
+        project = await session.get(Project, task.project_id)
+        if project is None or project.creation_state.get("task_id") != task.id:
+            raise HTTPException(status_code=409, detail="此创作任务已被替代，请从项目当前创作进度继续")
     clip: VideoClip | None = None
     if task.task_type in {"chapter_analysis_generation", "chapter_script_generation"}:
         chapter = await session.get(Chapter, str(task.request_payload.get("chapter_id") or ""))
@@ -323,9 +320,7 @@ async def retry_task(
             analysis = await session.get(ChapterAnalysis, analysis_id) if analysis_id else None
             base_script = await session.get(ScriptVersion, base_script_id) if base_script_id else None
             if analysis_id and (
-                analysis is None
-                or analysis.chapter_id != chapter.id
-                or analysis.user_id != task.user_id
+                analysis is None or analysis.chapter_id != chapter.id or analysis.user_id != task.user_id
             ):
                 raise HTTPException(status_code=409, detail="章节分析版本已失效，不能重试")
             if base_script_id and (
@@ -430,9 +425,7 @@ async def retry_task(
         ):
             raise HTTPException(status_code=409, detail="剧本内容已更新，不能重试旧台词提取任务")
         if storyboard_id and (
-            storyboard is None
-            or storyboard.user_id != task.user_id
-            or not storyboard.is_active
+            storyboard is None or storyboard.user_id != task.user_id or not storyboard.is_active
         ):
             raise HTTPException(status_code=409, detail="生效分镜已切换，不能重试旧台词提取任务")
     elif task.task_type == "dialogue_tts_generation":
@@ -511,11 +504,7 @@ async def retry_task(
         chapter.status = ChapterStatus.SCRIPTING
     elif task.task_type == "asset_image_generation":
         asset = await session.get(Asset, str(task.request_payload.get("asset_id") or ""))
-        if (
-            asset is None
-            or asset.user_id != task.user_id
-            or not asset.generation_prompt.strip()
-        ):
+        if asset is None or asset.user_id != task.user_id or not asset.generation_prompt.strip():
             raise HTTPException(status_code=409, detail="资产已不存在或提示词已失效")
         task.request_payload = {**task.request_payload, "asset_version": asset.version}
         asset.status = AssetStatus.GENERATING

@@ -1,6 +1,9 @@
+from app.db.models import HandbookType
 from app.services.managed_skills import (
+    HANDBOOK_TASK_FILES,
     SYSTEM_PROMPT_CODES,
     default_system_prompt_content,
+    internal_system_prompt_content,
 )
 
 
@@ -26,10 +29,14 @@ def test_system_prompt_templates_are_complete_and_runtime_compatible() -> None:
 
 
 def test_video_prompt_template_preserves_h3_official_mode_contracts() -> None:
-    content = default_system_prompt_content("video-prompt-generation")
+    generic = default_system_prompt_content("video-prompt-generation")
+    content = internal_system_prompt_content("video-prompt-generation-h3.md")
 
+    assert "name` 为 `generic`" in generic
+    assert "不得使用 MiniMax H3" in generic
+    assert "integrated_multimodal_description:" not in generic
     assert "T2VA / I2VA / FL2VA / L2VA" in content
-    assert "H3 单次目标时长必须在 4-15 秒内" in content
+    assert "必须服从平台本次提供的完整执行契约" in content
     assert (
         "For the target video, at 0.00 seconds into the target video, "
         "<Picture 1> (from [Shot 1]) is fully referenced."
@@ -46,10 +53,35 @@ def test_video_prompt_template_preserves_h3_official_mode_contracts() -> None:
         "overall_soundscape:",
         "non_diegetic_music:",
     ]
-    ref_start = content.index("## H3 全参考模式：Ref2VA")
-    ref_contract = content[ref_start : content.index("### 引用定义", ref_start)]
+    ref_start = content.index("## Ref2VA 正文")
+    ref_contract = content[ref_start : content.index("## 台词与连续性", ref_start)]
     positions = [ref_contract.index(section) for section in ref_sections]
     assert positions == sorted(positions)
     assert "fully_preserved" in content
     assert "fully_copy" in content
     assert "says in an off-screen voiceover" in content
+
+
+def test_storyboard_prompts_define_duration_decisions_and_required_handbooks() -> None:
+    generation = default_system_prompt_content("storyboard-generation")
+    review = default_system_prompt_content("storyboard-review")
+    repair = default_system_prompt_content("storyboard-repair")
+
+    assert "不把最短时长当默认值" in generation
+    assert "短档用于" in generation
+    assert "大多数镜头" in review
+    assert "平台模型时长约束优先" in repair
+    assert '"video_prompt":""' in generation
+    assert '"video_prompt":""' in repair
+    assert HANDBOOK_TASK_FILES["storyboard-generation"][HandbookType.VISUAL] == (
+        "README.md",
+        "prefix.md",
+        "storyboard.md",
+        "technique-director-rules.md",
+        "technique-storyboard-table-design.md",
+    )
+    assert HANDBOOK_TASK_FILES["storyboard-generation"][HandbookType.DIRECTOR] == (
+        "README.md",
+        "director-planning.md",
+        "storyboard-table.md",
+    )
