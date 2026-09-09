@@ -26,6 +26,7 @@ from app.db.models import (
     ChapterStatus,
     MarketplaceListing,
     MarketplaceResourceType,
+    Project,
     ScriptVersion,
     User,
 )
@@ -41,6 +42,7 @@ from app.domain.schemas import (
     AssetUpdate,
     TaskPublic,
 )
+from app.services.asset_identity import extraction_asset_catalog, reusable_asset
 from app.services.asset_revisions import snapshot_asset_revision
 from app.services.asset_tasks import (
     project_assets_by_ids,
@@ -892,6 +894,8 @@ async def save_asset_extraction(
     )
     session.add(extraction)
     await session.flush()
+    await session.execute(update(Project).where(Project.id == project_id).values(name=Project.name))
+    catalog = await extraction_asset_catalog(session, project_id, user.tenant_id, user.id)
     assets: list[Asset] = []
     for item in payload.assets:
         if item.parent_asset_id:
@@ -904,10 +908,15 @@ async def save_asset_extraction(
                 user_id=user.id,
                 asset_type=item.asset_type,
             )
-        asset = new_asset(item, user=user, scope=AssetScope.PROJECT, project_id=project_id)
-        session.add(asset)
-        await session.flush()
-        await snapshot_asset_revision(session, asset, change_type="manual_extraction")
+        asset = reusable_asset(catalog, item.asset_type.value, item.name, item.parent_asset_id)
+        if asset is None:
+            asset = new_asset(item, user=user, scope=AssetScope.PROJECT, project_id=project_id)
+            session.add(asset)
+            await session.flush()
+            await snapshot_asset_revision(session, asset, change_type="manual_extraction")
+            catalog.append(asset)
+        if asset in assets:
+            continue
         session.add(AssetExtractionItem(extraction_id=extraction.id, asset_id=asset.id))
         assets.append(asset)
     chapter.status = ChapterStatus.ASSETS

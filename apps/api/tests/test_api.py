@@ -5796,6 +5796,37 @@ def test_asset_ai_pipeline_extracts_prompts_and_generates_persistent_images(
     )
     assert len(runtime.requests) == 2
 
+    # A new chapter must reuse the established character/derivative, including media.
+    next_source = client.post(
+        f"/api/v1/projects/{project_id}/sources/import", headers=creator_headers,
+        data={"mode": "novel", "source_name": "后续章节", "pasted_text": "第二章 重逢\n林遥回到修复室。"},
+    ).json()
+    next_chapter = next_source["chapters"][0]["id"]
+    assert client.post(
+        f"/api/v1/projects/{project_id}/chapters/{next_chapter}/scripts", headers=creator_headers,
+        json={"title": "后续稿", "content": "林遥回到修复室。", "status": "approved", "activate": True},
+    ).status_code == 201
+    for target_chapter in (next_chapter, next_chapter):
+        again = client.post(
+            f"/api/v1/projects/{project_id}/chapters/{target_chapter}/asset-extractions/generate",
+            headers=creator_headers,
+        )
+        assert again.status_code == 202
+        assert asyncio.run(process_task(again.json()["id"], runtime_factory=lambda: runtime))
+        done = client.get(f"/api/v1/tasks/{again.json()['id']}", headers=creator_headers).json()
+        assert done["status"] == "succeeded"
+        assert set(done["result_payload"]["asset_ids"]) == set(asset_ids)
+        assert done["result_payload"]["created_count"] == 0
+        assert done["result_payload"]["reused_count"] == 3
+    reused = client.get(f"/api/v1/projects/{project_id}/assets", headers=creator_headers).json()
+    assert next(item for item in reused if item["id"] == failed_asset["id"])["media_url"] == failed_asset["media_url"]
+    # Resetting the original chapter must not destroy identities reused by its successor.
+    assert client.post(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/redo", headers=creator_headers,
+    ).status_code == 200
+    surviving = client.get(f"/api/v1/projects/{project_id}/assets", headers=creator_headers).json()
+    assert set(asset_ids) <= {item["id"] for item in surviving}
+
 
 def test_storyboard_and_restart_safe_video_pipeline(
     client: TestClient,
@@ -5900,7 +5931,9 @@ def test_storyboard_and_restart_safe_video_pipeline(
             ]
 
     image_task_ids = asyncio.run(workflow_task_ids("asset_image_generation"))
-    assert len(image_task_ids) == len(asset_ids)
+    # Existing project identities with images need no new image generation.
+    missing_images = [asset for asset in extraction.json()["assets"] if not asset["media_url"]]
+    assert len(image_task_ids) == len(missing_images)
     for image_task_id in image_task_ids:
         assert (
             asyncio.run(

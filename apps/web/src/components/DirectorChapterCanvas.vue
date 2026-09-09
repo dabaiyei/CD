@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, ref, watch } from 'vue'
 import {
   BookOpenText,
   Boxes,
@@ -23,6 +23,7 @@ import {
 import BaseDialog from '@/components/BaseDialog.vue'
 import VideoConcatButton from '@/components/VideoConcatButton.vue'
 import { apiBlob } from '@/lib/api'
+import { mediaPreview } from '@/lib/mediaPreview'
 import { useToastStore } from '@/stores/toast'
 import type { AssetItem, Chapter, DirectorWorkflowDetail, ScriptVersion, StoryboardShot, StoryboardVersionDetail, VideoClip } from '@/types'
 
@@ -52,6 +53,13 @@ const emit = defineEmits<{
 const tab = ref<'source' | 'script' | 'assets' | 'storyboard' | 'video'>('source')
 const selectedVideoShotId = ref('')
 const selectedVideoShotIds = ref<string[]>([])
+const playingVideoUrl = ref('')
+const videoPage = ref(0)
+const videoPageSize = 12
+const videoShotGrid = ref<HTMLElement | null>(null)
+watch(videoPage, async () => { await nextTick(); videoShotGrid.value?.scrollTo({ left: 0 }) })
+const videoPageCount = computed(() => Math.max(1, Math.ceil(storyboardShots.value.length / videoPageSize)))
+const visibleVideoShots = computed(() => storyboardShots.value.slice(videoPage.value * videoPageSize, (videoPage.value + 1) * videoPageSize))
 const downloadingVideos = ref(false)
 const automationConfirmOpen = ref(false)
 const toast = useToastStore()
@@ -157,6 +165,10 @@ const selectedVideoShots = computed(() => {
 const videoPromptEligibleShots = computed(() => selectedVideoShots.value.filter(
   (shot) => !busyVideoPromptShotIdSet.value.has(shot.id) && !busyShotIdSet.value.has(shot.id),
 ))
+const selectedVideoUrl = computed(() => activeClips.value.get(selectedVideoShot.value?.id || '')?.media_url || '')
+watch([selectedVideoUrl, tab], () => { playingVideoUrl.value = '' })
+watch(() => props.storyboard?.version.id, () => { videoPage.value = 0 })
+watch(videoPageCount, (count) => { videoPage.value = Math.min(videoPage.value, count - 1) })
 const videoEligibleShots = computed(() => selectedVideoShots.value.filter(
   (shot) => !busyShotIdSet.value.has(shot.id)
     && !busyVideoPromptShotIdSet.value.has(shot.id)
@@ -466,9 +478,10 @@ watch(
 
       <section v-if="selectedVideoShot" class="director-video-focus">
         <div class="director-video-focus__preview">
-          <video v-if="activeClips.get(selectedVideoShot.id)?.media_url" :src="activeClips.get(selectedVideoShot.id)?.media_url || undefined" :poster="shotFallbackImage(selectedVideoShot) || undefined" controls playsinline preload="metadata"></video>
-          <img v-else-if="shotFallbackImage(selectedVideoShot)" :src="shotFallbackImage(selectedVideoShot)" :alt="selectedVideoShot.title" />
+          <video v-if="playingVideoUrl && playingVideoUrl === selectedVideoUrl" :key="playingVideoUrl" :src="playingVideoUrl" controls playsinline autoplay preload="none"></video>
+          <img v-else-if="shotFallbackImage(selectedVideoShot)" :src="mediaPreview(shotFallbackImage(selectedVideoShot), 640)" :alt="selectedVideoShot.title" decoding="async" />
           <span v-else><Camera :size="28" />等待参考图</span>
+          <button v-if="selectedVideoUrl && !playingVideoUrl" type="button" class="director-video-play-trigger" @click="playingVideoUrl = selectedVideoUrl"><Play :size="24" />播放视频</button>
           <i :data-status="activeClips.get(selectedVideoShot.id)?.status || 'idle'">{{ shotVideoStatus(selectedVideoShot) }}</i>
         </div>
         <div class="director-video-focus__detail">
@@ -509,7 +522,7 @@ watch(
             </header>
             <div v-if="selectedVideoShotAssets.length">
               <article v-for="asset in selectedVideoShotAssets" :key="asset.id">
-                <span><img v-if="asset.media_url" :src="asset.media_url" :alt="asset.name" loading="lazy" decoding="async" /><Image v-else :size="17" /></span>
+                <span><img v-if="asset.media_url" :src="mediaPreview(asset.media_url)" :alt="asset.name" loading="lazy" decoding="async" /><Image v-else :size="17" /></span>
                 <div><strong>{{ asset.name }}</strong><small>{{ assetTypeText(asset) }} · {{ asset.media_url ? '已作为参考图' : '缺少图片，生成视频前建议先定稿' }}</small></div>
               </article>
             </div>
@@ -530,9 +543,9 @@ watch(
         </div>
       </section>
 
-      <div class="director-video-shot-grid">
+      <div ref="videoShotGrid" class="director-video-shot-grid">
         <article
-          v-for="shot in storyboardShots"
+          v-for="shot in visibleVideoShots"
           :key="shot.id"
           v-memo="[shot.version, shotFallbackImage(shot), shot.video_prompt, selectedVideoShot?.id === shot.id, selectedVideoShotIds.includes(shot.id), busyShotIdSet.has(shot.id), busyVideoPromptShotIdSet.has(shot.id), activeClips.get(shot.id)?.id, activeClips.get(shot.id)?.status]"
           :class="{ active: selectedVideoShot?.id === shot.id, selected: selectedVideoShotIds.includes(shot.id) }"
@@ -540,7 +553,7 @@ watch(
         >
           <button type="button" :aria-pressed="selectedVideoShotIds.includes(shot.id)" :title="selectedVideoShotIds.includes(shot.id) ? '取消选择' : '选择镜头'" @click.stop="toggleVideoShotSelection(shot.id)"><Check :size="13" /></button>
           <div>
-            <img v-if="shotFallbackImage(shot)" :src="shotFallbackImage(shot)" :alt="shot.title" loading="lazy" decoding="async" />
+            <img v-if="shotFallbackImage(shot)" :src="mediaPreview(shotFallbackImage(shot))" :alt="shot.title" loading="lazy" decoding="async" />
             <span v-else><Camera :size="20" /></span>
             <i :data-status="activeClips.get(shot.id)?.status || 'idle'">{{ shotVideoStatus(shot) }}</i>
           </div>
@@ -550,6 +563,11 @@ watch(
       </div>
 
       <footer class="director-video-board__footer">
+        <nav v-if="videoPageCount > 1" class="director-video-pagination" aria-label="镜头分页">
+          <button type="button" class="button button--secondary" :disabled="videoPage === 0" @click="videoPage--">上一页</button>
+          <span>{{ videoPage + 1 }} / {{ videoPageCount }}</span>
+          <button type="button" class="button button--secondary" :disabled="videoPage + 1 >= videoPageCount" @click="videoPage++">下一页</button>
+        </nav>
         <button type="button" class="video-check" :aria-pressed="allVideoShotsSelected" @click="toggleAllVideoShots"><Check :size="13" />{{ allVideoShotsSelected ? '取消全选' : '全选镜头' }}</button>
         <span>未手动选择时默认处理全部镜头；进入队列后可在通知中心查看排队、进行中、完成和失败。</span>
       </footer>
@@ -597,3 +615,12 @@ watch(
     </template>
   </BaseDialog>
 </template>
+
+<style scoped>
+.director-video-play-trigger { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 8px; border: 0; color: white; background: rgb(0 0 0 / 20%); cursor: pointer; font: inherit; }
+.director-video-pagination { display: flex; align-items: center; gap: 10px; font-variant-numeric: tabular-nums; }
+@media (hover: none) {
+  .director-video-shot-grid article > button { backdrop-filter: none; -webkit-backdrop-filter: none; }
+  .director-video-shot-grid article:hover { transform: none; }
+}
+</style>

@@ -105,3 +105,73 @@ def test_concat_mixed_framerates_and_audio_preserves_order(tmp_path):
         assert not list(tmp_path.glob("concat-*"))
 
     asyncio.run(run())
+
+
+@pytest.mark.skipif(not media_binary("ffmpeg") or not media_binary("ffprobe"), reason="FFmpeg required")
+def test_audio_padding_cannot_extend_video_timeline(tmp_path):
+    async def run():
+        first, second, output = (tmp_path / name for name in ("long-audio.mp4", "silent.mp4", "result.mp4"))
+        await run_media_command(
+            "ffmpeg",
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=red:s=160x90:r=24:d=4.25",
+            "-f",
+            "lavfi",
+            "-i",
+            "sine=frequency=440:duration=9",
+            "-c:v",
+            "libx264",
+            "-c:a",
+            "aac",
+            str(first),
+        )
+        await run_media_command(
+            "ffmpeg",
+            "-v",
+            "error",
+            "-y",
+            "-f",
+            "lavfi",
+            "-i",
+            "color=blue:s=160x90:r=25:d=1",
+            "-c:v",
+            "libx264",
+            str(second),
+        )
+
+        async def progress(*args):
+            pass
+
+        await concatenate_videos([first, second], output, resolution="720p", ratio="16:9", progress=progress)
+        info = json.loads(
+            await run_media_command(
+                "ffprobe", "-v", "error", "-show_streams", "-show_format", "-of", "json", str(output)
+            )
+        )
+        assert 5.2 < float(info["format"]["duration"]) < 5.4
+        video = next(s for s in info["streams"] if s["codec_type"] == "video")
+        assert int(video["nb_frames"]) == 158
+        packets = json.loads(
+            await run_media_command(
+                "ffprobe",
+                "-v",
+                "error",
+                "-select_streams",
+                "v:0",
+                "-show_packets",
+                "-show_entries",
+                "packet=pts_time",
+                "-of",
+                "json",
+                str(output),
+            )
+        )
+        times = sorted(float(p["pts_time"]) for p in packets["packets"])
+        assert max(b - a for a, b in zip(times, times[1:], strict=False)) < 0.035
+
+    asyncio.run(run())

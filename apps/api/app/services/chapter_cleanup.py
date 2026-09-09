@@ -107,7 +107,30 @@ async def _chapter_assets(
             if asset.parent_asset_id in asset_ids and asset.id not in asset_ids:
                 asset_ids.add(asset.id)
                 changed = True
-    return [asset for asset in project_assets if asset.id in asset_ids]
+    # Reused identities belong to the project, not exclusively to this chapter.
+    protected = set(
+        await session.scalars(
+            select(AssetExtractionItem.asset_id)
+            .join(AssetExtraction, AssetExtraction.id == AssetExtractionItem.extraction_id)
+            .where(AssetExtraction.project_id == chapter.project_id, AssetExtraction.chapter_id != chapter.id)
+        )
+    )
+    for ids in await session.scalars(
+        select(StoryboardShot.asset_ids).where(
+            StoryboardShot.project_id == chapter.project_id,
+            StoryboardShot.chapter_id != chapter.id,
+        )
+    ):
+        protected.update(ids or [])
+    # A surviving derivative also needs its parent identity.
+    changed = True
+    while changed:
+        changed = False
+        for asset in project_assets:
+            if asset.id in protected and asset.parent_asset_id and asset.parent_asset_id not in protected:
+                protected.add(asset.parent_asset_id)
+                changed = True
+    return [asset for asset in project_assets if asset.id in asset_ids - protected]
 
 
 async def _surviving_storage_paths(session: AsyncSession) -> set[str]:
@@ -127,14 +150,11 @@ async def _surviving_storage_paths(session: AsyncSession) -> set[str]:
     revision_metadata = (await session.scalars(select(AssetRevision.asset_metadata))).all()
     surviving.update(
         _collect_media_paths(
-            _reference_audio_url(metadata)
-            for metadata in [*asset_metadata, *revision_metadata]
+            _reference_audio_url(metadata) for metadata in [*asset_metadata, *revision_metadata]
         )
     )
     file_paths = (
-        await session.scalars(
-            select(ProjectFile.storage_path).where(ProjectFile.storage_path.is_not(None))
-        )
+        await session.scalars(select(ProjectFile.storage_path).where(ProjectFile.storage_path.is_not(None)))
     ).all()
     surviving.update(str(path) for path in file_paths if path)
     return surviving
@@ -148,9 +168,7 @@ async def purge_chapter_production(
 ) -> ChapterCleanupResult:
     extraction_ids = set(
         (
-            await session.scalars(
-                select(AssetExtraction.id).where(AssetExtraction.chapter_id == chapter.id)
-            )
+            await session.scalars(select(AssetExtraction.id).where(AssetExtraction.chapter_id == chapter.id))
         ).all()
     )
     assets = await _chapter_assets(session, chapter=chapter, extraction_ids=extraction_ids)
@@ -181,9 +199,7 @@ async def purge_chapter_production(
     )
     storyboards = list(
         (
-            await session.scalars(
-                select(StoryboardVersion).where(StoryboardVersion.chapter_id == chapter.id)
-            )
+            await session.scalars(select(StoryboardVersion).where(StoryboardVersion.chapter_id == chapter.id))
         ).all()
     )
     shots = list(
@@ -239,9 +255,7 @@ async def purge_chapter_production(
         or _contains_resource(task.request_payload or {}, resource_ids)
         or _contains_resource(task.result_payload or {}, resource_ids)
     ]
-    active_tasks = [
-        task for task in tasks if task.status in {TaskStatus.QUEUED, TaskStatus.RUNNING}
-    ]
+    active_tasks = [task for task in tasks if task.status in {TaskStatus.QUEUED, TaskStatus.RUNNING}]
     if active_tasks:
         raise ChapterHasActiveTasksError(
             f"章节仍有 {len(active_tasks)} 个排队中或进行中的任务，请先停止任务后再操作"
@@ -261,8 +275,7 @@ async def purge_chapter_production(
     chapter_files = [
         item
         for item in project_files
-        if _contains_resource(item.file_metadata or {}, resource_ids)
-        and item.id != chapter.source_file_id
+        if _contains_resource(item.file_metadata or {}, resource_ids) and item.id != chapter.source_file_id
     ]
     memories = list(
         (
@@ -289,11 +302,7 @@ async def purge_chapter_production(
         ]
     )
     revisions = list(
-        (
-            await session.scalars(
-                select(AssetRevision).where(AssetRevision.asset_id.in_(asset_ids))
-            )
-        ).all()
+        (await session.scalars(select(AssetRevision).where(AssetRevision.asset_id.in_(asset_ids)))).all()
     )
     storage_paths.update(_collect_media_paths(item.media_url for item in revisions))
     storage_paths.update(
@@ -321,9 +330,7 @@ async def purge_chapter_production(
         )
     if chapter_memories:
         await session.execute(
-            delete(AgentMemory).where(
-                AgentMemory.id.in_([item.id for item in chapter_memories])
-            )
+            delete(AgentMemory).where(AgentMemory.id.in_([item.id for item in chapter_memories]))
         )
     if tasks:
         await session.execute(delete(AITask).where(AITask.id.in_([task.id for task in tasks])))

@@ -645,6 +645,8 @@ async def queue_video_concat(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    from app.services.video_concat import CONCAT_VERSION
+
     chapter, storyboard = await storyboard_for_user(
         session,
         project_id=project_id,
@@ -701,6 +703,7 @@ async def queue_video_concat(
             and task.request_payload.get("clips") == clips
             and task.request_payload.get("resolution") == (project.video_resolution or "1080p")
             and task.request_payload.get("ratio") == project.aspect_ratio
+            and task.request_payload.get("concat_version") == CONCAT_VERSION
         ):
             if task.status == TaskStatus.SUCCEEDED:
                 try:
@@ -718,6 +721,7 @@ async def queue_video_concat(
             "chapter_id": chapter_id,
             "storyboard_id": storyboard_id,
             "clips": clips,
+            "concat_version": CONCAT_VERSION,
             "resolution": project.video_resolution or "1080p",
             "ratio": project.aspect_ratio,
             "filename": safe_archive_name(chapter.title, fallback="chapter") + "-拼接视频.mp4",

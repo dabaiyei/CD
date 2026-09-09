@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import math
 import shutil
 import sys
 import tempfile
@@ -9,6 +10,8 @@ from pathlib import Path
 from uuid import uuid4
 
 from app.services.composition_renderer import output_size
+
+CONCAT_VERSION = 2
 
 
 def media_binary(name: str) -> str | None:
@@ -47,6 +50,7 @@ async def concatenate_videos(paths: list[Path], output: Path, *, resolution: str
     output.parent.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="concat-", dir=output.parent) as directory:
         root = Path(directory)
+        durations = []
         for index, source in enumerate(paths):
             info = json.loads(
                 await run_media_command(
@@ -60,8 +64,42 @@ async def concatenate_videos(paths: list[Path], output: Path, *, resolution: str
                     str(source),
                 )
             )
-            if not any(s["codec_type"] == "video" for s in info["streams"]):
+            video = next((s for s in info["streams"] if s["codec_type"] == "video"), None)
+            if video is None:
                 raise RuntimeError(f"第 {index + 1} 段文件没有视频画面")
+            try:
+                duration = float(video.get("duration") or 0)
+            except (TypeError, ValueError):
+                duration = 0
+            if not math.isfinite(duration) or duration <= 0:
+                # Containers can have a much longer audio duration. Read video packet times only.
+                packets = json.loads(
+                    await run_media_command(
+                        "ffprobe",
+                        "-v",
+                        "error",
+                        "-select_streams",
+                        "v:0",
+                        "-show_packets",
+                        "-show_entries",
+                        "packet=pts_time,duration_time",
+                        "-of",
+                        "json",
+                        str(source),
+                    )
+                )["packets"]
+                starts = [float(p["pts_time"]) for p in packets if "pts_time" in p]
+                ends = [
+                    float(p["pts_time"]) + float(p.get("duration_time") or 0)
+                    for p in packets
+                    if "pts_time" in p
+                ]
+                duration = max(ends) - min(starts) if starts else 0
+            if not math.isfinite(duration) or duration <= 0:
+                raise RuntimeError(f"第 {index + 1} 段视频时长无效")
+            frames = max(1, round(duration * 30))
+            duration = frames / 30
+            durations.append(duration)
             audio = any(s["codec_type"] == "audio" for s in info["streams"])
             command = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y", "-i", str(source)]
             if not audio:
@@ -72,11 +110,13 @@ async def concatenate_videos(paths: list[Path], output: Path, *, resolution: str
                 "-map",
                 "0:a:0" if audio else "1:a:0",
                 "-vf",
+                f"setpts=PTS-STARTPTS,fps=30,trim=end_frame={frames},"
                 f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
-                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1,fps=30,setpts=PTS-STARTPTS",
+                f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1",
                 "-af",
-                "aresample=48000,asetpts=PTS-STARTPTS,apad",
-                "-shortest",
+                f"aresample=48000,asetpts=PTS-STARTPTS,apad,atrim=end_sample={frames * 1600}",
+                "-t",
+                f"{duration:.9f}",
                 "-c:v",
                 "libx264",
                 "-threads",
@@ -88,18 +128,22 @@ async def concatenate_videos(paths: list[Path], output: Path, *, resolution: str
                 "-pix_fmt",
                 "yuv420p",
                 "-c:a",
-                "aac",
+                "pcm_s16le",
                 "-ac",
                 "2",
                 "-ar",
                 "48000",
-                str(root / f"{index:06d}.mp4"),
+                str(root / f"{index:06d}.mkv"),
             ]
             await run_media_command(*command)
             await progress(10 + int(75 * (index + 1) / len(paths)), f"已处理 {index + 1}/{len(paths)} 段视频")
         manifest = root / "list.txt"
         manifest.write_text(
-            "".join(f"file '{index:06d}.mp4'\n" for index in range(len(paths))), encoding="utf-8"
+            "".join(
+                f"file '{index:06d}.mkv'\nduration {duration:.9f}\n"
+                for index, duration in enumerate(durations)
+            ),
+            encoding="utf-8",
         )
         combined = root / "combined.mp4"
         await run_media_command(
@@ -114,8 +158,12 @@ async def concatenate_videos(paths: list[Path], output: Path, *, resolution: str
             "1",
             "-i",
             str(manifest),
-            "-c",
+            "-c:v",
             "copy",
+            "-c:a",
+            "aac",
+            "-t",
+            f"{sum(durations):.9f}",
             "-movflags",
             "+faststart",
             str(combined),

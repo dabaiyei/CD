@@ -4,7 +4,7 @@ import mimetypes
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 
@@ -105,7 +105,11 @@ async def health() -> dict[str, str]:
 
 
 @app.get("/uploads/{object_key:path}", include_in_schema=False)
-async def serve_media(object_key: str, signature: str | None = None) -> FileResponse:
+async def serve_media(
+    object_key: str,
+    signature: str | None = None,
+    thumbnail: int | None = Query(default=None, ge=320, le=640),
+) -> FileResponse:
     try:
         key = validate_object_key(object_key)
         if settings.require_signed_media_urls and not valid_media_signature(key, signature):
@@ -116,4 +120,14 @@ async def serve_media(object_key: str, signature: str | None = None) -> FileResp
     except (FileNotFoundError, ValueError) as error:
         raise HTTPException(status_code=404, detail="媒体文件不存在") from error
     media_type = mimetypes.guess_type(target.name)[0] or "application/octet-stream"
+    if thumbnail is not None:
+        if thumbnail not in {320, 640} or not media_type.startswith("image/"):
+            raise HTTPException(status_code=422, detail="缩略图仅支持图片和320/640尺寸")
+        from app.services.media_preview import media_preview
+
+        try:
+            target = await media_preview(target, thumbnail)
+        except (OSError, ValueError) as error:
+            raise HTTPException(status_code=422, detail="图片无法生成预览") from error
+        media_type = "image/webp"
     return FileResponse(target, media_type=media_type)

@@ -87,6 +87,7 @@ from app.services.agent_runtime import (
     AgentRuntimeRequest,
     AgentRuntimeRequestError,
 )
+from app.services.asset_identity import asset_name_key, extraction_asset_catalog, reusable_asset
 from app.services.asset_revisions import snapshot_asset_revision
 from app.services.billing import debit_additional_task_cost, refund_task_cost, resolve_task_pricing
 from app.services.composition import invalidate_compositions
@@ -1131,6 +1132,10 @@ def enforce_video_audio_policy(
     protocol_name: str,
     language: str,
 ) -> str:
+    from app.services.video_text import ensure_screen_text_locks, video_text_tracks
+
+    prompt = ensure_screen_text_locks(prompt, dialogue)
+    dialogue, _ = video_text_tracks(dialogue)
     silent_instruction_zh = (
         "本任务关闭音频：生成完全无声的视频，不得出现对白、旁白、歌唱、音乐、环境声、"
         "音效或任何虚构语言；人物不得开口说话。"
@@ -1250,6 +1255,9 @@ def ensure_video_prompt_reference_locks(
 
 
 def dialogue_lock_lines(dialogue: str) -> list[str]:
+    from app.services.video_text import video_text_tracks
+
+    dialogue, _ = video_text_tracks(dialogue)
     return [line.strip() for line in re.split(r"[\r\n]+", dialogue) if line.strip()]
 
 
@@ -2058,6 +2066,15 @@ async def runtime_request(
         )
         include_story = prompt_code != "asset-prompt-generation"
         creation_guidance = await project_creation_guidance(session, project, include_story=include_story)
+        if prompt_code in {
+            "storyboard-generation",
+            "storyboard-review",
+            "storyboard-repair",
+            "video-prompt-generation",
+        }:
+            from app.services.shot_continuity import CONTINUITY_RULES
+
+            creation_guidance += "\n\n" + CONTINUITY_RULES
         if prompt_code in {"script-generation", "script-repair", "script-review"}:
             creation_guidance += "\n\n" + SCRIPT_OUTPUT_BOUNDARY
         if project.creation_mode == "ai" and task.request_payload.get("chapter_id"):
@@ -5034,10 +5051,20 @@ async def execute_asset_extraction_task(
         script = await session.get(ScriptVersion, script_id)
         if chapter is None or script is None or script.chapter_id != chapter.id:
             raise RuntimeError("资产提取所用章节或剧本已不存在")
+        catalog = await extraction_asset_catalog(session, chapter.project_id, task.tenant_id, task.user_id)
+        names = {asset.id: asset.name for asset in catalog}
+        catalog_text = json.dumps([
+            {"name": asset.name, "asset_type": asset.asset_type.value,
+             "parent_name": names.get(asset.parent_asset_id), "description": asset.description[:160]}
+            for asset in catalog
+        ], ensure_ascii=False)
         prompt = (
             "分析以下生效剧本，提取所有人物、场景、道具及人物/场景/道具的衍生形态。"
             "基础资产 parent_name 必须为 null；衍生资产的 parent_name 必须精确填写其基础资产名称。"
             "asset_type 只能是 character、scene、prop。不要生成图片提示词。\n"
+            "先核对下方项目已有资产目录。同一身份必须沿用已有名称，不能因称呼、章节或描述变化重新命名。"
+            "服装、年龄阶段等确需新形象时建立衍生资产，已有同造型则复用；只提取本章实际出现的资产。\n"
+            f"项目已有资产目录：{catalog_text}\n"
             '返回结构：{"assets":[{"asset_type":"character","name":"名称",'
             '"description":"可核验的形象与叙事说明","parent_name":null}]}\n\n'
             f"章节：{chapter.title}\n剧本版本：v{script.version}《{script.title}》\n剧本正文：\n{script.content}"
@@ -5058,6 +5085,11 @@ async def execute_asset_extraction_task(
             return
         if chapter.active_script_version_id != script.id:
             raise RuntimeError("生效剧本已切换，本次资产提取结果已作废")
+        # Serialize extraction writes across chapters, including SQLite where FOR UPDATE is ignored.
+        await session.execute(
+            update(Project).where(Project.id == chapter.project_id).values(name=Project.name)
+        )
+        catalog = await extraction_asset_catalog(session, chapter.project_id, task.tenant_id, task.user_id)
         latest = await session.scalar(
             select(func.max(AssetExtraction.version)).where(AssetExtraction.chapter_id == chapter.id)
         )
@@ -5077,10 +5109,17 @@ async def execute_asset_extraction_task(
         )
         session.add(extraction)
         await session.flush()
-        roots: dict[str, Asset] = {}
+        roots: dict[tuple[str, str], Asset] = {}
         created: list[Asset] = []
+        new_count = 0
         for item in parsed.assets:
             if item.parent_name:
+                continue
+            existing = reusable_asset(catalog, item.asset_type, item.name, None)
+            if existing is not None:
+                roots[(item.asset_type, asset_name_key(item.name))] = existing
+                if existing not in created:
+                    created.append(existing)
                 continue
             asset = Asset(
                 tenant_id=task.tenant_id,
@@ -5101,16 +5140,25 @@ async def execute_asset_extraction_task(
                 change_type="ai_extraction",
                 source_task_id=task.id,
             )
-            roots[item.name] = asset
+            roots[(item.asset_type, asset_name_key(item.name))] = asset
+            catalog.append(asset)
+            new_count += 1
             created.append(asset)
         for item in parsed.assets:
             if not item.parent_name:
                 continue
-            parent = roots.get(item.parent_name)
+            parent = roots.get((item.asset_type, asset_name_key(item.parent_name))) or reusable_asset(
+                catalog, item.asset_type, item.parent_name, None
+            )
             if parent is None:
                 raise RuntimeError(f"衍生资产“{item.name}”缺少基础资产“{item.parent_name}”")
             if parent.asset_type.value != item.asset_type:
                 raise RuntimeError(f"衍生资产“{item.name}”与基础资产“{item.parent_name}”类型不一致")
+            existing = reusable_asset(catalog, item.asset_type, item.name, parent.id)
+            if existing is not None:
+                if existing not in created:
+                    created.append(existing)
+                continue
             asset = Asset(
                 tenant_id=task.tenant_id,
                 user_id=task.user_id,
@@ -5132,6 +5180,8 @@ async def execute_asset_extraction_task(
                 source_task_id=task.id,
             )
             created.append(asset)
+            catalog.append(asset)
+            new_count += 1
         for asset in created:
             session.add(AssetExtractionItem(extraction_id=extraction.id, asset_id=asset.id))
         serialized = json.dumps(parsed.model_dump(mode="json"), ensure_ascii=False, indent=2)
@@ -5161,6 +5211,8 @@ async def execute_asset_extraction_task(
             "extraction_id": extraction.id,
             "asset_ids": [asset.id for asset in created],
             "asset_count": len(created),
+            "created_count": new_count,
+            "reused_count": len(created) - new_count,
             "runtime_manifest": result.manifest,
         }
         event = record_task_event(
@@ -5168,7 +5220,8 @@ async def execute_asset_extraction_task(
             task,
             status=TaskStatus.SUCCEEDED,
             progress=100,
-            message=f"已提取 {len(created)} 个塑造资产",
+            message=(f"已关联 {len(created)} 个塑造资产："
+                     f"新增 {new_count} 个，复用 {len(created) - new_count} 个"),
             metadata={"extraction_id": extraction.id, "asset_count": len(created)},
         )
         await session.commit()
@@ -5653,6 +5706,9 @@ async def execute_storyboard_task(task_id: str, runtime_factory: RuntimeFactory)
 
 
 async def execute_shot_video_prompt_task(task_id: str, runtime_factory: RuntimeFactory) -> None:
+    from app.services.shot_continuity import neighboring_shots
+    from app.services.video_text import video_text_tracks
+
     async with SessionLocal() as session:
         task = await owned_task_for_update(session, task_id)
         if not owns_running_task(task) or not task.project_id:
@@ -5684,6 +5740,18 @@ async def execute_shot_video_prompt_task(task_id: str, runtime_factory: RuntimeF
             raise RuntimeError("待生成提示词的镜头不属于当前分镜")
         if any(shot.version != shot_versions.get(shot.id, -1) for shot in shots):
             raise RuntimeError("镜头已被编辑，本次视频提示词任务已失效")
+        neighbor_rows = (
+            await session.execute(
+                select(
+                    StoryboardShot.id,
+                    StoryboardShot.order_index,
+                    StoryboardShot.title,
+                    StoryboardShot.scene_description,
+                    StoryboardShot.action_description,
+                ).where(StoryboardShot.storyboard_version_id == storyboard.id)
+            )
+        ).all()
+        neighbors = neighboring_shots(neighbor_rows)
         assets_by_id = await load_shot_assets_with_parents(
             session,
             shots=shots,
@@ -5743,13 +5811,15 @@ async def execute_shot_video_prompt_task(task_id: str, runtime_factory: RuntimeF
                 {
                     "shot_id": shot.id,
                     "shot_order_index": shot.order_index,
+                    "neighboring_shots": neighbors[shot.id],
                     "order_index": shot.order_index,
                     "title": shot.title,
                     "shot_type": shot.shot_type,
                     "duration_seconds": float(shot.duration_seconds),
                     "scene_description": shot.scene_description,
                     "action_description": shot.action_description,
-                    "dialogue": shot.dialogue if audio_enabled else "",
+                    "dialogue": video_text_tracks(shot.dialogue)[0] if audio_enabled else "",
+                    "on_screen_text": video_text_tracks(shot.dialogue)[1],
                     "dialogue_locks": dialogue_lock_lines(shot.dialogue) if audio_enabled else [],
                     "silent_performance": bool(shot.dialogue) and not audio_enabled,
                     "audio_enabled": audio_enabled,
@@ -5841,7 +5911,9 @@ async def execute_shot_video_prompt_task(task_id: str, runtime_factory: RuntimeF
             "如果 reference_map 为空才允许纯文本视频提示词。"
             "每个镜头的 reference_audio_map 是平台实际提交给视频供应商的人物参考音频顺序；"
             "必须显式写出每个 <Audio N> 与 character_name 的唯一绑定关系。"
-            "每个镜头的 dialogue_locks 是必须逐字保留的对白、旁白、歌词或画内文字；"
+            "dialogue_locks 只包含发声台词；on_screen_text 单独保存画面字幕。"
+            "只有 on_screen_text.text 是要显示的文字，时间和人物语境仅用于调度，"
+            "禁止显示或朗读字段名和制作标签。"
             f"{language_instruction}"
             f"{audio_instruction}"
             '请优先按系统模板输出契约返回：{"prompts":[{"shot_order_index":1,"mode":"image_to_video",'
