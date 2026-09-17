@@ -501,10 +501,12 @@ class PromptGenerationPayload(BaseModel):
 
 
 from app.services.frame_composition import FrameLayout
+from app.services.clip_timeline import CLIP_RULES, InternalShot, video_timeline_instruction
 from app.services.combat_choreography import CombatPlan
 
 
 class GeneratedStoryboardShotPayload(BaseModel):
+    internal_shots: list[InternalShot] = Field(default_factory=list, max_length=500)
     combat_plan: CombatPlan | None = None
     frame_layout: FrameLayout | None = None
     continuity_group: str = Field(default="", max_length=120)
@@ -5099,13 +5101,15 @@ async def execute_director_storyboard_repair_task(
     from app.services.source_timeline import contract, validate_shots
     # Include timing in the durable draft key as well as the runtime guidance.
     prompt += contract(chapter.original_content)
+    from app.services.storyboard_generation import allocate_timeline
+    timing_plan = allocate_timeline(chapter.original_content,
+        duration_contract["supported_durations_seconds"])
     def validate_timed_board(text):
         board = StoryboardGenerationPayload.model_validate(parse_json_object(text))
-        normalized = [shot.model_copy(update={"duration_seconds": normalize_storyboard_duration_for_model(
-            shot.duration_seconds, video_model)}) for shot in board.shots]
-        validate_shots(chapter.original_content, normalized)
+        validate_shots(chapter.original_content, board.shots)
     result = await storyboard_assets.storyboard_response(
-        task_id, "storyboard-repair", prompt, runtime_factory, validator=validate_timed_board)
+        task_id, "storyboard-repair", prompt, runtime_factory, validator=validate_timed_board,
+        timing_plan=timing_plan, durations=duration_contract["supported_durations_seconds"])
     try:
         repaired = StoryboardGenerationPayload.model_validate(parse_json_object(result.final_response))
     except ValidationError as exc:
@@ -5113,10 +5117,6 @@ async def execute_director_storyboard_repair_task(
     repaired.shots = [
         shot.model_copy(
             update={
-                "duration_seconds": normalize_storyboard_duration_for_model(
-                    shot.duration_seconds,
-                    video_model,
-                ),
                 "video_prompt": "",
             }
         )
@@ -5794,13 +5794,18 @@ async def execute_storyboard_task(task_id: str, runtime_factory: RuntimeFactory)
     from app.services import storyboard_assets
     from app.services.source_timeline import contract, validate_shots
     prompt += contract(chapter.original_content)
+    from app.services.storyboard_generation import allocate_timeline
+    timing_plan = allocate_timeline(chapter.original_content,
+        duration_contract["supported_durations_seconds"])
+    await record_progress(task_id, 25,
+        f"时间轴预检完成，已分配 {len(timing_plan)} 个精确时间槽" if timing_plan
+        else "原文无完整时间轴，按模型合法时长生成分镜")
     def validate_timed_board(text):
         board = StoryboardGenerationPayload.model_validate(parse_json_object(text))
-        normalized = [shot.model_copy(update={"duration_seconds": normalize_storyboard_duration_for_model(
-            shot.duration_seconds, video_model)}) for shot in board.shots]
-        validate_shots(chapter.original_content, normalized)
+        validate_shots(chapter.original_content, board.shots)
     result = await storyboard_assets.storyboard_response(
-        task_id, "storyboard-generation", prompt, runtime_factory, validator=validate_timed_board)
+        task_id, "storyboard-generation", prompt, runtime_factory, validator=validate_timed_board,
+        timing_plan=timing_plan, durations=duration_contract["supported_durations_seconds"])
     try:
         parsed = StoryboardGenerationPayload.model_validate(parse_json_object(result.final_response))
     except ValidationError as exc:
@@ -5820,10 +5825,6 @@ async def execute_storyboard_task(task_id: str, runtime_factory: RuntimeFactory)
     parsed.shots = [
         shot.model_copy(
             update={
-                "duration_seconds": normalize_storyboard_duration_for_model(
-                    shot.duration_seconds,
-                    video_model,
-                ),
                 "video_prompt": "",
             }
         )
@@ -5920,7 +5921,7 @@ async def execute_storyboard_task(task_id: str, runtime_factory: RuntimeFactory)
             )
             if payload.combat_plan:
                 payload.combat_plan.validate_duration(float(payload.duration_seconds))
-            values = payload.model_dump(exclude={"asset_names", "continuity_group", "frame_layout", "combat_plan"})
+            values = payload.model_dump(exclude={"asset_names", "continuity_group", "frame_layout", "combat_plan", "internal_shots"})
             values.update(asset_ids=asset_ids, reference_image_url=reference_url)
             shot = StoryboardShot(
                 tenant_id=task.tenant_id,
@@ -6099,6 +6100,8 @@ async def execute_shot_video_prompt_task(task_id: str, runtime_factory: RuntimeF
                     "frame_layout": next((row.get("frame_layout") for row in (storyboard.content or [])
                         if row.get("order_index") == shot.order_index), None),
                     "current_video_prompt": shot.video_prompt,
+                    "internal_shots": next((row.get("internal_shots", []) for row in (storyboard.content or [])
+                        if row.get("order_index") == shot.order_index), []),
                     "combat_plan": next((row.get("combat_plan") for row in (storyboard.content or [])
                         if row.get("order_index") == shot.order_index), None),
                     "reference_image_url": shot.reference_image_url,
@@ -6182,6 +6185,10 @@ async def execute_shot_video_prompt_task(task_id: str, runtime_factory: RuntimeF
             "《视频提示词生成》的规则，以及当前项目所选视觉手册/导演手册中与视频提示词相关的 skill。"
             "你要读取每个镜头的首帧、动作、台词、资产图片参考和目标视频模型能力，生成最终可执行的视频提示词。"
             "不得只复述分镜，不得编造未提供的资产或引用。"
+            "每条镜头数据是一段完整视频，internal_shots是这段视频内多个短分镜的相对时间轴；"
+            "必须逐段写入最终提示词的机位、景别、动作与对白安排。"
+            "模型的4秒等下限仅约束完整视频，片段内可在1秒或2秒切镜；不要强制单一连续长镜头。"
+            "片段内部切镜仍要维持人物身份、动作方向与空间连贯；时间标签不可显示或朗读。"
             "每个镜头的 reference_map 是平台实际提交给视频供应商的图片顺序，"
             "提示词中必须显式使用其中的 <Picture N> 编号："
             "首帧图用于锚定 0.00 秒，资产参考图用于保持人物、场景、道具外观；"
@@ -6231,7 +6238,7 @@ async def execute_shot_video_prompt_task(task_id: str, runtime_factory: RuntimeF
                 request = await runtime_request(
                     task_id, prompt_code="video-prompt-generation",
                     prompt=prompt + json.dumps([row], ensure_ascii=False),
-                    prompt_appendix=protocol_appendix + "\n" + MOTION_RULES,
+                    prompt_appendix=protocol_appendix + "\n" + MOTION_RULES + CLIP_RULES,
                 )
                 request.session_id = f"{request.session_id}-shot-{shot_id}"
                 result = await runtime_factory().run(request)
@@ -6256,6 +6263,7 @@ async def execute_shot_video_prompt_task(task_id: str, runtime_factory: RuntimeF
                 next(s.dialogue for s in shots if s.id == shot_id),
                 audio_enabled=audio_enabled, protocol_name=str(protocol["name"]), language=preferred_language,
             ) + motion_contract(row["action_description"], row["scene_description"])
+            text += video_timeline_instruction(row.get("internal_shots", []))
             async with SessionLocal() as session:
                 current = await owned_task_for_update(session, task_id)
                 if not owns_running_task(current):
@@ -6408,7 +6416,14 @@ async def execute_shot_video_task(task_id: str, gateway_factory: GatewayFactory)
             )
         from app.services.motion_intent import motion_contract
         effective_video_prompt += motion_contract(shot.action_description, shot.scene_description)
+        internal_shots = next((row.get("internal_shots", []) for row in (storyboard.content or [])
+            if row.get("order_index") == shot.order_index), [])
+        timeline_instruction = video_timeline_instruction(internal_shots)
+        if timeline_instruction and timeline_instruction not in effective_video_prompt:
+            effective_video_prompt += timeline_instruction
         duration_seconds = float(task.request_payload.get("duration_seconds") or shot.duration_seconds)
+        if internal_shots and abs(duration_seconds - float(shot.duration_seconds)) > .01:
+            raise RuntimeError("当前视频包含内部分镜时间轴，修改总时长前请先重新编排该片段，不能直接拉伸或裁剪")
         resolution = str(task.request_payload.get("video_resolution") or "1080p")
         aspect_ratio = str(task.request_payload.get("aspect_ratio") or "16:9")
         video_project = await session.get(Project, task.project_id) if task.project_id else None

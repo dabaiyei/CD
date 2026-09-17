@@ -77,7 +77,7 @@ const configs = {
     action: '发布模板',
     empty: '还没有公开模板',
     coverDark: '/covers/default-project-campus-v2-wide.webp',
-    coverLight: '/covers/studio-hero-light.webp',
+    coverLight: '/covers/rjbg.webp',
   },
   material: {
     title: '素材广场',

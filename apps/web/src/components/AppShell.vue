@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onUnmounted, ref } from 'vue'
+import { computed, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ChevronDown,
@@ -32,6 +32,7 @@ import PwaInstallPrompt from '@/components/PwaInstallPrompt.vue'
 import LiquidGlass from '@/components/LiquidGlass.vue'
 import type { User } from '@/types'
 import { usePwaInstall } from '@/lib/pwa'
+import { api } from '@/lib/api'
 
 const auth = useAuthStore()
 const activity = useActivityStore()
@@ -41,16 +42,44 @@ const { theme } = useTheme()
 const pwa = usePwaInstall()
 const accountMenuOpen = ref(false)
 const avatarEditorOpen = ref(false)
+const backgroundBlur = ref(0)
+const savingAppearance = ref(false)
+const appearanceStatus = ref('')
+watch(() => auth.session?.user.background_blur, value => {
+  backgroundBlur.value = value ?? 0
+}, { immediate: true })
+
+async function saveAppearance(): Promise<void> {
+  if (savingAppearance.value || !auth.session) return
+  const userId = auth.session.user.id
+  savingAppearance.value = true
+  appearanceStatus.value = '保存中…'
+  try {
+    const updated = await api<User>('/auth/me/appearance', {
+      method: 'PATCH',
+      body: JSON.stringify({ background_blur: backgroundBlur.value }),
+    })
+    if (auth.session?.user.id === userId) {
+      auth.session.user.background_blur = updated.background_blur
+      appearanceStatus.value = '已保存'
+    }
+  } catch {
+    backgroundBlur.value = auth.session?.user.background_blur ?? 0
+    appearanceStatus.value = '保存失败，请重试'
+  } finally {
+    savingAppearance.value = false
+  }
+}
 
 const currentSectionImage = computed(() => {
   const light = theme.value === 'light'
-  if (route.name === 'director') return light ? '/covers/studio-hero-light.webp' : '/covers/default-project-city-v2-wide.webp'
+  if (route.name === 'director') return light ? '/covers/rjbg.webp' : '/covers/default-project-city-v2-wide.webp'
   if (route.path.startsWith('/marketplace/skill')) return light ? '/covers/skills-lab-light.webp' : '/covers/skills-lab-v2.webp'
-  if (route.path.startsWith('/marketplace/template')) return light ? '/covers/studio-hero-light.webp' : '/covers/default-project-campus-v2-wide.webp'
+  if (route.path.startsWith('/marketplace/template')) return light ? '/covers/rjbg.webp' : '/covers/default-project-campus-v2-wide.webp'
   if (route.path.startsWith('/marketplace/material')) return light ? '/covers/asset-studio-light.webp' : '/covers/asset-studio-v2.webp'
   if (route.path.startsWith('/skills')) return light ? '/covers/skills-lab-light.webp' : '/covers/skills-lab-v2.webp'
   if (route.path.startsWith('/admin')) return light ? '/covers/admin-console-light.webp' : '/covers/admin-console-v2.webp'
-  return light ? '/covers/studio-hero-light.webp' : '/covers/studio-hero-v2.webp'
+  return light ? '/covers/rjbg.webp' : '/covers/studio-hero-v2.webp'
 })
 
 const navItems = computed(() => [
@@ -96,6 +125,7 @@ async function installApp(): Promise<void> {
 <template>
   <div
     class="app-shell app-shell--top-navigation app-shell--glass-system"
+    :style="{ '--user-background-blur': `${backgroundBlur}px` }"
     :class="{ 'app-shell--agent-home': route.name === 'workspace', 'app-shell--glass-workspace': route.name === 'workspace' || route.name === 'projects' }"
   >
     <section class="shell-main">
@@ -184,6 +214,17 @@ async function installApp(): Promise<void> {
                   <div class="account-popover__summary">
                     <div><Coins :size="15" /><span><small>可用积分</small><strong class="tabular-nums">{{ auth.session?.credit_balance ?? '0' }}</strong></span></div>
                     <div><component :is="auth.isAdmin ? ShieldCheck : Clapperboard" :size="15" /><span><small>当前身份</small><strong>{{ auth.isAdmin ? '管理员' : '创作者' }}</strong></span></div>
+                  </div>
+                  <div class="account-appearance">
+                    <div class="account-appearance__label">
+                      <label for="account-background-blur">背景虚化强度</label>
+                      <output for="account-background-blur">{{ backgroundBlur }}</output>
+                    </div>
+                    <input id="account-background-blur" v-model.number="backgroundBlur"
+                      type="range" min="0" max="30" step="1" :disabled="savingAppearance"
+                      :aria-valuetext="backgroundBlur === 0 ? '不虚化' : `${backgroundBlur} 像素`"
+                      @input="appearanceStatus = ''" @change="saveAppearance" />
+                    <div class="account-appearance__hints"><span>清晰</span><span role="status">{{ appearanceStatus }}</span><span>柔和</span></div>
                   </div>
                   <button v-if="pwa.canInstall.value" class="account-popover__install" type="button" @click="installApp">
                     <Download :size="16" />

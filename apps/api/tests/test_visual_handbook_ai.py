@@ -96,3 +96,49 @@ def test_visual_handbook_creation_and_checkpoint_retry(client, admin_headers, cr
     assert client.get(f"/api/v1/tasks/{task_id}", headers=creator_headers).status_code == 404
     listings = client.get("/api/v1/tasks?task_type=visual_handbook_generation", headers=admin_headers).json()["items"]
     assert all(job["task_type"] == "visual_handbook_generation" for job in listings)
+
+
+@pytest.mark.parametrize('case', ['structured_observations', 'invalid_json', 'missing_image', 'incomplete_files'])
+def test_visual_handbook_recovers_model_output_formats(client, admin_headers, configured_vision_provider, case):
+    class Runtime(VisualRuntime):
+        def __init__(self):
+            super().__init__()
+            self.calls = []
+            self.broken = False
+
+        async def run(self, request):
+            self.calls.append(request)
+            normal = request.model_copy(update={'session_id': request.session_id.split('-repair-')[0]})
+            result = await super().run(normal)
+            data = json.loads(result.final_response)
+            analysis = normal.session_id.endswith('analysis')
+            if not self.broken and ((case == 'incomplete_files' and not analysis) or (case != 'incomplete_files' and analysis)):
+                self.broken = True
+                if case == 'structured_observations':
+                    data['observations'] = [{'image': '图1', 'medium': '冷蓝插画', 'light': {'edge': '柔和'}},
+                                            {'image': '图2', 'medium': '灰白辅色'}]
+                elif case == 'invalid_json':
+                    return result.model_copy(update={'final_response': '画风以冷蓝色为主，轮廓柔和。'})
+                elif case == 'missing_image':
+                    data['observations'] = ['只写了图1']
+                else:
+                    data['files'] = {}
+            return result.model_copy(update={'final_response': json.dumps(data)})
+
+    response = submit(client, admin_headers)
+    assert response.status_code == 202
+    task_id = response.json()['id']
+    runtime = Runtime()
+    asyncio.run(process_task(task_id, runtime_factory=lambda: runtime))
+    task = client.get(f'/api/v1/tasks/{task_id}', headers=admin_headers).json()
+    assert task['status'] == 'succeeded', task.get('error_message')
+    assert len(task['result_payload']['files']) == 12
+    assert len(task['result_payload']['analysis']['observations']) == 2
+    repairs = [r for r in runtime.calls if '-repair-' in r.session_id]
+    assert len(repairs) == (0 if case == 'structured_observations' else 1)
+    if case == 'structured_observations':
+        assert '柔和' in task['result_payload']['analysis']['observations'][0]
+    elif case == 'incomplete_files':
+        assert sum(r.session_id.endswith('analysis') for r in runtime.calls) == 1
+    else:
+        assert len(repairs[0].attachments) == 2

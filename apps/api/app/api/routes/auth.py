@@ -31,7 +31,7 @@ from app.db.models import (
     new_id,
 )
 from app.db.session import get_session
-from app.domain.schemas import LoginRequest, SessionPublic, TokenResponse, UserPublic
+from app.domain.schemas import LoginRequest, SessionPublic, TokenResponse, UserPublic, UserAppearanceUpdate
 from app.services.auth_security import (
     consume_login_rate_limit,
     login_identity_hash,
@@ -416,6 +416,18 @@ async def logout(
         except (jwt.InvalidTokenError, KeyError, TypeError):
             pass
     response.delete_cookie(REFRESH_COOKIE, path=f"{get_settings().api_prefix}/auth")
+
+
+@router.patch("/me/appearance", response_model=UserPublic)
+async def update_appearance(
+    payload: UserAppearanceUpdate,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> UserPublic:
+    user.background_blur = payload.background_blur
+    await session.commit()
+    await session.refresh(user)
+    return UserPublic.model_validate(user)
 
 
 @router.put("/me/avatar", response_model=UserPublic)

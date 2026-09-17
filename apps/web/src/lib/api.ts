@@ -77,6 +77,51 @@ export async function api<T>(path: string, init: RequestInit = {}): Promise<T> {
   return request<T>(path, init, true)
 }
 
+/** Upload progress counts transmitted bytes, not server-side image processing. */
+export async function apiUpload<T>(path: string, body: FormData, signal: AbortSignal,
+  onProgress: (percent: number) => void): Promise<T> {
+  const send = () => new Promise<T>((resolve, reject) => {
+    const xhr = new XMLHttpRequest()
+    const abort = () => xhr.abort()
+    const cleanup = () => signal.removeEventListener('abort', abort)
+    if (signal.aborted) { reject(new DOMException('上传已取消', 'AbortError')); return }
+    xhr.open('POST', `/api/v1${path}`)
+    xhr.timeout = 300_000
+    const token = getToken()
+    if (token) xhr.setRequestHeader('Authorization', `Bearer ${token}`)
+    xhr.upload.onprogress = event => {
+      if (event.lengthComputable) onProgress(Math.round(event.loaded / event.total * 100))
+    }
+    xhr.upload.onload = () => onProgress(100)
+    xhr.onload = () => {
+      cleanup()
+      let data: any
+      try { data = JSON.parse(xhr.responseText) } catch { /* Proxy errors may be HTML. */ }
+      if (xhr.status >= 200 && xhr.status < 300 && data) { resolve(data as T); return }
+      const detail = data?.detail
+      const message = typeof detail === 'string' ? detail
+        : Array.isArray(detail) ? detail.map(item => item.msg).join('；')
+        : xhr.status === 413 ? '上传被服务器限制，请检查反向代理的图片大小限制'
+        : `图片上传失败 (${xhr.status})`
+      reject(new ApiError(message, xhr.status))
+    }
+    xhr.onerror = () => { cleanup(); reject(new Error('上传连接断开，请检查网络后重试')) }
+    xhr.ontimeout = () => { cleanup(); reject(new Error('图片上传或处理超过 300 秒，请检查网络或稍后重试')) }
+    xhr.onabort = () => { cleanup(); reject(new DOMException('上传已取消', 'AbortError')) }
+    signal.addEventListener('abort', abort, { once: true })
+    xhr.send(body)
+  })
+  try { return await send() } catch (error) {
+    if (!(error instanceof ApiError) || error.status !== 401 || signal.aborted) throw error
+    // Bound refresh waiting too, so an unavailable auth endpoint cannot trap the upload UI.
+    await Promise.race([refreshAccessToken(), new Promise<never>((_, reject) => {
+      const timer = setTimeout(() => reject(new Error('登录状态刷新超时，请重试')), 15_000)
+      refreshRequest?.finally(() => clearTimeout(timer)).catch(() => {})
+    })])
+    return send()
+  }
+}
+
 export interface ApiBlobResult {
   blob: Blob
   filename: string | null

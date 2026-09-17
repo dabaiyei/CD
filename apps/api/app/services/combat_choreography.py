@@ -10,6 +10,7 @@ from typing import Literal
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from app.services.martial_skill_retrieval import CATALOG_GUIDANCE
+from app.services.clip_timeline import CLIP_RULES
 
 VERSION = "2"
 
@@ -197,6 +198,7 @@ async def generate(task_id: str, row: dict, contract: dict, protocol: dict, runt
         task_id, prompt_code="video-prompt-generation", combat_design=True, combat_query=shot_query(shot),
         prompt="本镜按需武指参考：\n" + skill_context + "\n输出schema：\n"
             + json.dumps(CombatDesign.model_json_schema(), ensure_ascii=False)
+            + CLIP_RULES
             + "\n任务快照：\n" + json.dumps(snapshot, ensure_ascii=False),
     )
     key = fingerprint({**snapshot, "retrieval": retrieval, "system": base_request.system_prompt,

@@ -293,7 +293,7 @@ async def create_storyboard(
             chapter_id=chapter.id,
             storyboard_version_id=version.id,
             order_index=index,
-            **payload.model_dump(exclude={"continuity_group", "frame_layout", "combat_plan"}),
+            **payload.model_dump(exclude={"continuity_group", "frame_layout", "combat_plan", "internal_shots"}),
         )
         session.add(shot)
         records.append(shot)

@@ -47,11 +47,14 @@ class ShotBinding(BaseModel):
     asset_names: list[str] = Field(default_factory=list, max_length=100)
 
 
-async def storyboard_response(task_id, prompt_code, prompt, runtime_factory, *, validator=None):
+async def storyboard_response(task_id, prompt_code, prompt, runtime_factory, *, validator=None,
+                              timing_plan=None, durations=None):
     """Keep the exact board across extraction retries; never regenerate batch inputs."""
     from app.services import task_worker as worker
     from types import SimpleNamespace
-    key = hashlib.sha256(prompt.encode()).hexdigest()
+    key = hashlib.sha256((prompt + json.dumps([timing_plan, durations], sort_keys=True)
+                          + "structured-board-v2-clips").encode()).hexdigest()
+    state = {}
     async with worker.SessionLocal() as session:
         task = await worker.owned_task_for_update(session, task_id)
         if not worker.owns_running_task(task):
@@ -62,10 +65,33 @@ async def storyboard_response(task_id, prompt_code, prompt, runtime_factory, *, 
                 if validator:
                     validator(cached["response"])
                 return SimpleNamespace(final_response=cached["response"], manifest=cached["manifest"])
-            except ValueError:
+            except (ValueError, RuntimeError):
                 pass  # Never reuse a draft that violates the source timing contract.
+        checkpoint = task.request_payload.get("storyboard_generation", {})
+        if checkpoint.get("key") == key:
+            state = checkpoint.get("state", {})
     request = await worker.runtime_request(task_id, prompt_code=prompt_code, prompt=prompt)
-    if validator:
+    if durations is not None:
+        from app.services.storyboard_generation import generate
+
+        async def save(value):
+            async with worker.SessionLocal() as session:
+                task = await worker.owned_task_for_update(session, task_id)
+                if not worker.owns_running_task(task):
+                    raise RuntimeError("分镜任务已停止")
+                task.request_payload = {**task.request_payload, "storyboard_generation": {
+                    "key": key, "state": json.loads(json.dumps(value))}}
+                await session.commit()
+
+        async def progress(message):
+            await worker.record_progress(task_id, 35, message)
+
+        text, manifest = await generate(request, runtime_factory, plan=timing_plan or [],
+            durations=durations, state=state, save=save, progress=progress)
+        if validator:
+            validator(text)
+        result = SimpleNamespace(final_response=text, manifest=manifest)
+    elif validator:
         from app.services.source_timeline import run_validated
         result = await run_validated(request, runtime_factory, validator)
     else:

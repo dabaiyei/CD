@@ -247,6 +247,7 @@ class User(Base, TimestampMixin):
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     avatar_url: Mapped[str | None] = mapped_column(String(600), nullable=True)
     avatar_storage_path: Mapped[str | None] = mapped_column(String(600), nullable=True)
+    background_blur: Mapped[int] = mapped_column(Integer, default=0, server_default="0")
 
     tenant: Mapped[Tenant] = relationship(back_populates="users")
     projects: Mapped[list[Project]] = relationship(back_populates="owner")

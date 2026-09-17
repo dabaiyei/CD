@@ -1,32 +1,45 @@
 /* Shared glass tokens also reach Reka portals mounted outside AppShell.
    Auth pages retain their video backgrounds and existing login treatment. */
 :root:has(.app-shell--glass-system) {
-  --glass-panel: rgba(255, 255, 255, .48);
-  --glass-inset: rgba(244, 249, 253, .42);
-  --glass-hover: rgba(255, 255, 255, .67);
-  --glass-popup: rgba(243, 248, 252, .91);
-  --glass-edge: rgba(255, 255, 255, .76);
+  --glass-panel: rgba(220, 234, 249, .66);
+  --glass-ink: #142b46;
+  --glass-ink-secondary: #2d455f;
+  --glass-ink-muted: #405570;
+  --glass-link: #164f91;
+  --ink: var(--glass-ink);
+  --ink-secondary: var(--glass-ink-secondary);
+  --ink-tertiary: var(--glass-ink-muted);
+  --glass-inset: rgba(214, 229, 244, .3);
+  --glass-hover: rgba(231, 241, 253, .65);
+  --glass-popup: rgba(226, 237, 250, .94);
+  --glass-edge: rgba(245, 250, 255, .64);
   --glass-divider: rgba(88, 111, 135, .13);
-  --glass-highlight: rgba(255, 255, 255, .84);
-  --glass-depth: rgba(28, 50, 76, .07);
-  --glass-photo: url('/covers/studio-hero-light.webp');
-  --glass-veil: rgba(235, 243, 249, .84);
+  --glass-highlight: rgba(255, 255, 255, .72);
+  --glass-depth: rgba(20, 40, 72, .13);
+  --glass-photo: url('/covers/rjbg.webp');
+  --glass-veil: rgba(200, 220, 245, .06);
+  --glass-sheen: linear-gradient(125deg, rgba(236, 232, 255, .3), transparent 38%, rgba(178, 221, 255, .2));
   --glass-shadow: inset 0 1px 0 var(--glass-highlight),
     0 0 0 1px var(--glass-edge), 0 8px 28px var(--glass-depth);
   --glass-focus: color-mix(in srgb, var(--brand) 38%, transparent);
 }
 
 :root[data-theme='dark']:has(.app-shell--glass-system) {
-  --glass-panel: rgba(28, 37, 51, .55);
-  --glass-inset: rgba(18, 28, 41, .38);
-  --glass-hover: rgba(55, 69, 88, .58);
-  --glass-popup: rgba(24, 33, 46, .94);
-  --glass-edge: rgba(188, 210, 240, .16);
+  --glass-panel: rgba(19, 31, 53, .76);
+  --glass-ink: #f0f5ff;
+  --glass-ink-secondary: #d4e1f2;
+  --glass-ink-muted: #b9cce3;
+  --glass-link: #b0d7ff;
+  --glass-inset: rgba(20, 36, 57, .4);
+  --glass-hover: rgba(47, 68, 95, .7);
+  --glass-popup: rgba(19, 31, 49, .95);
+  --glass-edge: rgba(161, 202, 243, .32);
   --glass-divider: rgba(188, 210, 240, .12);
   --glass-highlight: rgba(221, 237, 255, .19);
   --glass-depth: rgba(0, 0, 0, .19);
-  --glass-photo: url('/covers/studio-hero-v2.webp');
-  --glass-veil: rgba(11, 18, 29, .87);
+  --glass-photo: url('/covers/yjbg.webp');
+  --glass-veil: rgba(5, 13, 28, .3);
+  --glass-sheen: linear-gradient(125deg, rgba(133, 157, 218, .14), transparent 40%, rgba(61, 164, 208, .12));
 }
 
 /* Workspace already has its own tuned composer geometry and backdrop. */
@@ -79,6 +92,67 @@
 
 /* Navigation and independent cards: rounded, edged glass. No new wrappers or
    overflow rules, so existing tab scrolling and mobile layouts keep working. */
+:root .app-shell.app-shell--glass-system:not(.app-shell--glass-workspace)::before,
+:root .app-shell.app-shell--glass-workspace::before {
+  /* Extend the image beyond the viewport to avoid transparent blur edges. */
+  inset: calc(var(--user-background-blur, 0px) * -2);
+  filter: blur(var(--user-background-blur, 0px));
+}
+
+.account-popover .account-appearance {
+  margin: 0 12px 8px;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: var(--glass-inset);
+  color: var(--glass-ink);
+}
+.account-appearance__label, .account-appearance__hints {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 13px;
+}
+.account-appearance__label output {
+  font-variant-numeric: tabular-nums;
+  color: var(--glass-link);
+}
+.account-popover .account-appearance input[type='range'] {
+  display: block;
+  width: 100%;
+  min-width: 0;
+  height: 40px;
+  margin: 0;
+  padding: 0;
+  border: 0;
+  box-shadow: none;
+  background: transparent;
+  accent-color: var(--glass-link);
+  cursor: pointer;
+}
+.account-appearance input:focus-visible { outline: 2px solid var(--glass-link); outline-offset: 2px; }
+.account-appearance__hints { font-size: 11px; color: var(--glass-ink-secondary); }
+
+.agent-upload-status {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 6px;
+  padding: 4px 8px;
+  color: var(--ink-secondary);
+  font-size: 12px;
+}
+.agent-upload-status button {
+  min-height: 40px;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 10px;
+  background: var(--glass-inset);
+  color: var(--glass-link);
+  cursor: pointer;
+}
+
 :root .app-shell.app-shell--glass-system :is(.admin-page, .user-skills-page, .marketplace-page) :is(
   .admin-settings-rail, .skills-stage-rail, .marketplace-categories,
   .metric, .user-metrics article, .invite-metrics article, .security-summary article,
@@ -290,6 +364,252 @@
     --glass-popup: var(--surface);
     --glass-inset: var(--surface-strong);
   }
+}
+
+/* Shared floating chrome: margins count toward --topbar-height, preserving
+   the chat flex height and dropdown anchor offsets. */
+:root .app-shell.app-shell--glass-system {
+  --topbar-height: 80px;
+}
+
+:root[data-theme='light'] .app-shell.app-shell--glass-system {
+  --ink: var(--glass-ink);
+  --ink-secondary: var(--glass-ink-secondary);
+  --ink-tertiary: var(--glass-ink-muted);
+}
+
+:root[data-theme='dark'] .app-shell.app-shell--glass-system {
+  --ink: var(--glass-ink);
+  --ink-secondary: var(--glass-ink-secondary);
+  --ink-tertiary: var(--glass-ink-muted);
+}
+
+/* Photography varies in luminance: use opaque text on translucent surfaces,
+   rather than fading text a second time with opacity. */
+:root .app-shell.app-shell--glass-system :is(input, textarea)::placeholder {
+  color: var(--glass-ink-muted);
+  opacity: 1;
+}
+
+:root .app-shell.app-shell--glass-system .agent-composer textarea {
+  color: var(--glass-ink);
+  caret-color: var(--glass-link);
+}
+
+:root .app-shell.app-shell--glass-system .agent-composer textarea::placeholder {
+  color: var(--glass-ink-muted);
+  opacity: 1;
+}
+
+:root .app-shell.app-shell--glass-system .workspace-agent-stage--home .agent-inline-select > summary {
+  color: var(--glass-link);
+  font-weight: 600;
+}
+
+:root .app-shell.app-shell--glass-system .workspace-agent-stage--home :is(
+  .agent-history-trigger, .agent-mode-dropdown > summary) {
+  color: var(--glass-link);
+  background: var(--glass-panel);
+  border-radius: 12px;
+  box-shadow: inset 0 0 0 1px var(--glass-edge);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+}
+
+:root .app-shell.app-shell--glass-system :is(.agent-empty-guide p,
+  .topbar-brand__copy small, .account-menu__copy small,
+  .agent-inline-select__menu small, .agent-history-entry__open small) {
+  color: var(--glass-ink-secondary);
+  opacity: 1;
+}
+
+:root .app-shell.app-shell--glass-system :is(.topbar-nav__item:not(.topbar-nav__item--active),
+  .agent-attach-button, .agent-message-tools > button) {
+  color: var(--glass-ink-secondary);
+}
+
+:root .app-shell.app-shell--glass-system .topbar.topbar--scene {
+  box-sizing: border-box;
+  width: calc(100% - 28px);
+  height: calc(var(--topbar-height) - 20px);
+  min-height: calc(var(--topbar-height) - 20px);
+  flex: 0 0 calc(var(--topbar-height) - 20px);
+  margin: 10px 14px;
+  border: 1px solid var(--glass-edge);
+  border-radius: 22px;
+  background: var(--glass-sheen), var(--glass-panel) !important;
+  box-shadow: var(--glass-shadow);
+  -webkit-backdrop-filter: blur(24px) saturate(145%);
+  backdrop-filter: blur(24px) saturate(145%);
+}
+
+.agent-empty-guide__surface { display: contents; }
+
+/* Quiet, always-reachable message actions; menus escape virtual row clipping. */
+:root .app-shell .agent-message-tools {
+  display: flex;
+  position: static;
+  align-items: center;
+  gap: 2px;
+  margin-top: 6px;
+  opacity: 1;
+  transform: none;
+  pointer-events: auto;
+}
+:root .app-shell .agent-message-tools > button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 36px;
+  min-width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 0;
+  border-radius: 10px;
+  color: var(--ink-secondary);
+  background: transparent;
+  box-shadow: none;
+}
+:root .app-shell .agent-message-tools > button:hover,
+:root .app-shell .agent-message-tools > button[data-state='open'] { color: var(--ink); background: var(--glass-hover); }
+.agent-message-menu {
+  z-index: 150;
+  min-width: 176px;
+  max-width: calc(100vw - 24px);
+  max-height: var(--reka-dropdown-menu-content-available-height);
+  overflow-y: auto;
+  padding: 6px;
+  border: 1px solid var(--glass-edge);
+  border-radius: 14px;
+  color: var(--ink);
+  background: var(--glass-popup);
+  box-shadow: var(--glass-shadow), 0 12px 36px rgb(0 0 0 / 14%);
+  backdrop-filter: blur(20px);
+}
+.agent-message-menu__item { display: flex; align-items: center; gap: 10px; min-height: 42px; padding: 8px 12px; border-radius: 9px; outline: none; cursor: pointer; font-size: 13px; }
+.agent-message-menu__item[data-highlighted] { background: var(--glass-hover); }
+.agent-message-menu__item--danger { color: var(--danger); }
+.agent-message-menu__separator { height: 1px; margin: 5px 8px; background: var(--glass-divider); }
+@media (pointer: coarse) {
+  :root .app-shell .agent-message-tools > button { width: 44px; min-width: 44px; height: 44px; }
+}
+
+/* History uses one bounded list; its controls never scroll off screen. */
+:root .app-shell .agent-history-drawer {
+  display: flex;
+  flex-direction: column;
+  max-height: calc(100dvh - var(--topbar-height) - 32px);
+  overflow: hidden;
+  padding: 16px;
+  border-radius: 24px;
+}
+:root .app-shell .agent-history-drawer__list {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  padding-block: 8px;
+}
+:root .app-shell :is(.agent-history-drawer__header, .agent-history-drawer__actions, .agent-history-drawer__footer) {
+  flex: 0 0 auto;
+}
+:root .app-shell .agent-history-entry { display: flex; align-items: center; gap: 6px; border-radius: 14px; padding: 4px; }
+:root .app-shell .agent-history-entry.active { background: var(--glass-inset); box-shadow: inset 0 1px 0 var(--glass-edge); }
+:root .app-shell .agent-history-entry__open { display: flex; gap: 10px; align-items: center; flex: 1; min-width: 0; min-height: 52px; padding: 8px; border: 0; color: var(--ink); background: transparent; text-align: left; }
+:root .app-shell .agent-history-entry__open > span { min-width: 0; flex: 1; }
+:root .app-shell .agent-history-entry__open strong { display: block; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+:root .app-shell .agent-history-entry__open small { display: block; color: var(--ink-secondary); margin-top: 4px; }
+:root .app-shell .agent-history-entry__delete { display: grid; place-items: center; flex: 0 0 44px; height: 44px; padding: 0; border: 0; border-radius: 12px; color: var(--danger); background: transparent; }
+:root .app-shell .agent-history-entry__delete:hover { background: var(--glass-hover); }
+:root .app-shell .agent-history-entry__delete { grid-template-columns: 1fr; min-width: 44px; }
+:root .app-shell .agent-edit-trigger { display: inline-flex; align-items: center; gap: 6px; min-height: 40px; padding: 8px 12px; border: 1px solid var(--glass-edge); border-radius: 12px; color: var(--ink); background: var(--glass-panel); }
+:root .app-shell .agent-edit-toolbar { display: flex; align-items: center; justify-content: center; gap: 6px; flex: 0 0 auto; align-self: center; width: max-content; max-width: calc(100% - 24px); margin: 12px auto 24px; padding: 6px; background: var(--glass-sheen), var(--glass-popup); color: var(--ink); border: 1px solid var(--glass-edge); border-radius: 22px; box-shadow: var(--glass-shadow); backdrop-filter: blur(20px); }
+:root .app-shell .agent-edit-toolbar__count { font-size: 12px; padding: 0 12px; white-space: nowrap; color: var(--ink-secondary); border-inline: 1px solid var(--glass-divider); }
+:root .app-shell .agent-edit-toolbar__count b { color: var(--ink); font-variant-numeric: tabular-nums; }
+:root .app-shell .agent-edit-toolbar button { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 42px; padding: 8px 12px; background: transparent; border: 0; border-radius: 15px; color: var(--ink-secondary); white-space: nowrap; cursor: pointer; }
+:root .app-shell .agent-edit-toolbar button:hover:not(:disabled) { background: var(--glass-hover); }
+:root .app-shell .agent-edit-toolbar .danger { color: var(--danger); background: color-mix(in srgb, var(--danger) 8%, transparent); }
+:root .app-shell .agent-edit-toolbar button:disabled { opacity: .4; cursor: default; }
+:root .app-shell .agent-edit-toolbar .agent-edit-toolbar__close { width: 42px; padding: 0; }
+:root .app-shell .agent-message-select { display: grid; place-items: center; flex: 0 0 40px; width: 40px; height: 44px; align-self: center; padding: 0; border: 0; background: transparent; cursor: pointer; }
+:root .app-shell .agent-message-select > span { display: grid; place-items: center; width: 22px; height: 22px; border: 1px solid var(--glass-edge); border-radius: 50%; background: var(--glass-popup); color: transparent; box-shadow: 0 1px 5px var(--glass-depth); }
+:root .app-shell .agent-message-select[aria-pressed='true'] > span { color: white; background: #4c83b5; border-color: #78a8d0; }
+:root .app-shell .agent-message:has(> .agent-message-select) { display: flex; align-items: flex-start; gap: 4px; }
+:root .app-shell .agent-message:has(> .agent-message-select) .agent-message__body { flex: 1; min-width: 0; }
+:root .app-shell .agent-edit-trigger { order: 1; }
+:root .app-shell .agent-home-header__left { order: 0; }
+:root .app-shell .agent-home-mode-menu { order: 2; }
+:root .app-shell .agent-message:has(.agent-message-select[aria-pressed='true']) { outline: none; }
+@media (max-width: 760px) {
+  :root .app-shell .agent-edit-toolbar { margin-block: 8px 12px; gap: 2px; }
+  :root .app-shell .agent-edit-toolbar button { padding-inline: 10px; }
+  :root .app-shell .agent-edit-toolbar__count { padding-inline: 8px; }
+}
+@media (max-width: 760px) {
+  :root .app-shell .agent-history-drawer { position: fixed; top: calc(var(--topbar-height) + 8px); left: 12px; right: 12px; width: auto; max-width: none; max-height: calc(100dvh - var(--topbar-height) - 96px - env(safe-area-inset-bottom)); }
+}
+
+:root .app-shell.app-shell--glass-workspace .workspace-agent-stage--home .agent-empty-guide__surface {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  width: min(570px, 100%);
+  max-width: 570px;
+  padding: 22px 28px 28px;
+  border: 1px solid var(--glass-edge);
+  border-radius: 32px;
+  background: var(--glass-sheen), var(--glass-panel);
+  box-shadow: var(--glass-shadow);
+  -webkit-backdrop-filter: blur(18px) saturate(140%);
+  backdrop-filter: blur(18px) saturate(140%);
+}
+
+:root .app-shell.app-shell--glass-workspace .agent-empty-guide__surface > div:not(.agent-starters) {
+  max-width: 100%;
+}
+
+:root .app-shell.app-shell--glass-workspace .workspace-page .agent-composer {
+  background: var(--glass-sheen), var(--glass-panel) !important;
+  -webkit-backdrop-filter: blur(28px) saturate(150%);
+  backdrop-filter: blur(28px) saturate(150%);
+}
+
+:root .app-shell.app-shell--glass-workspace .agent-empty-guide__surface .agent-starters > button {
+  background: var(--glass-hover) !important;
+  border-radius: 22px;
+}
+
+/* Full-strength photography needs a readable backing for actual responses. */
+:root .app-shell.app-shell--glass-workspace .agent-message--assistant .agent-message__content {
+  background: var(--glass-popup);
+  border: 1px solid var(--glass-edge);
+  border-radius: 18px;
+  padding: 16px 20px;
+  color: var(--ink);
+}
+
+@media (max-width: 760px) {
+  :root .app-shell.app-shell--glass-system { --topbar-height: 70px; }
+  :root .app-shell.app-shell--glass-system .topbar.topbar--scene {
+    width: calc(100% - 16px);
+    margin: 10px 8px;
+    border-radius: 18px;
+  }
+  :root .app-shell.app-shell--glass-workspace .workspace-agent-stage--home .agent-empty-guide__surface {
+    padding: 20px 16px;
+    border-radius: 24px;
+  }
+  :root .app-shell.app-shell--glass-workspace .agent-empty-guide__surface strong {
+    font-size: clamp(22px, 5vw, 28px);
+  }
+}
+
+@media (max-height: 560px) {
+  :root .app-shell.app-shell--glass-workspace .workspace-agent-stage--home .agent-empty-guide {
+    overflow-y: auto;
+    justify-content: flex-start;
+  }
+  :root .app-shell.app-shell--glass-workspace .agent-empty-guide__surface { flex-shrink: 0; }
 }
 
 /* Standalone library keeps the existing editor/list scroll contract. */

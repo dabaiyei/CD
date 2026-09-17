@@ -22,6 +22,8 @@ from app.core.security import SecretBox
 from app.db.models import (
     AgentChatMessage,
     AgentChatSession,
+    AgentChatSummary,
+    AgentMemory,
     AgentKind,
     AgentMessageRole,
     AgentProfile,
@@ -1810,6 +1812,65 @@ async def create_session(
     await db.commit()
     await db.refresh(chat_session)
     return chat_session
+
+
+class DeleteChatMessages(BaseModel):
+    message_ids: list[str] = Field(min_length=1, max_length=500)
+
+
+async def delete_chat_messages(
+    session_id: str,
+    payload: DeleteChatMessages,
+    project_id: str | None = None,
+    user: User = Depends(get_current_user),
+    db: AsyncSession = Depends(get_session),
+) -> None:
+    chat_session = (
+        await session_for_user(db, project_id, session_id, user)
+        if project_id else await personal_session_for_user(db, session_id, user)
+    )
+    if await active_chat_task(db, user=user, project_id=project_id, chat_session_id=session_id):
+        raise HTTPException(409, "当前对话仍在生成，请先停止后再编辑记录")
+    ids = set(payload.message_ids)
+    rows = list((await db.scalars(select(AgentChatMessage).where(
+        AgentChatMessage.session_id == session_id,
+        AgentChatMessage.user_id == user.id,
+        AgentChatMessage.id.in_(ids),
+    ))).all())
+    if len(rows) != len(ids):
+        raise HTTPException(404, "部分消息不存在或不属于当前会话，请刷新后重试")
+
+    # Rebuild future context from the remaining records; don't resume a runtime
+    # snapshot or an automatic summary containing the deleted conversation.
+    runtime = AgentRuntimeClient(settings.agent_runtime_url,
+        settings.agent_runtime_internal_token, settings.agent_runtime_timeout_seconds)
+    try:
+        await runtime.delete_session(tenant_id=user.tenant_id,
+            project_id=project_id or f"personal-{user.id}", session_id=session_id)
+    except Exception as exc:
+        raise HTTPException(503, "暂时无法同步会话状态，记录尚未删除，请稍后重试") from exc
+    await db.execute(delete(AgentChatSummary).where(AgentChatSummary.session_id == session_id))
+    await db.execute(delete(AgentMemory).where(
+        AgentMemory.source_session_id == session_id, AgentMemory.is_automatic.is_(True)))
+    await db.execute(delete(AgentChatMessage).where(
+        AgentChatMessage.session_id == session_id, AgentChatMessage.id.in_(ids)))
+    manifest = chat_session.runtime_manifest or {}
+    chat_session.runtime_manifest = {key: manifest[key] for key in
+        ("scene", "scope", "mode", "requested_mode", "selected_skill_ids") if key in manifest}
+    await db.commit()
+
+
+@router.post("/sessions/{session_id}/messages/delete", status_code=204)
+async def delete_project_messages(project_id: str, session_id: str, payload: DeleteChatMessages,
+    user: User = Depends(get_current_user), db: AsyncSession = Depends(get_session)) -> None:
+    await project_for_user(db, project_id, user)
+    await delete_chat_messages(session_id, payload, project_id, user, db)
+
+
+@personal_router.post("/sessions/{session_id}/messages/delete", status_code=204)
+async def delete_personal_messages(session_id: str, payload: DeleteChatMessages,
+    user: User = Depends(get_current_user), db: AsyncSession = Depends(get_session)) -> None:
+    await delete_chat_messages(session_id, payload, None, user, db)
 
 
 @router.delete("/sessions/{session_id}", status_code=status.HTTP_204_NO_CONTENT)

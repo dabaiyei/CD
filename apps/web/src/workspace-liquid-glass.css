@@ -1,25 +1,14 @@
 /* One continuous backdrop; only controls carry glass. Keep home flex/scroll
    geometry in product-surface.css, including the mobile keyboard contract. */
 :root .app-shell.app-shell--glass-workspace {
-  --workspace-glass-fill: rgba(255, 255, 255, .48);
-  --workspace-glass-menu: rgba(245, 249, 252, .88);
-  --workspace-glass-line: rgba(255, 255, 255, .7);
-  --workspace-glass-shadow: inset 0 1px 0 rgba(255, 255, 255, .8),
-    inset 0 -1px 0 rgba(90, 119, 146, .1), 0 8px 28px rgba(36, 58, 78, .08);
-  --workspace-backdrop: url('/covers/studio-hero-light.webp');
-  --workspace-veil: rgba(237, 244, 248, .78);
+  --workspace-glass-fill: var(--glass-panel);
+  --workspace-glass-menu: var(--glass-popup);
+  --workspace-glass-line: var(--glass-edge);
+  --workspace-glass-shadow: var(--glass-shadow);
+  --workspace-backdrop: var(--glass-photo);
+  --workspace-veil: var(--glass-veil);
   isolation: isolate;
   background: var(--bg);
-}
-
-:root[data-theme='dark'] .app-shell.app-shell--glass-workspace {
-  --workspace-glass-fill: rgba(31, 40, 54, .5);
-  --workspace-glass-menu: rgba(25, 33, 45, .91);
-  --workspace-glass-line: rgba(188, 213, 242, .2);
-  --workspace-glass-shadow: inset 0 1px 0 rgba(220, 236, 255, .16),
-    inset 0 -1px 0 rgba(0, 0, 0, .2), 0 8px 28px rgba(0, 0, 0, .18);
-  --workspace-backdrop: url('/covers/studio-hero-v2.webp');
-  --workspace-veil: rgba(12, 18, 29, .8);
 }
 
 :root .app-shell.app-shell--glass-workspace::before {

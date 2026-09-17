@@ -40,11 +40,19 @@ def validate_uploaded_image(data: bytes) -> None:
         raise InvalidCoverImage("图片文件无效或已损坏") from exc
 
 
-def _save_normalized_cover(data: bytes, target_dir: Path) -> Path:
+def _save_normalized_cover(data: bytes, target_dir: Path, *, webp_method: int = 6,
+                           preserve_webp: bool = False) -> Path:
+    already_normalized = False
     try:
         validate_uploaded_image(data)
 
         with Image.open(BytesIO(data)) as source:
+            already_normalized = (
+                preserve_webp and source.format == "WEBP"
+                and not getattr(source, "is_animated", False)
+                and max(source.size) <= MAX_COVER_EDGE
+                and source.getexif().get(274, 1) == 1
+            )
             image = ImageOps.exif_transpose(source)
             if min(image.size) < MIN_COVER_EDGE:
                 raise InvalidCoverImage("封面尺寸过小，宽高均需至少 64 像素")
@@ -59,7 +67,12 @@ def _save_normalized_cover(data: bytes, target_dir: Path) -> Path:
     target = target_dir / f"{uuid4()}.webp"
     temporary = target.with_suffix(".tmp")
     try:
-        normalized.save(temporary, format="WEBP", quality=90, method=6)
+        if already_normalized:
+            # The browser encoded this image already; decoding above still
+            # validates its pixels, but a second lossy encode adds no value.
+            temporary.write_bytes(data)
+        else:
+            normalized.save(temporary, format="WEBP", quality=90, method=webp_method)
         temporary.replace(target)
     finally:
         temporary.unlink(missing_ok=True)
@@ -225,6 +238,8 @@ def save_agent_chat_image(
     return _save_normalized_cover(
         data,
         uploads_root / tenant_id / "projects" / project_id / "agent-attachments",
+        webp_method=4,
+        preserve_webp=True,
     )
 
 

@@ -34,14 +34,16 @@ def seconds(value: str) -> float:
 
 def extract(source: str) -> list[Span]:
     spans, seen = [], set()
-    for match in RANGE.finditer(source.replace("：", ":")):
+    matches = list(RANGE.finditer(source.replace("：", ":")))
+    for index, match in enumerate(matches):
         if not (match["au"] or match["bu"] or ":" in match["a"] or ":" in match["b"] or "分" in match["a"]):
             continue  # Do not confuse dates, chapter counts or dimensions with a timeline.
         start, end = seconds(match["a"]), seconds(match["b"])
         if end <= start or (start, end) in seen:
             continue
         seen.add((start, end))
-        tail = source[match.end():].splitlines()
+        stop = matches[index + 1].start() if index + 1 < len(matches) else len(source)
+        tail = source[match.end():stop].splitlines()
         cue = " ".join(line.strip() for line in tail[:2])[:180]
         spans.append(Span(start, end, cue))
     return spans
@@ -59,7 +61,9 @@ def contract(source: str) -> str:
         "以下均为本章绝对时间，不是各镜头重新从0开始。保持事件、台词与对应时间段的绑定，"
         "不得提前、后移、删掉或压缩。剧本正文必须在对应内容前保留时间段标记；可优化段内表达，"
         "但不能以强化钩子或删除口水话为由改变原始安排。\n"
-        "分镜按时间段细分，累计镜头时长须对齐原始边界；不要把战斗窗口的镜内相对秒数当章节时间。"
+        "区分剪辑分镜与视频生成片段：一条视频可含多个短分镜，模型时长下限不限制内部切镜。"
+        "按合法总时长组合视频片段，原始边界可位于片段内部；internal_shots保存内部相对时间及原文绝对时间。"
+        "不要把战斗窗口的镜内相对秒数当章节时间。"
         "明确的静止、停顿也要保留。重叠时间段可能是同步对白或画面，不能相加重复计时。"
         "每镜动作说明标出承接的原文时间段和该镜章节绝对起止时间，事件与台词不能跨段挪用。"
         "只能选择模型合法时长；若无法同时满足时间轴与模型能力，说明冲突，不得自行取整、延长或缩短。"
@@ -89,15 +93,23 @@ def validate_shots(source: str, shots) -> None:
         covered = max(covered, span.end)
     boundaries, total = [], 0.0
     for shot in shots:
+        offset = total
         total += float(shot.duration_seconds)
         boundaries.append(total)
+        for part in getattr(shot, "internal_shots", []):
+            if (part.start_seconds < 0 or part.end_seconds > float(shot.duration_seconds) + .01
+                or part.end_seconds <= part.start_seconds
+                or abs(part.source_start_seconds - (offset + part.start_seconds)) > .01
+                or abs(part.source_end_seconds - (offset + part.end_seconds)) > .01):
+                raise ValueError("视频片段内部时间轴与章节绝对时间不一致")
+            boundaries.append(offset + part.end_seconds)
     expected = covered
     if abs(total - expected) > .01:
         raise ValueError(f"分镜总时长{total:g}秒偏离原始时间轴{expected:g}秒；不得默认缩短或延长")
     required = {s.end for s in ordered if not any(other.start < s.end < other.end for other in ordered)}
     missing = [end for end in sorted(required) if not any(abs(end - b) < .01 for b in boundaries)]
     if missing:
-        raise ValueError(f"分镜跨过原始段落边界{missing}秒，请拆镜对齐；如模型时长无法组合，请明确冲突")
+        raise ValueError(f"原始段落边界{missing}秒未在视频片段或内部时间轴中保留，请补齐内部切镜安排")
 
 
 async def run_validated(request, runtime_factory, validate):

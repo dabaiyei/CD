@@ -55,6 +55,8 @@ export default defineConfig({
         navigateFallback: '/index.html',
         navigateFallbackDenylist: [/^\/api\//, /^\/uploads\//, /^\/health$/],
         globPatterns: ['**/*.{js,css,html,png,webp,jpg,svg,woff2}'],
+        // Keep original cover sources on disk; precache their WebP versions only.
+        globIgnores: ['**/covers/rjbg.png', '**/covers/yjbg.png', '**/covers/studio-hero-light.png'],
       },
     }),
   ],

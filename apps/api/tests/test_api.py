@@ -589,7 +589,12 @@ class FakeWorkflowRuntime:
 
     async def run(self, request: AgentRuntimeRequest) -> AgentRuntimeResponse:
         self.requests.append(request)
-        if "本批完整分镜：" in request.prompt:
+        if "原镜头：" in request.prompt and "仅返回第" in request.prompt:
+            row = json.loads(request.prompt.split("原镜头：", 1)[1].split("\n相邻镜头", 1)[0])
+            durations = json.loads(request.prompt.split("合法时长：", 1)[1].split("\n时间槽", 1)[0])
+            row["duration_seconds"] = next((d for d in durations if d >= float(row["duration_seconds"])), durations[-1])
+            response = {"shots": [row]}
+        elif "本批完整分镜：" in request.prompt:
             rows = json.loads(request.prompt.split("本批完整分镜：", 1)[1])
             response = {"assets": [], "shots": [
                 {"order_index": row["order_index"], "asset_names": row["asset_names"]}

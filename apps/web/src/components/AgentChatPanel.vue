@@ -1,6 +1,7 @@
 <script setup lang="ts">
-import { MAX_IMAGE_UPLOAD_BYTES, isSupportedImage } from '@/lib/imageUpload'
+import { MAX_IMAGE_UPLOAD_BYTES, isSupportedImage, prepareChatImage } from '@/lib/imageUpload'
 import { useVirtualizer } from '@tanstack/vue-virtual'
+import { DropdownMenuRoot, DropdownMenuTrigger, DropdownMenuPortal, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from 'reka-ui'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
 import {
@@ -20,6 +21,8 @@ import {
   LoaderCircle,
   Maximize2,
   Menu,
+  Ellipsis,
+  Quote,
   MessageSquareText,
   Minimize2,
   PanelTopClose,
@@ -38,7 +41,7 @@ import {
   X,
 } from 'lucide-vue-next'
 
-import { api } from '@/lib/api'
+import { api, apiUpload } from '@/lib/api'
 import { renderMarkdown } from '@/lib/markdown'
 import { useStreamTypewriter } from '@/lib/useStreamTypewriter'
 import AgentExecutionPanel from '@/components/AgentExecutionPanel.vue'
@@ -116,6 +119,11 @@ const copiedMessageId = ref('')
 const cancelling = ref(false)
 const streamHandoff = ref(false)
 const uploadingAttachments = ref(false)
+const attachmentUploadStatus = ref('')
+let attachmentUploadController: AbortController | null = null
+function cancelAttachmentUpload(): void {
+  attachmentUploadController?.abort()
+}
 const pendingAttachments = ref<AgentChatAttachment[]>([])
 const userSkills = ref<UserSkill[]>([])
 const selectedSkillIds = ref<string[]>([])
@@ -131,6 +139,48 @@ const selectedVideoModelId = ref('')
 const skillCommandIndex = ref(0)
 const deleteSessionTarget = ref<AgentChatSession | null>(null)
 const deletingSession = ref(false)
+const editingMessages = ref(false)
+const selectedMessageIds = ref<string[]>([])
+const deletingMessages = ref(false)
+const confirmMessageDelete = ref(false)
+const selectableMessages = computed(() => messages.value.slice(0, 500))
+const allMessagesSelected = computed(() => selectableMessages.value.length > 0
+  && selectableMessages.value.every(message => selectedMessageIds.value.includes(message.id)))
+
+watch(selectedSessionId, () => {
+  editingMessages.value = false
+  selectedMessageIds.value = []
+  confirmMessageDelete.value = false
+})
+
+function toggleMessageSelection(id: string): void {
+  if (deletingMessages.value) return
+  if (selectedMessageIds.value.length >= 500 && !selectedMessageIds.value.includes(id)) {
+    toast.show('每次最多删除 500 条记录', { tone: 'info' })
+    return
+  }
+  selectedMessageIds.value = selectedMessageIds.value.includes(id)
+    ? selectedMessageIds.value.filter(item => item !== id) : [...selectedMessageIds.value, id]
+}
+
+async function deleteSelectedMessages(): Promise<void> {
+  if (deletingMessages.value || sending.value || !selectedMessageIds.value.length) return
+  deletingMessages.value = true
+  try {
+    await api(`${agentApiBase()}/sessions/${selectedSessionId.value}/messages/delete`, {
+      method: 'POST', body: JSON.stringify({ message_ids: selectedMessageIds.value }),
+    })
+    messages.value = messages.value.filter(message => !selectedMessageIds.value.includes(message.id))
+    selectedMessageIds.value = []
+    confirmMessageDelete.value = false
+    editingMessages.value = false
+    await nextTick()
+    messageVirtualizer.value.measure()
+    toast.show('所选记录已删除', { tone: 'success' })
+  } catch (error) {
+    toast.show('删除失败', { message: error instanceof Error ? error.message : undefined, tone: 'error' })
+  } finally { deletingMessages.value = false }
+}
 const previewMedia = ref<AgentGeneratedMedia | null>(null)
 const directorWorkflow = ref<DirectorWorkflowDetail | null>(null)
 const directorDecisionAction = ref('')
@@ -155,6 +205,9 @@ const dropdownSelector = '.agent-mode-dropdown, .agent-context-switcher, .agent-
 
 const selectedProject = computed(() => props.projects.find((item) => item.id === selectedProjectId.value))
 const personalMode = computed(() => props.personal && props.scene === 'workspace')
+watch([selectedSessionId, selectedProjectId, personalMode], () => {
+  cancelAttachmentUpload()
+}, { flush: 'sync' })
 const personalModes: Array<{
   value: PersonalAgentMode
   label: string
@@ -461,6 +514,7 @@ onMounted(() => {
 })
 
 onUnmounted(() => {
+  attachmentUploadController?.abort()
   window.removeEventListener('keydown', handleWindowKeydown)
   document.removeEventListener('pointerdown', handleDocumentPointerDown)
   document.removeEventListener('focusin', handleDocumentFocusIn)
@@ -839,9 +893,9 @@ function handleComposerKeydown(event: KeyboardEvent): void {
   }
 }
 
-function requestDeleteSession(): void {
-  if (sending.value || !selectedSessionId.value) return
-  deleteSessionTarget.value = sessions.value.find((item) => item.id === selectedSessionId.value) ?? null
+function requestDeleteSession(target?: AgentChatSession): void {
+  if (sending.value || (!target && !selectedSessionId.value)) return
+  deleteSessionTarget.value = target ?? sessions.value.find((item) => item.id === selectedSessionId.value) ?? null
 }
 
 async function deleteCurrentSession(): Promise<void> {
@@ -852,6 +906,10 @@ async function deleteCurrentSession(): Promise<void> {
     await api(`${agentApiBase(target.project_id)}/sessions/${target.id}`, { method: 'DELETE' })
     sessions.value = sessions.value.filter((item) => item.id !== target.id)
     deleteSessionTarget.value = null
+    if (selectedSessionId.value !== target.id) {
+      toast.show('对话已删除', { tone: 'success' })
+      return
+    }
     selectedSessionId.value = ''
     messages.value = []
     trackRunTask(null)
@@ -1014,6 +1072,16 @@ function openAttachmentPicker(): void {
   }
 }
 
+function quoteMessage(message: AgentChatMessage): void {
+  const quote = message.content || messageGeneratedMedia(message).map(media => media.name).join('、') || '这条图片记录'
+  draft.value = `${draft.value ? `${draft.value}\n\n` : ''}> ${quote.replace(/\n/g, '\n> ')}\n\n`
+  collapsed.value = false
+  void nextTick(() => {
+    resizeTextarea()
+    textarea.value?.focus()
+  })
+}
+
 async function uploadAttachments(event: Event): Promise<void> {
   const input = event.target as HTMLInputElement
   const files = Array.from(input.files ?? [])
@@ -1050,6 +1118,7 @@ async function pasteAttachments(event: ClipboardEvent): Promise<void> {
 }
 
 async function uploadAttachmentFiles(files: File[], fromClipboard = false): Promise<void> {
+  if (uploadingAttachments.value) return
   if (props.disabled || !files.length || (!personalMode.value && !selectedProjectId.value)) return
   const available = maxAttachmentCount - pendingAttachments.value.length
   if (available <= 0) {
@@ -1060,9 +1129,13 @@ async function uploadAttachmentFiles(files: File[], fromClipboard = false): Prom
     toast.show(`最多添加 ${maxAttachmentCount} 张图片`, { message: `当前还可以添加 ${available} 张`, tone: 'info' })
   }
   uploadingAttachments.value = true
+  const controller = new AbortController()
+  attachmentUploadController = controller
+  const uploadBase = agentApiBase()
   let uploadedCount = 0
   try {
     for (const [index, file] of files.slice(0, available).entries()) {
+      if (controller.signal.aborted) break
       const fileLabel = file.name || '剪贴板图片'
       if (!isSupportedImage(file)) {
         toast.show('图片格式不支持', { message: `${fileLabel} 不是 JPG、PNG 或 WebP`, tone: 'error' })
@@ -1072,23 +1145,42 @@ async function uploadAttachmentFiles(files: File[], fromClipboard = false): Prom
         toast.show('图片过大', { message: `${fileLabel} 超过 100MB`, tone: 'error' })
         continue
       }
-      const body = new FormData()
-      const extension = attachmentExtensions[file.type] || 'jpg'
-      const filename = file.name || `clipboard-${Date.now()}-${index + 1}.${extension}`
-      body.append('file', file, filename)
-      const attachment = await api<AgentChatAttachment>(
-        `${agentApiBase()}/attachments`,
-        { method: 'POST', body },
-      )
-      pendingAttachments.value.push(attachment)
-      uploadedCount += 1
+      try {
+        attachmentUploadStatus.value = `第 ${index + 1} 张：正在本地压缩…`
+        const prepared = await prepareChatImage(file, controller.signal)
+        if (controller.signal.aborted) break
+        const body = new FormData()
+        const extension = attachmentExtensions[prepared.type] || 'jpg'
+        const filename = prepared.name || `clipboard-${Date.now()}-${index + 1}.${extension}`
+        body.append('file', prepared, filename)
+        attachmentUploadStatus.value = `第 ${index + 1} 张：正在连接…`
+        const attachment = await apiUpload<AgentChatAttachment>(
+          `${uploadBase}/attachments`, body, controller.signal,
+          percent => { attachmentUploadStatus.value = percent === 100
+            ? `第 ${index + 1} 张：已传输，正在处理图片…`
+            : `第 ${index + 1} 张：上传中 ${percent}%` },
+        )
+        if (controller.signal.aborted) break
+        pendingAttachments.value.push(attachment)
+        uploadedCount += 1
+      } catch (error) {
+        if (controller.signal.aborted) break
+        toast.show(`第 ${index + 1} 张图片上传失败`, {
+          message: `${fileLabel}：${error instanceof Error ? error.message : '请重试'}`,
+          tone: 'error',
+        })
+      }
     }
     if (fromClipboard && uploadedCount) {
       toast.show(`已粘贴 ${uploadedCount} 张图片`, { message: '可继续输入文字或直接发送', tone: 'success' })
     }
   } catch (error) {
-    toast.show('图片上传失败', { message: error instanceof Error ? error.message : undefined, tone: 'error' })
+    if (!(error instanceof DOMException && error.name === 'AbortError')) {
+      toast.show('图片上传失败', { message: error instanceof Error ? error.message : undefined, tone: 'error' })
+    }
   } finally {
+    attachmentUploadController = null
+    attachmentUploadStatus.value = ''
     uploadingAttachments.value = false
     await nextTick()
     textarea.value?.focus()
@@ -1395,6 +1487,7 @@ async function settleRunTask(task: AITask): Promise<void> {
 }
 
 async function sendMessage(): Promise<void> {
+  if (editingMessages.value || deletingMessages.value) return
   const content = draft.value.trim()
   const attachments = [...pendingAttachments.value]
   const submittedSkillIds = [...selectedSkillIds.value]
@@ -1625,7 +1718,7 @@ async function sendMessage(): Promise<void> {
           <button class="agent-toolbar-button agent-toolbar-button--new" type="button" :disabled="sending" title="开始新对话" @click="startNewConversation">
             <Plus :size="17" /><span>新对话</span>
           </button>
-          <button class="agent-toolbar-button agent-toolbar-button--danger" type="button" :disabled="!selectedSessionId || sending" title="删除当前对话" @click="requestDeleteSession">
+          <button class="agent-toolbar-button agent-toolbar-button--danger" type="button" :disabled="!selectedSessionId || sending" title="删除当前对话" @click="requestDeleteSession()">
             <Trash2 :size="17" />
           </button>
           <button class="agent-toolbar-button" type="button" :title="focusMode ? '退出专注模式' : '进入专注模式'" @click="toggleFocusMode">
@@ -1667,21 +1760,22 @@ async function sendMessage(): Promise<void> {
             <button type="button" :disabled="sending" @click="startNewConversation"><Plus :size="15" />新对话</button>
           </div>
           <div v-if="sessions.length" class="agent-history-drawer__list">
-            <button
+            <div class="agent-history-entry"
               v-for="session in sessions"
               :key="session.id"
-              type="button"
               :class="{ active: selectedSessionId === session.id }"
-              @click="selectSession(session.id)"
             >
+              <button class="agent-history-entry__open" type="button" :disabled="sending || deletingSession" @click="selectSession(session.id)">
               <History :size="16" />
               <span><strong>{{ session.title }}</strong><small>{{ formatSessionTime(session.last_message_at) }}</small></span>
               <Check v-if="selectedSessionId === session.id" :size="15" />
-            </button>
+              </button>
+              <button class="agent-history-entry__delete" type="button" :disabled="sending || deletingSession" :aria-label="`删除会话 ${session.title}`" @click="requestDeleteSession(session)"><Trash2 :size="17" /></button>
+            </div>
           </div>
           <div v-else class="agent-history-drawer__empty"><History :size="24" /><span>新的对话会显示在这里</span></div>
           <div class="agent-history-drawer__footer">
-            <button type="button" :disabled="!selectedSessionId || sending" @click="requestDeleteSession"><Trash2 :size="15" />删除当前对话</button>
+            <button type="button" :disabled="!selectedSessionId || sending" @click="requestDeleteSession()"><Trash2 :size="15" />删除当前对话</button>
           </div>
         </aside>
       </Transition>
@@ -1707,6 +1801,7 @@ async function sendMessage(): Promise<void> {
                   class="agent-message"
                   :class="`agent-message--${message.role}`"
                 >
+              <button v-if="editingMessages" class="agent-message-select" type="button" :aria-pressed="selectedMessageIds.includes(message.id)" :aria-label="`选择第 ${virtualRow.index + 1} 条记录`" :disabled="deletingMessages" @click="toggleMessageSelection(message.id)"><span><Check :size="13" /></span></button>
               <span v-if="message.role === 'assistant'" class="agent-avatar"><Sparkles :size="15" /></span>
               <div class="agent-message__body">
                 <div
@@ -1787,15 +1882,26 @@ async function sendMessage(): Promise<void> {
                   </details>
                 </section>
 
-                <div class="agent-message__actions" :aria-label="message.role === 'user' ? '用户消息操作' : 'Agent 消息操作'">
-                  <button type="button" :title="copiedMessageId === message.id ? '已复制' : '复制消息'" @click="copyMessage(message)">
+                <div v-if="!editingMessages" class="agent-message__actions agent-message-tools" :aria-label="message.role === 'user' ? '用户消息操作' : 'Agent 消息操作'">
+                  <button type="button" :title="copiedMessageId === message.id ? '已复制' : '复制消息'" aria-label="复制消息" @click="copyMessage(message)">
                     <Check v-if="copiedMessageId === message.id" :size="14" />
                     <Copy v-else :size="14" />
-                    <span>{{ copiedMessageId === message.id ? '已复制' : '复制' }}</span>
                   </button>
-                  <button v-if="message.role === 'user'" type="button" title="放回输入框继续编辑" @click="editMessage(message)">
-                    <PencilLine :size="14" /><span>继续编辑</span>
+                  <button v-if="message.role === 'user'" type="button" title="放回输入框继续编辑" aria-label="继续编辑" :disabled="sending" @click="editMessage(message)">
+                    <PencilLine :size="16" />
                   </button>
+                  <button v-else type="button" title="引用追问" aria-label="引用追问" :disabled="sending" @click="quoteMessage(message)"><Quote :size="16" /></button>
+                  <DropdownMenuRoot>
+                    <DropdownMenuTrigger as-child><button type="button" title="更多" aria-label="更多消息操作" :disabled="sending || deletingMessages"><Ellipsis :size="19" /></button></DropdownMenuTrigger>
+                    <DropdownMenuPortal>
+                      <DropdownMenuContent class="agent-message-menu" :side-offset="6" :collision-padding="12" align="start">
+                        <DropdownMenuItem class="agent-message-menu__item" @select="quoteMessage(message)"><Quote :size="16" />引用追问</DropdownMenuItem>
+                        <DropdownMenuItem class="agent-message-menu__item" @select="editingMessages = true; selectedMessageIds = [message.id]"><Check :size="16" />多选管理</DropdownMenuItem>
+                        <DropdownMenuSeparator class="agent-message-menu__separator" />
+                        <DropdownMenuItem class="agent-message-menu__item agent-message-menu__item--danger" @select="selectedMessageIds = [message.id]; confirmMessageDelete = true"><Trash2 :size="16" />删除</DropdownMenuItem>
+                      </DropdownMenuContent>
+                    </DropdownMenuPortal>
+                  </DropdownMenuRoot>
                 </div>
 
                 <div
@@ -1892,6 +1998,7 @@ async function sendMessage(): Promise<void> {
         </div>
 
         <div v-else class="agent-empty-guide">
+          <div class="agent-empty-guide__surface">
           <span class="agent-empty-guide__icon"><Sparkles :size="20" /></span>
           <div>
             <strong>{{ emptyGuideTitle }}</strong>
@@ -1923,7 +2030,15 @@ async function sendMessage(): Promise<void> {
           </div>
         </div>
 
-        <div ref="composer" class="agent-composer">
+        </div>
+
+        <div v-if="editingMessages" class="agent-edit-toolbar" role="toolbar" aria-label="管理所选消息">
+          <button type="button" :disabled="deletingMessages" :aria-pressed="allMessagesSelected" @click="selectedMessageIds = allMessagesSelected ? [] : selectableMessages.map(item => item.id)"><Check :size="15" />{{ allMessagesSelected ? '取消全选' : '全选' }}</button>
+          <span class="agent-edit-toolbar__count" role="status">已选 <b>{{ selectedMessageIds.length }}</b> 条</span>
+          <button type="button" class="danger" :disabled="!selectedMessageIds.length || deletingMessages" @click="confirmMessageDelete = true"><Trash2 :size="16" />删除</button>
+          <button type="button" class="agent-edit-toolbar__close" title="退出多选" aria-label="退出多选" :disabled="deletingMessages" @click="editingMessages = false; selectedMessageIds = []"><X :size="18" /></button>
+        </div>
+        <div v-show="!editingMessages" ref="composer" class="agent-composer">
           <div v-if="disabled" class="agent-composer__locked" role="status">
             <LockKeyhole :size="15" />
             <span>{{ lockedReason || '当前内容暂时不可编辑' }}</span>
@@ -1960,6 +2075,10 @@ async function sendMessage(): Promise<void> {
             </span>
           </TransitionGroup>
 
+          <div v-if="uploadingAttachments" class="agent-upload-status">
+            <span role="status">{{ attachmentUploadStatus }}</span>
+            <button type="button" @click="cancelAttachmentUpload">取消上传</button>
+          </div>
           <TransitionGroup v-if="pendingAttachments.length" name="agent-attachment" tag="div" class="agent-attachment-tray">
             <figure v-for="attachment in pendingAttachments" :key="attachment.id">
               <img :src="attachment.media_url" :alt="attachment.name" />
@@ -2074,6 +2193,12 @@ async function sendMessage(): Promise<void> {
         </div>
       </div>
     </div>
+    <BaseDialog :open="confirmMessageDelete" title="删除所选记录" :description="`将删除 ${selectedMessageIds.length} 条消息及其图片、视频展示记录，删除后无法恢复。已保存的项目资产不受影响。`" @update:open="!deletingMessages && (confirmMessageDelete = $event)">
+      <template #footer>
+        <button class="button button--ghost" :disabled="deletingMessages" @click="confirmMessageDelete = false">取消</button>
+        <button class="button button--danger" :disabled="deletingMessages" @click="deleteSelectedMessages"><LoaderCircle v-if="deletingMessages" class="spin" :size="16" />确认删除</button>
+      </template>
+    </BaseDialog>
     <BaseDialog
       :open="Boolean(deleteSessionTarget)"
       title="删除当前对话"

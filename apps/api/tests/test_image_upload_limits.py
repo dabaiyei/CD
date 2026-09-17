@@ -50,3 +50,33 @@ def test_fake_image_is_not_accepted_by_filename(tmp_path):
         save_agent_chat_image(b'not an image', uploads_root=tmp_path,
             tenant_id='tenant', project_id='project')
     assert not list(tmp_path.rglob('*.webp'))
+
+
+def test_personal_chat_upload_returns_accessible_webp(client, creator_headers):
+    response = client.post('/api/v1/agent/attachments', headers=creator_headers,
+        files={'file': ('reference.png', png_bytes(), 'image/png')})
+    assert response.status_code == 201, response.text
+    result = client.get(response.json()['media_url'])
+    assert result.status_code == 200
+    with Image.open(BytesIO(result.content)) as saved:
+        assert saved.format == 'WEBP'
+        assert saved.size == (128, 96)
+    assert client.delete('/api/v1/agent/attachments/' + response.json()['id'],
+        headers=creator_headers).status_code == 204
+
+
+def test_browser_webp_preserved_and_second_upload_independent(client, creator_headers):
+    data = BytesIO()
+    Image.new('RGBA', (128, 96), (20, 60, 100, 128)).save(data, format='WEBP', quality=90)
+    ids = []
+    for _ in range(2):
+        response = client.post('/api/v1/agent/attachments', headers=creator_headers,
+            files={'file': ('reference.webp', data.getvalue(), 'image/webp')})
+        assert response.status_code == 201, response.text
+        ids.append(response.json()['id'])
+        result = client.get(response.json()['media_url'])
+        assert result.content == data.getvalue()
+    assert ids[0] != ids[1]
+    for attachment_id in ids:
+        assert client.delete('/api/v1/agent/attachments/' + attachment_id,
+            headers=creator_headers).status_code == 204

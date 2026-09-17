@@ -57,6 +57,12 @@ class UserPublic(ApiModel):
     role: UserRole
     is_active: bool
     avatar_url: str | None = None
+    background_blur: int = 0
+
+
+class UserAppearanceUpdate(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+    background_blur: int = Field(ge=0, le=30, strict=True)
 
 
 class AdminUserCreate(BaseModel):
@@ -839,10 +845,12 @@ class AssetExtractionResult(BaseModel):
 
 
 from app.services.frame_composition import FrameLayout
+from app.services.clip_timeline import InternalShot
 from app.services.combat_choreography import CombatPlan
 
 
 class StoryboardShotCreate(BaseModel):
+    internal_shots: list[InternalShot] = Field(default_factory=list, max_length=500)
     combat_plan: CombatPlan | None = None
     frame_layout: FrameLayout | None = None
     continuity_group: str = Field(default="", max_length=120)
@@ -859,6 +867,8 @@ class StoryboardShotCreate(BaseModel):
 
     @model_validator(mode="after")
     def combat_timing(self):
+        if any(part.end_seconds > float(self.duration_seconds) for part in self.internal_shots):
+            raise ValueError("内部镜头时间超过视频片段时长")
         if self.combat_plan:
             self.combat_plan.validate_duration(float(self.duration_seconds))
         return self

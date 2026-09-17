@@ -20,6 +20,7 @@ export interface User {
   role: UserRole
   is_active: boolean
   avatar_url: string | null
+  background_blur: number
 }
 
 export interface UserSession {
