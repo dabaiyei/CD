@@ -308,7 +308,7 @@ def agnes_video_capabilities() -> dict[str, Any]:
             "audio_policy": "optional",
             "duration_resolution_map": [
                 {
-                    "durations": [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15],
+                    "durations": [4, 5, 6, 7, 8, 9, 10, 11, 12],
                     # Agnes Video 2.5 Flash currently accepts 720P only.
                     "resolutions": ["720p"],
                 }
@@ -446,7 +446,9 @@ def autodl_minimax_h3_capabilities() -> dict[str, Any]:
                 "video": {"enabled": False, "min_count": 0, "max_count": 0},
                 "audio": {"enabled": False, "min_count": 0, "max_count": 0},
             },
-            "audio_policy": "disabled",
+            # H3 can carry spoken dialogue in its generated-video prompt. The
+            # request path enables it automatically when a shot has dialogue.
+            "audio_policy": "optional",
             "duration_resolution_map": [
                 {
                     "durations": durations,
@@ -679,12 +681,19 @@ def validate_video_generation_request(
     )
     if aspect_ratio not in parsed.aspect_ratios:
         raise ValueError(f"当前视频模型不支持画幅比例：{aspect_ratio}")
+    if generation_mode == "text_to_video" and reference_media:
+        raise ValueError("文生视频模式不能携带参考媒体，请选择对应的参考生成模式")
+    required_images = {"first_frame": 1, "last_frame": 1, "first_last_frame": 2}.get(generation_mode, 0)
+    if sum(item.get("type") == "image" for item in reference_media) < required_images:
+        raise ValueError(f"当前视频生成模式至少需要 {required_images} 张参考图片")
     for media_type, limit in parsed.reference_limits.items():
         selected_media = [item for item in reference_media if item.get("type") == media_type]
         count = len(selected_media)
         if not limit.enabled and count:
             raise ValueError(f"当前视频模型不支持 {media_type} 参考媒体")
-        if limit.enabled and not limit.min_count <= count <= limit.max_count:
+        # Reference minimums apply to reference generation, not a supported text-only mode.
+        minimum = 0 if generation_mode == "text_to_video" else limit.min_count
+        if limit.enabled and not minimum <= count <= limit.max_count:
             raise ValueError(
                 f"{media_type} 参考媒体数量必须在 {limit.min_count} 到 {limit.max_count} 之间"
             )

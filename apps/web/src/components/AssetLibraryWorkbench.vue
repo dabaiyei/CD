@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { MAX_IMAGE_UPLOAD_BYTES, isSupportedImage } from '@/lib/imageUpload'
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import {
   ArrowDownToLine,
@@ -28,6 +29,7 @@ import {
   Save,
   Search,
   Sparkles,
+  Swords,
   Trash2,
   Upload,
   UsersRound,
@@ -42,7 +44,8 @@ import { useToastStore } from '@/stores/toast'
 import type { AITask, AssetItem, AssetRevision, AssetType, PricingRule } from '@/types'
 
 const props = defineProps<{
-  projectId: string
+  projectId?: string
+  standalone?: boolean
   projectName: string
   projectAssets: AssetItem[]
   globalAssets: AssetItem[]
@@ -60,7 +63,8 @@ type AssetGroup = { root: AssetItem; children: AssetItem[] }
 
 const activity = useActivityStore()
 const toast = useToastStore()
-const scope = ref<AssetScope>('project')
+const scope = ref<AssetScope>(props.standalone || !props.projectId ? 'global' : 'project')
+let disposed = false
 const typeFilter = ref<'all' | AssetType>('all')
 const viewMode = ref<ViewMode>('list')
 const search = ref('')
@@ -86,6 +90,34 @@ const audioCurrentTime = ref(0)
 const audioDuration = ref(0)
 const pendingImage = ref<File | null>(null)
 const pendingImagePreview = ref('')
+const techniqueBrief = ref('设计符合人物与世界观的独有招式：主战、破招与一个炫酷大招，明确起势、攻击轨迹、受力反馈和收势。')
+const techniqueCount = ref(3)
+const designingTechniques = ref(false)
+const techniqueChildren = computed(() => localProjectAssets.value.filter((a) => a.parent_asset_id === editorAssetId.value && a.asset_metadata.combat_technique))
+
+async function designTechniques(): Promise<void> {
+  if (!editorAssetId.value || !techniqueBrief.value.trim()) return
+  designingTechniques.value = true
+  try {
+    await api<AITask>(`/assets/${editorAssetId.value}/techniques/design`, {
+      method: 'POST', body: JSON.stringify({ brief: techniqueBrief.value, count: techniqueCount.value }),
+    })
+    await activity.refresh()
+    toast.show('人物招式设计已排队', { message: '完成后自动保存到人物下方；可编辑、上传参考图或调用生图。', tone: 'success' })
+  } catch (error) {
+    toast.show('招式设计失败', { message: error instanceof Error ? error.message : undefined, tone: 'error' })
+  } finally {
+    designingTechniques.value = false
+  }
+}
+
+watch(() => activity.tasks.filter((t) => props.projectId && t.project_id === props.projectId
+  && ['character_technique_design', 'asset_prompt_generation', 'asset_image_generation'].includes(t.task_type))
+  .map((t) => `${t.id}:${t.status}`).join('|'), () => {
+  void refreshAssets().catch((error) => {
+    if (!disposed) toast.show('资产状态刷新失败', { message: error instanceof Error ? error.message : undefined, tone: 'error' })
+  })
+})
 
 const form = reactive({
   asset_type: 'character' as AssetType,
@@ -146,7 +178,7 @@ const parentCandidates = computed(() => sourceAssets.value.filter((asset) => (
 const activeTasks = computed(() => activity.tasks.filter((task) => (
   task.project_id === props.projectId
   && (task.status === 'queued' || task.status === 'running')
-  && ['asset_prompt_generation', 'asset_image_generation'].includes(task.task_type)
+  && ['asset_prompt_generation', 'asset_image_generation', 'character_technique_design'].includes(task.task_type)
 )))
 const busyAssetIds = computed(() => {
   const ids = new Set<string>()
@@ -172,7 +204,7 @@ const groups = computed<AssetGroup[]>(() => {
 })
 const visibleAssets = computed(() => groups.value.flatMap((group) => [group.root, ...group.children]))
 const allVisibleSelected = computed(() => Boolean(visibleAssets.value.length) && visibleAssets.value.every((asset) => selectedIds.value.includes(asset.id)))
-const selectedAssets = computed(() => localProjectAssets.value.filter((asset) => selectedIds.value.includes(asset.id)))
+const selectedAssets = computed(() => sourceAssets.value.filter((asset) => selectedIds.value.includes(asset.id)))
 const promptEligible = computed(() => selectedAssets.value.filter((asset) => !busyAssetIds.value.has(asset.id) && asset.status !== 'generating'))
 const imageEligible = computed(() => selectedAssets.value.filter((asset) => (
   !busyAssetIds.value.has(asset.id)
@@ -204,7 +236,6 @@ function toggleExpanded(assetId: string): void {
 }
 
 function toggleSelection(assetId: string): void {
-  if (scope.value !== 'project') return
   selectedIds.value = selectedIds.value.includes(assetId)
     ? selectedIds.value.filter((id) => id !== assetId)
     : [...selectedIds.value, assetId]
@@ -276,16 +307,19 @@ async function loadRevisions(assetId: string, selectedId = ''): Promise<void> {
 
 async function refreshAssets(): Promise<void> {
   const [projectRows, globalRows] = await Promise.all([
-    api<AssetItem[]>(`/projects/${props.projectId}/assets`),
+    props.projectId ? api<AssetItem[]>(`/projects/${props.projectId}/assets`) : Promise.resolve<AssetItem[]>([]),
     api<AssetItem[]>('/assets'),
   ])
+  if (disposed) return
   localProjectAssets.value = projectRows
   localGlobalAssets.value = globalRows
-  selectedIds.value = selectedIds.value.filter((id) => projectRows.some((asset) => asset.id === id))
+  selectedIds.value = selectedIds.value.filter((id) => sourceAssets.value.some((asset) => asset.id === id))
   emit('assetsChanged', projectRows, globalRows)
 }
 
 async function uploadImage(assetId: string, file: File): Promise<AssetItem> {
+  if (!isSupportedImage(file)) throw new Error('请选择 JPG、PNG 或 WebP 图片')
+  if (file.size > MAX_IMAGE_UPLOAD_BYTES) throw new Error('单张图片不能超过 100MB')
   const body = new FormData()
   body.set('file', file)
   return api<AssetItem>(`/assets/${assetId}/image/upload`, { method: 'POST', body })
@@ -505,6 +539,10 @@ async function restoreRevision(): Promise<void> {
 }
 
 async function transferAsset(asset: AssetItem): Promise<void> {
+  if (!props.projectId) {
+    toast.show('请先在页面上方选择目标项目', { tone: 'info' })
+    return
+  }
   action.value = 'transfer'
   try {
     const path = asset.scope === 'project'
@@ -565,6 +603,7 @@ function setAssetType(type: AssetType): void {
 }
 
 onBeforeUnmount(() => {
+  disposed = true
   resetPendingImage()
   resetAudioPlayer()
 })
@@ -574,11 +613,11 @@ onBeforeUnmount(() => {
   <section class="asset-studio" :class="{ 'asset-studio--drawer': editorOpen }">
     <header class="asset-studio__topbar">
       <div class="asset-scope-switch" role="tablist" aria-label="资产库范围">
-        <button type="button" :aria-selected="scope === 'project'" @click="scope = 'project'">
+        <button v-if="projectId" type="button" :aria-selected="scope === 'project'" @click="scope = 'project'">
           <WandSparkles :size="18" /><span><strong>塑造资产</strong><small>AI 可直接读取</small></span><b class="tabular-nums">{{ localProjectAssets.length }}</b>
         </button>
         <button type="button" :aria-selected="scope === 'global'" @click="scope = 'global'">
-          <Boxes :size="18" /><span><strong>全局资产</strong><small>租户共享素材</small></span><b class="tabular-nums">{{ localGlobalAssets.length }}</b>
+          <Boxes :size="18" /><span><strong>我的全局资产</strong><small>仅自己可见 · 跨项目复用</small></span><b class="tabular-nums">{{ localGlobalAssets.length }}</b>
         </button>
       </div>
       <div class="asset-studio__primary-actions">
@@ -598,7 +637,7 @@ onBeforeUnmount(() => {
         <button type="button" title="列表视图" :aria-pressed="viewMode === 'list'" @click="viewMode = 'list'"><LayoutList :size="17" /></button>
         <button type="button" title="卡片视图" :aria-pressed="viewMode === 'grid'" @click="viewMode = 'grid'"><Grid2X2 :size="16" /></button>
       </div>
-      <template v-if="scope === 'project'">
+      <template v-if="sourceAssets.length">
         <button class="asset-action asset-action--quiet" type="button" :aria-pressed="allVisibleSelected" @click="toggleAllVisible"><Check :size="15" />{{ allVisibleSelected ? '取消全选' : '全选当前' }}</button>
         <button class="asset-action asset-action--quiet" type="button" :disabled="!selectedIds.length" @click="requestDelete(selectedAssets)"><Trash2 :size="15" />批量删除</button>
       </template>
@@ -617,15 +656,15 @@ onBeforeUnmount(() => {
           <div class="asset-record" :class="{ selected: selectedIds.includes(group.root.id), busy: busyAssetIds.has(group.root.id) }" @dblclick="openEditor(group.root)">
             <button v-if="group.children.length" class="asset-record__expand" type="button" :title="isExpanded(group.root.id) ? '收起衍生资产' : '展开衍生资产'" :aria-expanded="isExpanded(group.root.id)" @click="toggleExpanded(group.root.id)"><ChevronDown v-if="isExpanded(group.root.id)" :size="16" /><ChevronRight v-else :size="16" /></button>
             <span v-else class="asset-record__expand asset-record__expand--empty"></span>
-            <button v-if="scope === 'project'" class="asset-check" type="button" :aria-label="`选择${group.root.name}`" :aria-pressed="selectedIds.includes(group.root.id)" @click="toggleSelection(group.root.id)"><Check :size="13" /></button>
-            <button class="asset-record__preview" type="button" @click="openEditor(group.root)"><img v-if="group.root.media_url" :src="group.root.media_url" :alt="group.root.name" /><component :is="typeIcon[group.root.asset_type]" v-else :size="22" /><i v-if="busyAssetIds.has(group.root.id)"><LoaderCircle class="spin" :size="17" /></i></button>
+            <button class="asset-check" type="button" :aria-label="`选择${group.root.name}`" :aria-pressed="selectedIds.includes(group.root.id)" @click="toggleSelection(group.root.id)"><Check :size="13" /></button>
+            <button class="asset-record__preview" type="button" @click="openEditor(group.root)"><img v-image-preview="group.root.media_url" v-if="group.root.media_url" :src="group.root.media_url" :alt="group.root.name" /><component :is="typeIcon[group.root.asset_type]" v-else :size="22" /><i v-if="busyAssetIds.has(group.root.id)"><LoaderCircle class="spin" :size="17" /></i></button>
             <div class="asset-record__identity"><strong>{{ group.root.name }}</strong><span><em>{{ typeLabel[group.root.asset_type] }}</em><i :data-status="group.root.status">{{ busyAssetIds.has(group.root.id) ? '处理中' : statusLabel[group.root.status] }}</i><small v-if="metadataString(group.root, 'reference_audio_url')"><AudioLines :size="12" />参考音频</small><small v-if="group.children.length"><GitBranchPlus :size="12" />{{ group.children.length }} 个衍生</small></span></div>
             <p class="asset-record__prompt">{{ group.root.generation_prompt || '尚未生成提示词，可手动填写或调用 AI 生成' }}</p>
             <p class="asset-record__description">{{ group.root.description || '暂无资产说明' }}</p>
             <div class="asset-record__actions">
               <button v-if="scope === 'project' && group.root.asset_type !== 'audio'" type="button" :disabled="busyAssetIds.has(group.root.id)" @click="group.root.generation_prompt ? queueImages([group.root.id]) : queuePrompts([group.root.id])"><WandSparkles :size="15" />{{ group.root.generation_prompt ? '生图' : '提示词' }}</button>
               <button type="button" @click="openEditor(group.root)"><Pencil :size="15" />编辑</button>
-              <button type="button" title="复制到另一资产库" @click="transferAsset(group.root)"><ArrowUpFromLine v-if="scope === 'project'" :size="15" /><ArrowDownToLine v-else :size="15" /></button>
+              <button type="button" :title="projectId ? '复制到另一资产库' : '请先在页面上方选择目标项目'" @click="transferAsset(group.root)"><ArrowUpFromLine v-if="scope === 'project'" :size="15" /><ArrowDownToLine v-else :size="15" /></button>
               <button class="danger" type="button" title="删除资产" @click="requestDelete([group.root])"><Trash2 :size="15" /></button>
             </div>
           </div>
@@ -634,8 +673,8 @@ onBeforeUnmount(() => {
             <header><GitBranchPlus :size="14" /><span>{{ group.root.name }}的衍生资产</span><button type="button" @click="openEditor(undefined, group.root)"><Plus :size="14" />新增衍生</button></header>
             <div v-for="child in group.children" :key="child.id" class="asset-record asset-record--child" :class="{ selected: selectedIds.includes(child.id), busy: busyAssetIds.has(child.id) }">
               <span class="asset-record__expand asset-record__expand--empty"></span>
-              <button v-if="scope === 'project'" class="asset-check" type="button" :aria-label="`选择${child.name}`" :aria-pressed="selectedIds.includes(child.id)" @click="toggleSelection(child.id)"><Check :size="13" /></button>
-              <button class="asset-record__preview" type="button" @click="openEditor(child)"><img v-if="child.media_url" :src="child.media_url" :alt="child.name" /><component :is="typeIcon[child.asset_type]" v-else :size="20" /></button>
+              <button class="asset-check" type="button" :aria-label="`选择${child.name}`" :aria-pressed="selectedIds.includes(child.id)" @click="toggleSelection(child.id)"><Check :size="13" /></button>
+              <button class="asset-record__preview" type="button" @click="openEditor(child)"><img v-image-preview="child.media_url" v-if="child.media_url" :src="child.media_url" :alt="child.name" /><component :is="typeIcon[child.asset_type]" v-else :size="20" /></button>
               <div class="asset-record__identity"><strong>{{ child.name }}</strong><span><em>衍生{{ typeLabel[child.asset_type] }}</em><i :data-status="child.status">{{ busyAssetIds.has(child.id) ? '处理中' : statusLabel[child.status] }}</i><small v-if="metadataString(child, 'reference_audio_url')"><AudioLines :size="12" />参考音频</small></span></div>
               <p class="asset-record__prompt">{{ child.generation_prompt || '尚未生成提示词' }}</p>
               <p class="asset-record__description">{{ child.description || '暂无衍生形态说明' }}</p>
@@ -644,14 +683,14 @@ onBeforeUnmount(() => {
           </div>
         </article>
       </template>
-      <div v-if="!groups.length" class="asset-empty-state"><span><Boxes :size="28" /></span><strong>{{ search ? '没有匹配的资产' : '当前分类还没有资产' }}</strong><p>{{ scope === 'project' ? '从剧本提取、从全局资产导入，或手动建立第一个资产。' : '这里存放租户共享资产，项目需要导入后 AI 才会读取。' }}</p><button type="button" @click="openEditor()"><Plus :size="16" />新建资产</button></div>
+      <div v-if="!groups.length" class="asset-empty-state"><span><Boxes :size="28" /></span><strong>{{ search ? '没有匹配的资产' : '当前分类还没有资产' }}</strong><p>{{ scope === 'project' ? '从剧本提取、从全局资产导入，或手动建立第一个资产。' : '保存自己的可复用素材，选择项目后即可导入使用。' }}</p><button type="button" @click="openEditor()"><Plus :size="16" />新建资产</button></div>
     </div>
 
     <aside class="asset-editor-drawer" :aria-hidden="!editorOpen">
       <header><div><span>{{ editorAssetId ? '资产详情' : '新建资产' }}</span><strong>{{ form.name || '未命名资产' }}</strong></div><button type="button" title="关闭详情" @click="closeEditor"><X :size="18" /></button></header>
       <div class="asset-editor-drawer__scroll">
         <section class="asset-hero-preview">
-          <div><img v-if="previewImage" :src="previewImage" :alt="form.name || '资产预览'" /><component :is="typeIcon[form.asset_type]" v-else :size="32" /><span v-if="action === 'upload'"><LoaderCircle class="spin" :size="21" />正在上传</span></div>
+          <div><img v-image-preview="previewImage" v-if="previewImage" :src="previewImage" :alt="form.name || '资产预览'" /><component :is="typeIcon[form.asset_type]" v-else :size="32" /><span v-if="action === 'upload'"><LoaderCircle class="spin" :size="21" />正在上传</span></div>
           <footer>
             <button type="button" :disabled="form.asset_type === 'audio' || action === 'upload'" @click="imageInput?.click()"><Upload :size="15" />上传图片</button>
             <button type="button" :disabled="!previewImage" @click="previewImage && downloadImage(previewImage, form.name || 'asset')"><Download :size="15" />下载</button>
@@ -662,7 +701,7 @@ onBeforeUnmount(() => {
         <section v-if="editorAssetId" class="asset-image-history">
           <header><span><Images :size="15" />历史图片</span><small class="tabular-nums">{{ imageRevisions.length }} 张</small></header>
           <div v-if="loadingRevisions"><LoaderCircle class="spin" :size="18" />读取中</div>
-          <div v-else-if="imageRevisions.length" class="asset-image-history__rail"><button v-for="revision in imageRevisions" :key="revision.id" type="button" :aria-pressed="selectedRevisionId === revision.id" :title="`v${revision.version} · ${revisionLabel[revision.change_type] || revision.change_type}`" @click="selectedRevisionId = revision.id"><img :src="revision.media_url!" :alt="`v${revision.version}`" /><span class="tabular-nums">v{{ revision.version }}</span></button></div>
+          <div v-else-if="imageRevisions.length" class="asset-image-history__rail"><button v-for="revision in imageRevisions" :key="revision.id" type="button" :aria-pressed="selectedRevisionId === revision.id" :title="`v${revision.version} · ${revisionLabel[revision.change_type] || revision.change_type}`" @click="selectedRevisionId = revision.id"><img v-image-preview="revision.media_url!" :src="revision.media_url!" :alt="`v${revision.version}`" /><span class="tabular-nums">v{{ revision.version }}</span></button></div>
           <p v-else>上传或生成图片后，历史版本会显示在这里。</p>
           <button v-if="selectedRevision && selectedRevision.version !== revisions[0]?.version" class="asset-restore-button" type="button" :disabled="action === 'restore'" @click="restoreRevision"><RotateCcw :size="15" />恢复当前选择为新版本</button>
         </section>
@@ -697,6 +736,16 @@ onBeforeUnmount(() => {
           </footer>
         </section>
 
+        <section v-if="scope === 'project' && editorAsset && form.asset_type === 'character' && !editorAsset.asset_metadata.combat_technique" class="technique-panel">
+          <header><Swords :size="20" /><div><strong>人物招式 · 神通</strong><small>专属动作签名与大招记忆</small></div></header>
+          <div class="technique-panel__presets">
+            <button v-for="preset in ['召唤巨型神龙', '法天象地', '独门宝术', '神诀与终结技']" :key="preset" type="button" @click="techniqueBrief = `为当前人物设计${preset}，保持人物身份与项目画风，明确独有外观、施法动作、尺度、攻防和收势。`">{{ preset }}</button>
+          </div>
+          <label>设计方向<textarea v-model="techniqueBrief" rows="3" maxlength="4000" placeholder="描述希望人物掌握的招式与大招" /></label>
+<footer><label>招式数量<input v-model.number="techniqueCount" type="number" min="1" max="6" /></label><button type="button" :disabled="designingTechniques || busyAssetIds.has(editorAssetId) || !techniqueBrief.trim() || techniqueCount < 1 || techniqueCount > 6" @click="designTechniques"><Sparkles :size="16" />AI 设计招式 · {{ Number(price('asset_prompt_generation', 2)) * techniqueCount }} 积分</button></footer>
+          <button v-for="technique in techniqueChildren" :key="technique.id" class="technique-panel__item" type="button" @click="openEditor(technique)"><img v-image-preview="technique.media_url" v-if="technique.media_url" :src="technique.media_url" alt="" loading="lazy" /><Swords v-else :size="24" /><span>{{ technique.name }}<small>{{ technique.media_url ? '参考图已就绪' : '待生成参考图' }}</small></span><ChevronRight :size="16" /></button>
+        </section>
+        <p v-if="editorAsset?.asset_metadata.combat_technique" class="asset-lineage-hint"><Swords :size="16" />人物专属招式：说明作为长期记忆，图片作为视频外观参考。可在下方编辑或上传图片。</p>
         <form id="asset-workbench-form" class="asset-detail-form" @submit.prevent="saveAsset(false)">
           <div class="asset-detail-form__types"><button v-for="type in assetTypes.filter((item) => item.value !== 'all')" :key="type.value" type="button" :disabled="Boolean(editorAssetId)" :aria-pressed="form.asset_type === type.value" @click="setAssetType(type.value as AssetType)"><component :is="type.icon" :size="15" />{{ type.label }}</button></div>
           <label><span>资产名称</span><input v-model="form.name" required maxlength="160" placeholder="输入资产名称" /></label>
@@ -722,6 +771,21 @@ onBeforeUnmount(() => {
 </template>
 
 <style scoped>
+.technique-panel { display: grid; gap: 12px; min-width: 0; padding: 16px; margin-block: 12px; border-radius: 20px; background: linear-gradient(135deg, var(--brand-soft), var(--surface)); box-shadow: var(--shadow-border); }
+.technique-panel header, .technique-panel footer, .technique-panel__item { display: flex; align-items: center; gap: 10px; flex-wrap: wrap; }
+.technique-panel small { display: block; color: var(--ink-secondary); font-size: 12px; }
+.technique-panel label { display: grid; gap: 6px; min-width: 0; }
+.technique-panel textarea { width: 100%; min-height: 88px; resize: vertical; }
+.technique-panel input { width: 64px; min-height: 40px; }
+.technique-panel button { min-height: 40px; padding: 8px 12px; border-radius: 12px; color: var(--ink); background: var(--surface); box-shadow: var(--shadow-border); transition: transform 150ms ease, background-color 150ms ease; }
+.technique-panel button:active { transform: scale(.96); }
+.technique-panel button:disabled { opacity: .5; }
+.technique-panel__presets { display: flex; flex-wrap: wrap; gap: 8px; }
+.technique-panel__item { width: 100%; text-align: left; }
+.technique-panel__item span { flex: 1; min-width: 0; overflow-wrap: anywhere; }
+.technique-panel__item img { width: 56px; height: 56px; object-fit: cover; border-radius: 8px; outline: 1px solid rgba(0,0,0,.1); outline-offset: -1px; }
+:global([data-theme='dark']) .technique-panel__item img { outline-color: rgba(255,255,255,.1); }
+@media (prefers-reduced-motion: reduce) { .technique-panel button { transition: none; } }
 .asset-studio { --studio-line: rgb(21 31 36 / 9%); position: relative; display: grid; min-height: 0; height: 100%; grid-template-rows: auto auto auto minmax(0, 1fr); overflow: hidden; background: #f4f6f7; color: #172126; -webkit-font-smoothing: antialiased; }
 .asset-studio:has(.asset-batch-dock) { grid-template-rows: auto auto auto auto minmax(0, 1fr); }
 .asset-studio__topbar { display: flex; min-height: 76px; align-items: center; justify-content: space-between; gap: 18px; padding: 12px 18px; border-bottom: 1px solid var(--studio-line); background: rgb(255 255 255 / 90%); }

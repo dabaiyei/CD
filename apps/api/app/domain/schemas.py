@@ -838,7 +838,14 @@ class AssetExtractionResult(BaseModel):
     assets: list[AssetPublic]
 
 
+from app.services.frame_composition import FrameLayout
+from app.services.combat_choreography import CombatPlan
+
+
 class StoryboardShotCreate(BaseModel):
+    combat_plan: CombatPlan | None = None
+    frame_layout: FrameLayout | None = None
+    continuity_group: str = Field(default="", max_length=120)
     title: str = Field(min_length=1, max_length=255)
     shot_type: str = Field(default="中景", min_length=1, max_length=80)
     duration_seconds: Decimal = Field(default=Decimal("5"), ge=1, le=300)
@@ -850,6 +857,12 @@ class StoryboardShotCreate(BaseModel):
     asset_ids: list[str] = Field(default_factory=list, max_length=100)
     reference_image_url: str | None = Field(default=None, max_length=600)
 
+    @model_validator(mode="after")
+    def combat_timing(self):
+        if self.combat_plan:
+            self.combat_plan.validate_duration(float(self.duration_seconds))
+        return self
+
     @field_validator("asset_ids")
     @classmethod
     def unique_storyboard_asset_ids(cls, value: list[str]) -> list[str]:
@@ -857,6 +870,8 @@ class StoryboardShotCreate(BaseModel):
 
 
 class StoryboardShotUpdate(BaseModel):
+    combat_plan: CombatPlan | None = None
+    continuity_group: str | None = Field(default=None, max_length=120)
     title: str | None = Field(default=None, min_length=1, max_length=255)
     shot_type: str | None = Field(default=None, min_length=1, max_length=80)
     duration_seconds: Decimal | None = Field(default=None, ge=1, le=300)

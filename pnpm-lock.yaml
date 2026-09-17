@@ -37,6 +37,9 @@ importers:
       vue:
         specifier: ^3.5.42
         version: 3.5.42(typescript@5.9.3)
+      vue-easy-lightbox:
+        specifier: ^1.19.0
+        version: 1.19.0(vue@3.5.42(typescript@5.9.3))
       vue-router:
         specifier: ^4.6.3
         version: 4.6.4(vue@3.5.42(typescript@5.9.3))
@@ -2171,6 +2174,12 @@ packages:
     peerDependenciesMeta:
       '@vue/composition-api':
         optional: true
+
+  vue-easy-lightbox@1.19.0:
+    resolution: {integrity: sha512-YxLXgjEn91UF3DuK1y8u3Pyx2sJ7a/MnBpkyrBSQkvU1glzEJASyAZ7N+5yDpmxBQDVMwCsL2VmxWGIiFrWCgA==}
+    engines: {node: '>=14.18.3'}
+    peerDependencies:
+      vue: ^3.0.0
 
   vue-router@4.6.4:
     resolution: {integrity: sha512-Hz9q5sa33Yhduglwz6g9skT8OBPii+4bFn88w6J+J4MfEo4KRRpmiNG/hHHkdbRFlLBOqxN8y8gf2Fb0MTUgVg==}
@@ -4534,6 +4543,10 @@ snapshots:
   vscode-uri@3.2.0: {}
 
   vue-demi@0.14.10(vue@3.5.42(typescript@5.9.3)):
+    dependencies:
+      vue: 3.5.42(typescript@5.9.3)
+
+  vue-easy-lightbox@1.19.0(vue@3.5.42(typescript@5.9.3)):
     dependencies:
       vue: 3.5.42(typescript@5.9.3)
 

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { MAX_IMAGE_UPLOAD_BYTES, isSupportedImage } from '@/lib/imageUpload'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { AlignLeft, Check, CircleAlert, Clapperboard, Film, Image as ImageIcon, ImagePlus, LoaderCircle, MonitorUp, Palette, Plus, Ratio, Search, Sparkles, Trash2, Type } from 'lucide-vue-next'
@@ -274,13 +275,13 @@ async function selectCover(event: Event): Promise<void> {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   if (!file) return
-  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+  if (!isSupportedImage(file)) {
     toast.show('图片格式不支持', { message: '请选择 JPG、PNG 或 WebP 图片', tone: 'error' })
     input.value = ''
     return
   }
-  if (file.size > 8 * 1024 * 1024) {
-    toast.show('图片过大', { message: '项目封面不能超过 8 MB', tone: 'error' })
+  if (file.size > MAX_IMAGE_UPLOAD_BYTES) {
+    toast.show('图片过大', { message: '项目封面不能超过 100 MB', tone: 'error' })
     input.value = ''
     return
   }
@@ -320,7 +321,11 @@ async function generateCover(): Promise<void> {
 
 <template>
   <div ref="workspaceRoot" class="workspace-page page-stack">
-    <section v-if="agentOnly" class="workspace-agent-stage workspace-agent-stage--home workspace-reveal workspace-reveal--agent" aria-label="AI 创作助手">
+    <section
+      v-if="agentOnly"
+      class="workspace-agent-stage workspace-agent-stage--home workspace-reveal workspace-reveal--agent"
+      aria-label="AI 创作助手"
+    >
       <AgentChatPanel personal :pricing="projectStore.pricing" />
     </section>
 

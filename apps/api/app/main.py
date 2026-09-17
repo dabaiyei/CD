@@ -26,6 +26,7 @@ from app.api.routes import (
     pricing,
     projects,
     skills,
+    site_backups,
     storyboards,
     tasks,
     user_skills,
@@ -42,6 +43,8 @@ from app.services.object_storage import (
     validate_object_key,
 )
 from app.services.task_queue import close_redis
+from app.services.site_maintenance import SiteMaintenanceMiddleware, claim_coordinator, locked
+from app.services.site_backup import recover_interrupted
 
 settings = get_settings()
 mimetypes.add_type("image/webp", ".webp")
@@ -49,13 +52,21 @@ mimetypes.add_type("image/webp", ".webp")
 
 @asynccontextmanager
 async def lifespan(_app: FastAPI) -> AsyncIterator[None]:
+    with claim_coordinator():
+        async with site_lifespan():
+            yield
+
+
+@asynccontextmanager
+async def site_lifespan() -> AsyncIterator[None]:
     settings.uploads_root.mkdir(parents=True, exist_ok=True)
     await object_storage().ensure_ready()
     if settings.app_env == "production":
         await assert_database_current()
     else:
         await init_db()
-    if settings.seed_demo_data:
+    await recover_interrupted()
+    if settings.seed_demo_data and not locked():
         await seed_demo_data()
     yield
     await close_object_storage()
@@ -76,6 +87,8 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+app.add_middleware(SiteMaintenanceMiddleware)
+app.include_router(site_backups.router, prefix=settings.api_prefix)
 app.include_router(auth.router, prefix=settings.api_prefix)
 app.include_router(branding.router, prefix=settings.api_prefix)
 app.include_router(invitations.router, prefix=settings.api_prefix)

@@ -280,6 +280,27 @@ def test_video_capabilities_reject_frame_modes_without_image_references() -> Non
         VideoModelCapabilities.model_validate({"generation_modes": ["first_frame"]})
 
 
+def test_text_video_does_not_require_image_mode_references() -> None:
+    capabilities = VideoModelCapabilities.model_validate({
+        "generation_modes": ["text_to_video", "first_frame", "first_last_frame"],
+        "reference_limits": {"image": {"enabled": True, "min_count": 1, "max_count": 5}},
+    }).model_dump()
+    options = dict(capabilities=capabilities, duration_seconds=5, resolution="720p",
+                   aspect_ratio="16:9", audio_enabled=False)
+    validate_video_generation_request(**options, generation_mode="text_to_video", reference_media=[])
+    with pytest.raises(ValueError, match="至少需要 1 张"):
+        validate_video_generation_request(**options, generation_mode="first_frame", reference_media=[])
+    with pytest.raises(ValueError, match="1 到 5"):
+        validate_video_generation_request(**options, generation_mode="first_frame",
+                                          reference_media=[{"type": "image"}] * 6)
+    with pytest.raises(ValueError, match="至少需要 2 张"):
+        validate_video_generation_request(**options, generation_mode="first_last_frame",
+                                          reference_media=[{"type": "image"}])
+    with pytest.raises(ValueError, match="不能携带"):
+        validate_video_generation_request(**options, generation_mode="text_to_video",
+                                          reference_media=[{"type": "image"}])
+
+
 def test_video_generation_request_must_match_configured_capabilities() -> None:
     capabilities = VideoModelCapabilities.model_validate(
         {
@@ -624,9 +645,20 @@ def test_agnes_flash_video_capabilities_only_advertise_supported_720p() -> None:
     capabilities = agnes_video_capabilities()
 
     assert capabilities["duration_resolution_map"] == [
-        {"durations": [4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15], "resolutions": ["720p"]}
+        {"durations": [4, 5, 6, 7, 8, 9, 10, 11, 12], "resolutions": ["720p"]}
     ]
     assert capabilities["provider_resolution_map"] == {"720p": "720P"}
+    for duration in (4, 12):
+        validate_video_generation_request(
+            capabilities, generation_mode="text_to_video", duration_seconds=duration,
+            resolution="720p", aspect_ratio="16:9", reference_media=[], audio_enabled=True,
+        )
+    for duration in (3, 13, 15):
+        with pytest.raises(ValueError, match="不支持"):
+            validate_video_generation_request(
+                capabilities, generation_mode="text_to_video", duration_seconds=duration,
+                resolution="720p", aspect_ratio="16:9", reference_media=[], audio_enabled=True,
+            )
 
 
 def test_agnes_video_references_use_embedded_media_data() -> None:

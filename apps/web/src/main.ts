@@ -5,6 +5,7 @@ import { router } from "@/router";
 import { pinia } from "@/stores";
 import { useAuthStore } from "@/stores/auth";
 import { motionDirective } from "@/lib/motion";
+import { imagePreviewDirective } from "@/lib/imageViewer";
 import { initializeTheme } from "@/lib/theme";
 import { initializePwaInstall } from "@/lib/pwa";
 import "@/styles.css";
@@ -13,6 +14,8 @@ import "@/visual-upgrade.css";
 import "@/light-theme.css";
 import "@/transitions.css";
 import "@/product-surface.css";
+import "@/workspace-liquid-glass.css";
+import "@/system-liquid-glass.css";
 
 initializeTheme();
 initializePwaInstall();
@@ -32,6 +35,7 @@ window.addEventListener("cineforge:auth-expired", () => {
 
 createApp(App)
   .directive("motion", motionDirective)
+  .directive("image-preview", imagePreviewDirective)
   .use(pinia)
   .use(router)
   .mount("#app");

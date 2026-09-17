@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 import hashlib
+import logging
 from decimal import Decimal
 from typing import Any
 
+from fastapi import HTTPException
 from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
@@ -27,6 +29,7 @@ from app.db.models import (
     DirectorWorkflowStage,
     DirectorWorkflowStatus,
     ModelType,
+    Notification,
     Project,
     ProjectFile,
     ProjectFileKind,
@@ -53,6 +56,8 @@ from app.services.provider_adapters import (
 from app.services.task_events import publish_task_event, record_task_event
 from app.services.task_queue import enqueue_task
 from app.services.task_submission import create_queued_task
+
+logger = logging.getLogger(__name__)
 
 REVIEW_OPTIONS = [
     {"value": "partial_repair", "label": "修复指定问题", "description": "保留可用内容，只修复审核指出的部分"},
@@ -231,6 +236,76 @@ async def _queue_child(
     parent: DirectorChildRun | None = None,
     attempt: int = 1,
 ) -> tuple[AITask, TaskEvent, DirectorChildRun]:
+    if task_type in {"asset_image_generation", "asset_prompt_generation"}:
+        await session.execute(update(Project).where(Project.id == workflow.project_id).values(name=Project.name))
+        selected_ids = set(request_payload.get("asset_ids") or [])
+        if request_payload.get("asset_id"):
+            selected_ids.add(request_payload["asset_id"])
+        active_asset_tasks = (await session.scalars(select(AITask).where(
+            AITask.project_id == workflow.project_id, AITask.user_id == workflow.user_id,
+            AITask.task_type.in_(["asset_image_generation", "asset_prompt_generation"]),
+            AITask.status.in_([TaskStatus.QUEUED, TaskStatus.RUNNING]),
+        ))).all()
+        for active in active_asset_tasks:
+            active_ids = set(active.request_payload.get("asset_ids") or [])
+            if active.request_payload.get("asset_id"):
+                active_ids.add(active.request_payload["asset_id"])
+            if not selected_ids.intersection(active_ids):
+                continue
+            if active.task_type != task_type or active.request_payload.get("workflow_id"):
+                raise RuntimeError("资产已有生成任务正在执行，请等待当前任务完成后继续，避免重复生成")
+    # Manual tasks use the same production endpoints. Adopt an exact matching
+    # in-flight task instead of creating another paid request on takeover.
+    identity_keys = ("chapter_id", "script_version_id", "asset_extraction_id",
+                     "storyboard_version_id", "shot_id", "asset_id", "shot_ids", "asset_ids")
+    identity = {key: request_payload[key] for key in identity_keys if key in request_payload}
+    candidates = list((await session.scalars(select(AITask).where(
+        AITask.tenant_id == workflow.tenant_id, AITask.user_id == workflow.user_id,
+        AITask.project_id == workflow.project_id, AITask.task_type == task_type,
+        AITask.status.in_([TaskStatus.QUEUED, TaskStatus.RUNNING]),
+        ~select(DirectorChildRun.id).where(DirectorChildRun.task_id == AITask.id).exists(),
+    ).order_by(AITask.created_at))).all()) if identity else []
+    for pending in candidates:
+        payload = pending.request_payload or {}
+        def same_value(key: str, value: Any) -> bool:
+            actual = payload.get(key)
+            return sorted(actual or []) == sorted(value) if isinstance(value, list) else actual == value
+        if not all(same_value(key, value) for key, value in identity.items()):
+            continue
+        if model_id is not None and pending.model_id != model_id:
+            continue
+        if task_type == "shot_video_generation":
+            # The queue builder allocated a new clip before looking for a task.
+            # Keep the existing task's clip and remove only this unused row.
+            fresh_id = request_payload.get("video_clip_id")
+            if not payload.get("video_clip_id"):
+                continue
+            if fresh_id and fresh_id != payload["video_clip_id"]:
+                fresh = await session.get(VideoClip, fresh_id)
+                if fresh is not None:
+                    await session.delete(fresh)
+        child = DirectorChildRun(
+            tenant_id=workflow.tenant_id, user_id=workflow.user_id,
+            project_id=workflow.project_id, workflow_id=workflow.id,
+            task_id=pending.id, kind=kind, title=CHILD_TITLES[kind],
+            status=DirectorChildStatus.RUNNING if pending.status == TaskStatus.RUNNING else DirectorChildStatus.QUEUED,
+            attempt=1, max_attempts=5 if workflow.automation_mode else 3,
+            summary="接续已有任务，不重复提交或扣费",
+            input_refs={key: value for key, value in payload.items() if key.endswith("_id")},
+        )
+        session.add(child)
+        await session.flush()
+        pending.request_payload = {**payload, "workflow_id": workflow.id, "child_run_id": child.id}
+        last_progress = await session.scalar(select(TaskEvent.progress).where(
+            TaskEvent.task_id == pending.id,
+        ).order_by(TaskEvent.created_at.desc()).limit(1))
+        event = record_task_event(session, pending, status=pending.status,
+                                  progress=last_progress or 0, message=child.summary)
+        workflow.current_task_id = pending.id
+        workflow.status = DirectorWorkflowStatus.RUNNING
+        workflow.last_error = None
+        workflow.last_message = child.summary
+        return pending, event, child
     user = await session.get(User, workflow.user_id)
     if user is None:
         raise RuntimeError("导演流程用户已不存在")
@@ -380,16 +455,76 @@ async def start_automatic_workflow_from_progress(
     chat_session_id: str | None,
 ) -> DirectorWorkflowRun:
     """Start automatic production at the first incomplete persisted chapter stage."""
+    # Serialize starts on this chapter, including on SQLite where FOR UPDATE
+    # alone does not lock a row. Repeated clicks must reuse the same run.
+    await session.execute(update(Chapter).where(
+        Chapter.id == chapter.id, Chapter.user_id == user.id,
+        Chapter.tenant_id == user.tenant_id,
+    ).values(status=Chapter.status))
     if not chapter.original_content.strip():
         raise ValueError("当前章节没有可供改编的原始文章内容")
     existing = await session.scalar(
         select(DirectorWorkflowRun).where(
             DirectorWorkflowRun.chapter_id == chapter.id,
+            DirectorWorkflowRun.user_id == user.id,
+            DirectorWorkflowRun.tenant_id == user.tenant_id,
             DirectorWorkflowRun.status.in_(ACTIVE_WORKFLOW_STATUSES),
-        )
+        ).order_by(DirectorWorkflowRun.created_at.desc()).limit(1)
     )
     if existing is not None:
-        raise ValueError("当前章节已有进行中的导演流程")
+        existing.automation_mode = True
+        existing.stop_requested = False
+        existing.context_snapshot = {
+            **(existing.context_snapshot or {}), "automation_mode": True,
+            "resumed_from_chapter_progress": True,
+        }
+        # Keep the original chat association and task history on takeover.
+        children = list((await session.scalars(select(DirectorChildRun).where(
+            DirectorChildRun.workflow_id == existing.id,
+            DirectorChildRun.status.in_([DirectorChildStatus.QUEUED, DirectorChildStatus.RUNNING]),
+        ).order_by(DirectorChildRun.created_at))).all())
+        terminal_ids = []
+        live_ids = []
+        for child in children:
+            task = await session.get(AITask, child.task_id) if child.task_id else None
+            if task and task.status in {TaskStatus.QUEUED, TaskStatus.RUNNING}:
+                live_ids.append(task.id)
+            elif task:
+                terminal_ids.append(task.id)
+            else:
+                child.status = DirectorChildStatus.FAILED
+                child.summary = "任务记录缺失，将根据章节实际内容继续"
+        if live_ids:
+            existing.current_task_id = live_ids[0]
+            existing.status = DirectorWorkflowStatus.RUNNING
+            existing.last_error = None
+            existing.last_message = "已接续当前进度，等待已有任务完成后自动推进，不重复提交"
+        await session.commit()
+        # Reuse the worker's terminal transition, including retries and billing,
+        # rather than treating a finished task as permanently running.
+        for task_id in terminal_ids:
+            await on_director_task_terminal(task_id)
+        await session.refresh(existing)
+        if live_ids or (terminal_ids and existing.status in ACTIVE_WORKFLOW_STATUSES):
+            return existing
+        decision = await session.scalar(select(DirectorDecisionRequest).where(
+            DirectorDecisionRequest.workflow_id == existing.id,
+            DirectorDecisionRequest.resolved.is_(False),
+        ).order_by(DirectorDecisionRequest.created_at.desc()).limit(1))
+        if decision is not None:
+            await submit_decision(
+                session, existing, decision,
+                option="partial_repair", feedback="继续全自动，修复审核指出的问题并重新审核",
+            )
+            await session.refresh(existing)
+            return existing
+        # No live work or user decision remains: retire the stale active run
+        # and use persisted chapter artifacts to find the first missing stage.
+        if existing.status in ACTIVE_WORKFLOW_STATUSES:
+            existing.status = DirectorWorkflowStatus.FAILED
+            existing.current_task_id = None
+            existing.last_message = "已重新核验章节进度，后续由续作流程接管"
+        await session.flush()
 
     script = (
         await session.get(ScriptVersion, chapter.active_script_version_id)
@@ -482,6 +617,13 @@ async def start_automatic_workflow_from_progress(
 
     missing_assets = await _missing_ready_asset_names(assets)
     if missing_assets:
+        existing_board = await session.scalar(select(StoryboardVersion).where(
+            StoryboardVersion.chapter_id == chapter.id,
+            StoryboardVersion.script_version_id == script.id,
+            StoryboardVersion.is_active.is_(True)))
+        if existing_board is not None:
+            workflow.storyboard_version_id = existing_board.id
+            workflow.context_snapshot = {**workflow.context_snapshot, "assets_for_storyboard_review": True}
         chapter.status = ChapterStatus.ASSETS
         queued.extend(await _queue_asset_preparation(session, workflow, assets))
         await _commit_and_dispatch(session, queued)
@@ -822,7 +964,7 @@ async def _extraction_assets(
 ) -> list[Asset]:
     if not workflow.asset_extraction_id:
         return []
-    return list(
+    assets = list(
         (
             await session.scalars(
                 select(Asset)
@@ -832,6 +974,13 @@ async def _extraction_assets(
             )
         ).all()
     )
+    if (workflow.context_snapshot or {}).get("assets_for_storyboard_review") and workflow.storyboard_version_id:
+        shot_assets = (await session.scalars(select(StoryboardShot.asset_ids).where(
+            StoryboardShot.storyboard_version_id == workflow.storyboard_version_id))).all()
+        needed = {identity for identities in shot_assets for identity in identities}
+        needed.update(a.parent_asset_id for a in assets if a.id in needed and a.parent_asset_id)
+        assets = [a for a in assets if a.id in needed]
+    return assets
 
 
 async def _missing_ready_asset_names(assets: list[Asset]) -> list[str]:
@@ -877,7 +1026,11 @@ async def _queue_asset_preparation(
         for asset in await _extraction_assets(session, workflow)
         if asset.asset_type.value != "audio"
     ]
+    if not (workflow.context_snapshot or {}).get("assets_for_storyboard_review"):
+        assets = [asset for asset in assets if not asset.parent_asset_id]
     if not assets:
+        if (workflow.context_snapshot or {}).get("assets_for_storyboard_review"):
+            return [await _after_asset_preparation(session, workflow)]
         raise ValueError("当前资产提取版本没有可用于分镜的资产")
     workflow.stage = DirectorWorkflowStage.ASSET_PREPARING
     workflow.status = DirectorWorkflowStatus.RUNNING
@@ -979,6 +1132,13 @@ async def start_storyboard_workflow_for_chapter(
     return workflow
 
 
+async def _after_asset_preparation(session, workflow, parent=None):
+    if (workflow.context_snapshot or {}).get("assets_for_storyboard_review"):
+        workflow.context_snapshot = {**workflow.context_snapshot, "assets_for_storyboard_review": False}
+        return await _queue_review(session, workflow, target="storyboard", parent=parent)
+    return await _queue_storyboard(session, workflow, parent)
+
+
 async def _queue_missing_asset_images(
     session: AsyncSession,
     workflow: DirectorWorkflowRun,
@@ -986,10 +1146,12 @@ async def _queue_missing_asset_images(
     parent: DirectorChildRun | None = None,
 ) -> list[tuple[AITask, TaskEvent]]:
     assets = assets or await _extraction_assets(session, workflow)
+    if not (workflow.context_snapshot or {}).get("assets_for_storyboard_review"):
+        assets = [asset for asset in assets if not asset.parent_asset_id]
     missing_names = set(await _missing_ready_asset_names(assets))
     missing = [asset for asset in assets if asset.name in missing_names]
     if not missing:
-        task, event = await _queue_storyboard(session, workflow, parent)
+        task, event = await _after_asset_preparation(session, workflow, parent)
         return [(task, event)]
     project = await session.get(Project, workflow.project_id)
     if project is None:
@@ -1450,7 +1612,8 @@ async def _retry_child(
         status=TaskStatus.QUEUED,
         model_id=task.model_id,
         cost=Decimal("0"),
-        request_payload={key: value for key, value in task.request_payload.items() if key != "child_run_id"},
+        request_payload={key: value for key, value in task.request_payload.items()
+            if key not in {"child_run_id", "asset_parent_waiting", "asset_parent_task_id", "video_continuity_waiting", "video_continuity_task_id", "video_continuity"}},
     )
     session.add(retry_task)
     await session.flush()
@@ -1487,6 +1650,46 @@ async def _retry_child(
 
 
 async def on_director_task_terminal(task_id: str) -> None:
+    """A billing rejection stops this workflow, never the shared task consumer."""
+    try:
+        await _advance_director_task_terminal(task_id)
+    except HTTPException as exc:
+        if exc.status_code != 402:
+            raise
+        # The failed enqueue transaction has rolled back, including any partial debit.
+        from app.db.session import SessionLocal
+
+        async with SessionLocal() as session:
+            child = await session.scalar(select(DirectorChildRun).where(DirectorChildRun.task_id == task_id))
+            task = await session.get(AITask, task_id)
+            if child is None or task is None:
+                return
+            workflow = await session.get(DirectorWorkflowRun, child.workflow_id)
+            if workflow is None or workflow.status not in ACTIVE_WORKFLOW_STATUSES:
+                return
+            child.status = {
+                TaskStatus.SUCCEEDED: DirectorChildStatus.SUCCEEDED,
+                TaskStatus.FAILED: DirectorChildStatus.FAILED,
+                TaskStatus.CANCELLED: DirectorChildStatus.CANCELLED,
+            }[task.status]
+            child.output_refs = dict(task.result_payload or {})
+            child.summary = "本步骤已完成" if task.status == TaskStatus.SUCCEEDED else "本步骤未完成"
+            message = "积分不足，自动流程已暂停；已完成内容保留，补充积分后可从当前进度继续。"
+            workflow.status = DirectorWorkflowStatus.FAILED
+            workflow.stage = DirectorWorkflowStage.FAILED
+            workflow.current_task_id = None
+            workflow.last_error = message
+            workflow.last_message = message
+            session.add(Notification(
+                tenant_id=workflow.tenant_id, user_id=workflow.user_id,
+                project_id=workflow.project_id, task_id=task_id,
+                title="自动流程因积分不足暂停", message=message,
+            ))
+            await session.commit()
+        logger.warning("Director workflow paused for insufficient credits after task %s", task_id)
+
+
+async def _advance_director_task_terminal(task_id: str) -> None:
     from app.db.session import SessionLocal
 
     queued: list[tuple[AITask, TaskEvent]] = []
@@ -1650,11 +1853,16 @@ async def on_director_task_terminal(task_id: str) -> None:
             )
             if not active_image_children:
                 assets = await _extraction_assets(session, workflow)
+                if not (workflow.context_snapshot or {}).get("assets_for_storyboard_review"):
+                    assets = [asset for asset in assets if not asset.parent_asset_id]
                 missing = await _missing_ready_asset_names(assets)
                 if not missing:
-                    queued.append(await _queue_storyboard(session, workflow, child))
+                    queued.append(await _after_asset_preparation(session, workflow, child))
                 else:
-                    if workflow.automation_mode:
+                    pending_techniques = [a for a in assets if a.name in missing and a.parent_asset_id and a.status != AssetStatus.FAILED]
+                    if pending_techniques:
+                        queued.extend(await _queue_missing_asset_images(session, workflow, assets, child))
+                    elif workflow.automation_mode:
                         workflow.stage = DirectorWorkflowStage.FAILED
                         workflow.status = DirectorWorkflowStatus.FAILED
                         workflow.current_task_id = None
@@ -1669,7 +1877,8 @@ async def on_director_task_terminal(task_id: str) -> None:
             workflow.storyboard_version_id = str(result.get("storyboard_version_id") or "") or None
             if workflow.automation_mode:
                 _increment_workflow_counter(workflow, "storyboard_version_count")
-            queued.append(await _queue_review(session, workflow, target="storyboard", parent=child))
+            workflow.context_snapshot = {**(workflow.context_snapshot or {}), "assets_for_storyboard_review": True}
+            queued.extend(await _queue_asset_preparation(session, workflow))
         elif child.kind == "storyboard_review":
             approved = bool(result.get("approved"))
             if approved:
@@ -1827,5 +2036,8 @@ async def recover_automatic_workflows() -> int:
         await session.commit()
 
     for task_id in dict.fromkeys(terminal_task_ids):
-        await on_director_task_terminal(task_id)
+        try:
+            await on_director_task_terminal(task_id)
+        except Exception:
+            logger.exception("Director recovery failed for task %s; continuing other workflows", task_id)
     return repaired_workflows + len(set(terminal_task_ids))

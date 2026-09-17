@@ -55,7 +55,6 @@ from app.services.director_orchestration import (
     ensure_chapter_not_automating,
 )
 from app.services.media import (
-    ALLOWED_COVER_TYPES,
     MAX_COVER_BYTES,
     InvalidCoverImage,
     save_asset_image,
@@ -69,8 +68,28 @@ from app.services.object_storage import (
 from app.services.task_events import publish_task_event
 from app.services.task_queue import enqueue_task
 from app.services.task_submission import active_tasks, create_queued_task
+from app.services.combat_techniques import TechniqueDesignRequest
 
 router = APIRouter(tags=["assets"])
+
+
+@router.post("/assets/{asset_id}/techniques/design", response_model=TaskPublic, status_code=202)
+async def design_character_techniques(
+    asset_id: str, payload: TechniqueDesignRequest,
+    user: User = Depends(get_current_user), session: AsyncSession = Depends(get_session),
+):
+    from app.services.combat_techniques import queue_design
+    asset = await asset_for_user(session, asset_id, user)
+    if asset.scope != AssetScope.PROJECT or asset.asset_type != AssetType.CHARACTER or (asset.asset_metadata or {}).get("combat_technique"):
+        raise HTTPException(422, "请选择项目内的人物设计招式")
+    await require_assets_writable(session, [asset], user)
+    task, event = await queue_design(session, user, asset, payload)
+    await session.commit()
+    await session.refresh(task)
+    await enqueue_task(task.id)
+    await publish_task_event(task, event)
+    return task
+
 DERIVABLE_ASSET_TYPES = {AssetType.CHARACTER, AssetType.SCENE, AssetType.PROP}
 ALLOWED_REFERENCE_AUDIO_TYPES = {
     "audio/aac",
@@ -493,6 +512,8 @@ async def update_asset(
     if asset.scope == AssetScope.PROJECT and asset.project_id:
         await project_for_user(session, asset.project_id, user)
     values = payload.model_dump(exclude_unset=True)
+    if (asset.asset_metadata or {}).get("combat_technique") and "parent_asset_id" in values and not values["parent_asset_id"]:
+        raise HTTPException(422, "人物招式必须保留所属人物")
     if "parent_asset_id" in values:
         parent_id = values.pop("parent_asset_id")
         if parent_id and await session.scalar(
@@ -512,6 +533,11 @@ async def update_asset(
         asset.parent_asset_id = parent_id
     for field, value in values.items():
         setattr(asset, field, value)
+    if (asset.asset_metadata or {}).get("combat_technique"):
+        asset.asset_metadata = {**asset.asset_metadata, "combat_technique": {
+            **asset.asset_metadata["combat_technique"], "edited_description": asset.description,
+            "image_prompt": asset.generation_prompt, "display_name": asset.name,
+        }}
     if payload.generation_prompt is not None:
         asset.status = (
             AssetStatus.READY
@@ -542,13 +568,10 @@ async def upload_asset_image(
         raise HTTPException(status_code=409, detail="音频资产不能上传图片")
     if asset.scope == AssetScope.PROJECT and asset.project_id:
         await project_for_user(session, asset.project_id, user)
-    if file.content_type not in ALLOWED_COVER_TYPES:
-        raise HTTPException(status_code=415, detail="仅支持 JPG、PNG 或 WebP 图片")
-
     data = await file.read(MAX_COVER_BYTES + 1)
     await file.close()
     if len(data) > MAX_COVER_BYTES:
-        raise HTTPException(status_code=413, detail="资产图片不能超过 8 MB")
+        raise HTTPException(status_code=413, detail="资产图片不能超过 100 MB")
     if not data:
         raise HTTPException(status_code=422, detail="上传的图片为空")
 

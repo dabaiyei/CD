@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { MAX_IMAGE_UPLOAD_BYTES, isSupportedImage } from '@/lib/imageUpload'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
@@ -54,12 +55,12 @@ function chooseAvatar(event: Event): void {
   const file = (event.target as HTMLInputElement).files?.[0]
   if (!file) return
   formError.value = ''
-  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+  if (!isSupportedImage(file)) {
     formError.value = '头像仅支持 JPG、PNG 或 WebP 图片'
     return
   }
-  if (file.size > 8 * 1024 * 1024) {
-    formError.value = '头像图片不能超过 8 MB'
+  if (file.size > MAX_IMAGE_UPLOAD_BYTES) {
+    formError.value = '头像图片不能超过 100 MB'
     return
   }
   if (avatarPreview.value) URL.revokeObjectURL(avatarPreview.value)

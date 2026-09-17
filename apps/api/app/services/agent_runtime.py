@@ -101,6 +101,10 @@ async def raise_for_runtime_status(response: httpx.Response) -> None:
             if has_project_path_issue
             else "Agent Runtime 请求校验失败，请联系管理员检查运行时契约"
         )
+        if any(isinstance(issue, dict) and issue.get("type") == "string_too_long"
+               and any(field in issue.get("loc", []) for field in ("prompt", "system_prompt"))
+               for issue in issues):
+            message = "本次 AI 任务输入过长，请减少单次处理的镜头数量后重试"
     elif status_code in {401, 403}:
         message = "Agent Runtime 鉴权失败，请联系管理员检查内部配置"
     elif status_code >= 500:

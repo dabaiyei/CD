@@ -85,8 +85,7 @@ async def upgrade_managed_model_capabilities(session) -> None:
             .where(AIModel.model_type == ModelType.VIDEO)
         )
     ).all()
-    old_durations = [float(value) for value in range(4, 13)]
-    upgraded_capabilities = agnes_video_capabilities()
+    old_durations = [float(value) for value in range(4, 16)]
     for model, provider_code in rows:
         if provider_code == AGNES_PROVIDER_CODE:
             defaults = agnes_video_capabilities()
@@ -97,16 +96,18 @@ async def upgrade_managed_model_capabilities(session) -> None:
         capabilities = dict(model.capabilities or {})
         duration_map = capabilities.get("duration_resolution_map")
         if (
-            model.model_id == AGNES_VIDEO_MODEL_ID
+            provider_code == AGNES_PROVIDER_CODE
+            and model.model_id == AGNES_VIDEO_MODEL_ID
             and isinstance(duration_map, list)
             and len(duration_map) == 1
         ):
             durations = (
                 duration_map[0].get("durations") if isinstance(duration_map[0], dict) else None
             )
-            if durations == old_durations or durations == list(range(4, 13)):
-                capabilities["duration_resolution_map"] = upgraded_capabilities[
-                    "duration_resolution_map"
+            if durations == old_durations:
+                # Repair only the old managed 4-15 preset, preserving custom resolutions.
+                capabilities["duration_resolution_map"] = [
+                    {**duration_map[0], "durations": list(range(4, 13))}
                 ]
         reference_limits = dict(capabilities.get("reference_limits") or {})
         for media_type, default_limit in defaults["reference_limits"].items():
@@ -120,6 +121,13 @@ async def upgrade_managed_model_capabilities(session) -> None:
         for field in ("preferred_prompt_language", "video_prompt_protocol"):
             if field in defaults and field not in capabilities:
                 capabilities[field] = defaults[field]
+        # Migrate the early managed H3 silent preset. Spoken dialogue must
+        # reach the H3 prompt when a shot contains dialogue.
+        if (
+            provider_code == AUTODL_MINIMAX_H3_PROVIDER_CODE
+            and capabilities.get("audio_policy") == "disabled"
+        ):
+            capabilities["audio_policy"] = "optional"
         model.capabilities = capabilities
 
 

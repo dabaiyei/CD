@@ -1,0 +1,336 @@
+/* Shared glass tokens also reach Reka portals mounted outside AppShell.
+   Auth pages retain their video backgrounds and existing login treatment. */
+:root:has(.app-shell--glass-system) {
+  --glass-panel: rgba(255, 255, 255, .48);
+  --glass-inset: rgba(244, 249, 253, .42);
+  --glass-hover: rgba(255, 255, 255, .67);
+  --glass-popup: rgba(243, 248, 252, .91);
+  --glass-edge: rgba(255, 255, 255, .76);
+  --glass-divider: rgba(88, 111, 135, .13);
+  --glass-highlight: rgba(255, 255, 255, .84);
+  --glass-depth: rgba(28, 50, 76, .07);
+  --glass-photo: url('/covers/studio-hero-light.webp');
+  --glass-veil: rgba(235, 243, 249, .84);
+  --glass-shadow: inset 0 1px 0 var(--glass-highlight),
+    0 0 0 1px var(--glass-edge), 0 8px 28px var(--glass-depth);
+  --glass-focus: color-mix(in srgb, var(--brand) 38%, transparent);
+}
+
+:root[data-theme='dark']:has(.app-shell--glass-system) {
+  --glass-panel: rgba(28, 37, 51, .55);
+  --glass-inset: rgba(18, 28, 41, .38);
+  --glass-hover: rgba(55, 69, 88, .58);
+  --glass-popup: rgba(24, 33, 46, .94);
+  --glass-edge: rgba(188, 210, 240, .16);
+  --glass-divider: rgba(188, 210, 240, .12);
+  --glass-highlight: rgba(221, 237, 255, .19);
+  --glass-depth: rgba(0, 0, 0, .19);
+  --glass-photo: url('/covers/studio-hero-v2.webp');
+  --glass-veil: rgba(11, 18, 29, .87);
+}
+
+/* Workspace already has its own tuned composer geometry and backdrop. */
+:root .app-shell.app-shell--glass-system:not(.app-shell--glass-workspace) {
+  --product-canvas: transparent;
+  --product-panel: var(--glass-panel);
+  --product-panel-muted: var(--glass-inset);
+  --product-panel-hover: var(--glass-hover);
+  --product-ring: var(--glass-edge);
+  --product-ring-strong: var(--glass-highlight);
+  --product-radius: 18px;
+  --product-radius-inner: 11px;
+  --product-shadow: var(--glass-shadow);
+  --product-shadow-hover: var(--glass-shadow), 0 14px 32px var(--glass-depth);
+  isolation: isolate;
+  background: var(--bg);
+}
+
+:root .app-shell.app-shell--glass-system:not(.app-shell--glass-workspace)::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(var(--glass-veil), var(--glass-veil)),
+    var(--glass-photo) center / cover no-repeat;
+}
+
+:root .app-shell.app-shell--glass-system:not(.app-shell--glass-workspace) :is(
+  .shell-main, .page-content, .admin-page, .user-skills-page, .marketplace-page,
+  .director-page, .asset-library-page, .director-main-workspace, .director-production,
+  .admin-workspace-content, .skills-catalog, .marketplace-workspace) {
+  background: transparent !important;
+}
+
+:root .app-shell.app-shell--glass-system:not(.app-shell--glass-workspace) .topbar {
+  background: var(--glass-panel) !important;
+  border: 0;
+  border-bottom: 1px solid var(--glass-edge);
+  border-radius: 0;
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+  -webkit-backdrop-filter: blur(20px) saturate(140%);
+  backdrop-filter: blur(20px) saturate(140%);
+}
+
+:root .app-shell.app-shell--glass-system:not(.app-shell--glass-workspace) .topbar::before,
+:root .app-shell.app-shell--glass-system:not(.app-shell--glass-workspace) .topbar::after {
+  display: none;
+}
+
+/* Navigation and independent cards: rounded, edged glass. No new wrappers or
+   overflow rules, so existing tab scrolling and mobile layouts keep working. */
+:root .app-shell.app-shell--glass-system :is(.admin-page, .user-skills-page, .marketplace-page) :is(
+  .admin-settings-rail, .skills-stage-rail, .marketplace-categories,
+  .metric, .user-metrics article, .invite-metrics article, .security-summary article,
+  .readiness-panel, .global-defaults, .pricing-policy, .invite-origin,
+  .provider-model-card, .pricing-rule, .settings-row, .prompt-item, .handbook-item,
+  .invite-card, .user-directory, .model-service-workbench, .branding-preview,
+  .branding-editor, .skills-workbench, .security-toolbar, .security-event-list,
+  .backup-editor, .backup-item, .user-skill-card, .user-skill-skeleton,
+  .marketplace-card, .marketplace-skeleton, .user-skills-empty, .marketplace-empty) {
+  color: var(--ink);
+  background: var(--glass-panel) !important;
+  border-color: var(--glass-edge);
+  border-radius: 18px;
+  box-shadow: var(--glass-shadow);
+}
+
+/* Blur only independent surface layers, never every row in a scrolling list. */
+:root .app-shell.app-shell--glass-system :is(.admin-page, .user-skills-page, .marketplace-page) :is(
+  .admin-settings-rail, .skills-stage-rail, .marketplace-categories,
+  .metric, .readiness-panel, .global-defaults, .user-directory,
+  .model-service-workbench, .branding-editor, .skills-workbench) {
+  -webkit-backdrop-filter: blur(16px) saturate(135%);
+  backdrop-filter: blur(16px) saturate(135%);
+}
+
+:root .app-shell.app-shell--glass-system :is(.admin-page, .user-skills-page, .marketplace-page) :is(
+  .default-model-slot, .readiness-list > div, .provider-model-card__health,
+  .provider-console__meta span, .default-model-slot__current, .image-resolution-route,
+  .provider-directory, .skill-editor, .skill-editor textarea,
+  .skills-workbench > aside, .user-directory__labels, .invite-code,
+  .branding-source-tabs, .branding-dropzone, .backup-scopes > span,
+  .skill-overview > div, .marketplace-sort) {
+  background: var(--glass-inset) !important;
+  border-color: var(--glass-divider);
+  box-shadow: none;
+}
+
+:root .app-shell.app-shell--glass-system :is(.admin-page, .user-skills-page, .marketplace-page) :is(
+  .provider-console, .provider-console__header, .provider-console__meta,
+  .user-skill-card > header, .user-skill-card > footer,
+  .marketplace-card__body, .marketplace-card > footer, .user-row,
+  .security-event, .skill-editor > header) {
+  background: transparent !important;
+  border-color: var(--glass-divider);
+  box-shadow: none;
+}
+
+:root .app-shell.app-shell--glass-system :is(.admin-page, .user-skills-page, .marketplace-page) :is(
+  .user-row, .security-event, .provider-directory__list > button):hover {
+  background: var(--glass-inset) !important;
+}
+
+:root .app-shell.app-shell--glass-system :is(.admin-tabs a, .skill-filter-bar button,
+  .marketplace-categories button) {
+  border-radius: 11px;
+  transition: background-color 180ms ease, color 180ms ease, box-shadow 180ms ease;
+}
+
+:root .app-shell.app-shell--glass-system :is(.admin-tabs a.active,
+  .skill-filter-bar button.active, .marketplace-categories button[aria-pressed='true']) {
+  color: var(--brand-strong);
+  background: color-mix(in srgb, var(--brand) 13%, var(--glass-panel));
+  box-shadow: inset 0 1px 0 var(--glass-highlight), 0 2px 8px var(--glass-depth);
+}
+
+:root .app-shell.app-shell--glass-system :is(.metric, .user-metrics, .invite-metrics,
+  .skill-overview, .backup-stats) strong {
+  font-variant-numeric: tabular-nums;
+}
+
+/* Director: tint existing panes without filtering a whole video grid or
+   changing the containing blocks of floating chat and resizable panes. */
+:root .app-shell.app-shell--glass-system .director-page :is(
+  .director-header, .chapter-rail, .director-canvas, .chapter-stage,
+  .director-agent-workspace, .agent-composer-shell, .director-video-focus,
+  .director-automation-bar, .asset-card, .analysis-panel) {
+  background: var(--glass-panel) !important;
+  border-color: var(--glass-edge);
+  border-radius: 18px;
+  box-shadow: var(--glass-shadow);
+}
+
+:root .app-shell.app-shell--glass-system .director-page :is(
+  .director-canvas__header, .director-canvas__tabs, .director-script-document,
+  .director-source-document, .director-video-focus__detail, .director-video-final-prompt,
+  .director-video-board__footer, .agent-workspace-body, .agent-conversation, .agent-thread,
+  .agent-workbench-header, .asset-card__body, .chapter-list) {
+  background: transparent !important;
+  border-color: var(--glass-divider);
+  box-shadow: none;
+}
+
+:root .app-shell.app-shell--glass-system .director-page :is(
+  .chapter-item, .director-video-shot, .storyboard-card, .agent-composer) {
+  background: var(--glass-inset);
+  border-color: var(--glass-divider);
+}
+
+/* Portal surfaces: material-only rules, preserve dialog centering, focus traps,
+   max-height and the existing single scroll container on mobile. */
+:root:has(.app-shell--glass-system) :is(.dialog-content, .ui-select-menu,
+  .account-popover, .activity-panel, .asset-editor-drawer) {
+  color: var(--ink);
+  background: var(--glass-popup) !important;
+  border-color: var(--glass-edge);
+  box-shadow: var(--glass-shadow), 0 28px 80px rgba(0, 0, 0, .18);
+  -webkit-backdrop-filter: blur(24px) saturate(145%);
+  backdrop-filter: blur(24px) saturate(145%);
+}
+
+:root:has(.app-shell--glass-system) .dialog-content {
+  border-radius: 22px;
+}
+
+:root:has(.app-shell--glass-system) .ui-select-menu {
+  border-radius: 14px;
+}
+
+:root:has(.app-shell--glass-system) :is(.dialog-header, .dialog-body, .dialog-footer,
+  .handbook-editor-shell, .handbook-editor-meta, .handbook-file-workspace,
+  .asset-studio, .asset-results, .asset-studio__topbar, .asset-commandbar,
+  .activity-panel__inner, .activity-panel__header, .activity-panel__footer,
+  .activity-list, .activity-task-view) {
+  background: transparent !important;
+  border-color: var(--glass-divider);
+}
+
+:root:has(.app-shell--glass-system) .dialog-content :is(
+  .provider-editor-section, .capability-section, .handbook-source-editor,
+  .handbook-preview, .handbook-file-tabs, .marketplace-detail__block,
+  .asset-family, .asset-record, .asset-batch-dock) {
+  background: var(--glass-inset) !important;
+  border-color: var(--glass-divider);
+  box-shadow: none;
+}
+
+:root:has(.app-shell--glass-system) :is(.admin-page, .user-skills-page,
+  .marketplace-page, .director-page, .dialog-content) :is(
+  .search-control, .user-search, .skill-search, .marketplace-search, .asset-search,
+  .ui-select, .field > input, .field > textarea, .handbook-source-editor textarea,
+  .backup-editor input:not([hidden]), .backup-confirm input) {
+  color: var(--ink);
+  background: var(--glass-inset) !important;
+  border-color: var(--glass-divider);
+  border-radius: 11px;
+  box-shadow: inset 0 1px 2px var(--glass-depth);
+}
+
+:root:has(.app-shell--glass-system) :is(.admin-page, .user-skills-page,
+  .marketplace-page, .director-page, .dialog-content) :is(
+  .search-control, .user-search, .skill-search, .marketplace-search, .asset-search) input {
+  background: transparent;
+  color: var(--ink);
+}
+
+:root:has(.app-shell--glass-system) :is(.admin-page, .user-skills-page,
+  .marketplace-page, .director-page, .dialog-content) :is(
+  .ui-select, .field > input, .field > textarea):focus-visible {
+  outline: 2px solid var(--glass-focus);
+  outline-offset: 2px;
+}
+
+:root .app-shell.app-shell--glass-system:not(.app-shell--glass-workspace) :is(
+  .button--secondary, .button--ghost, .icon-button) {
+  background: var(--glass-panel);
+  box-shadow: inset 0 1px 0 var(--glass-highlight), 0 0 0 1px var(--glass-divider);
+}
+
+:root .app-shell.app-shell--glass-system .mobile-nav {
+  background: var(--glass-popup) !important;
+  border-color: var(--glass-edge);
+  -webkit-backdrop-filter: blur(16px);
+  backdrop-filter: blur(16px);
+}
+
+@media (max-width: 760px) {
+  :root .app-shell.app-shell--glass-system :is(.admin-settings-rail,
+    .skills-stage-rail, .marketplace-categories) {
+    border-radius: 14px;
+  }
+
+  :root .app-shell.app-shell--glass-system :is(.admin-tabs a,
+    .skill-filter-bar button, .marketplace-categories button) {
+    min-height: 42px;
+    flex-shrink: 0;
+  }
+
+  :root:has(.app-shell--glass-system) .dialog-content {
+    border-radius: 18px;
+  }
+
+  :root .app-shell.app-shell--glass-system :is(.metric, .readiness-panel,
+    .global-defaults, .user-directory, .model-service-workbench, .skills-workbench) {
+    -webkit-backdrop-filter: none;
+    backdrop-filter: none;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  :root .app-shell.app-shell--glass-system :is(.admin-tabs a,
+    .skill-filter-bar button, .marketplace-categories button) {
+    transition: none;
+  }
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  :root:has(.app-shell--glass-system) {
+    --glass-panel: var(--surface);
+    --glass-popup: var(--surface);
+    --glass-inset: var(--surface-strong);
+  }
+}
+
+/* Standalone library keeps the existing editor/list scroll contract. */
+:root .app-shell .asset-library-page .asset-studio {
+  height: calc(100dvh - var(--topbar-height) - 190px);
+  min-height: 560px;
+  border-radius: 20px;
+  color: var(--ink);
+  background: var(--glass-panel) !important;
+  box-shadow: var(--glass-shadow);
+  --studio-line: var(--glass-divider);
+}
+
+:root .app-shell .asset-library-page .asset-studio :is(.asset-scope-switch,
+  .asset-category-tabs, .asset-search, .asset-view-switch, .asset-family,
+  .asset-record, .asset-batch-dock) {
+  color: var(--ink-secondary);
+  background: var(--glass-inset);
+  border-color: var(--glass-divider);
+}
+
+:root .app-shell .asset-library-page .asset-studio :is(.asset-scope-switch strong,
+  .asset-record__identity strong, .asset-record__description, .asset-record__prompt,
+  .asset-search input, .asset-category-tabs button, .asset-record__actions button) {
+  color: var(--ink);
+}
+
+:root .app-shell .asset-library-page .asset-studio :is(.asset-scope-switch button[aria-selected='true'],
+  .asset-category-tabs button[aria-pressed='true'], .asset-view-switch button[aria-pressed='true']) {
+  color: var(--brand-strong);
+  background: var(--glass-panel);
+  box-shadow: inset 0 1px 0 var(--glass-highlight);
+}
+
+:root .app-shell .asset-library-page .asset-scope-switch:has(> button:only-child) {
+  grid-template-columns: minmax(0, 1fr);
+}
+
+@media (max-width: 760px) {
+  :root .app-shell .asset-library-page .asset-studio {
+    min-height: 600px;
+    border-radius: 16px;
+  }
+}

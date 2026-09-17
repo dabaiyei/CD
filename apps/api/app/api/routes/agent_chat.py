@@ -82,7 +82,7 @@ from app.services.asset_tasks import (
 from app.services.billing import resolve_task_pricing
 from app.services.image_model_routing import normalize_image_resolution, resolve_image_model
 from app.services.managed_skills import ensure_handbook_package, handbook_manifest
-from app.services.media import ALLOWED_COVER_TYPES, MAX_COVER_BYTES, InvalidCoverImage, save_agent_chat_image
+from app.services.media import MAX_COVER_BYTES, InvalidCoverImage, save_agent_chat_image
 from app.services.object_storage import (
     delete_media_file,
     materialize_media_file,
@@ -490,14 +490,10 @@ async def upload_attachment(
     db: AsyncSession = Depends(get_session),
 ) -> AgentChatAttachmentPublic:
     await project_for_user(db, project_id, user)
-    content_type = (file.content_type or "").lower()
-    if content_type not in ALLOWED_COVER_TYPES:
-        await file.close()
-        raise HTTPException(status_code=422, detail="仅支持 JPG、PNG 或 WebP 图片")
     data = await file.read(MAX_COVER_BYTES + 1)
     await file.close()
     if len(data) > MAX_COVER_BYTES:
-        raise HTTPException(status_code=413, detail="单张图片不能超过 8MB")
+        raise HTTPException(status_code=413, detail="单张图片不能超过 100MB")
 
     stored_path: Path | None = None
     storage_key: str | None = None
@@ -1118,7 +1114,7 @@ async def _storyboard_ready_assets(
     )
     missing: list[str] = []
     for asset in assets:
-        if asset.asset_type.value == "audio":
+        if asset.asset_type.value == "audio" or asset.parent_asset_id:
             continue
         key = object_key_from_media_url(asset.media_url)
         if asset.status != AssetStatus.READY or not key:
@@ -1551,6 +1547,25 @@ async def apply_project_file_changes(
                     dispatches=task_dispatches,
                 )
                 outcomes.append(outcome)
+                continue
+            if name == "cineforge-character-techniques.json":
+                from app.services.combat_techniques import TechniqueDesignRequest, queue_design
+                from app.api.routes.assets import require_assets_writable
+                try:
+                    command = json.loads(content or "")
+                    owner = await db.get(Asset, str(command.get("asset_id", "")))
+                    if owner is None or owner.project_id != project.id or owner.user_id != user.id:
+                        raise HTTPException(404, "招式所属人物不存在")
+                    await require_assets_writable(db, [owner], user)
+                    payload = TechniqueDesignRequest.model_validate(command)
+                    task, event = await queue_design(db, user, owner, payload)
+                    if task_dispatches is not None:
+                        task_dispatches.append((task, event))
+                    outcomes.append({"operation": "queue_character_technique_design", "name": owner.name,
+                        "status": "applied", "reason": None, "resource_type": "ai_task", "resource_id": task.id, "task_id": task.id})
+                except (ValueError, TypeError, AttributeError, HTTPException) as exc:
+                    outcomes.append(rejected_file_change("queue_character_technique_design", name,
+                        str(exc.detail) if isinstance(exc, HTTPException) else "招式设计指令格式无效"))
                 continue
             if "分镜" in name and Path(name).suffix.lower() in {".md", ".txt"}:
                 outcome = await apply_storyboard_version_command(
@@ -2578,15 +2593,11 @@ async def upload_personal_attachment(
     user: User = Depends(get_current_user),
     db: AsyncSession = Depends(get_session),
 ) -> AgentChatAttachmentPublic:
-    content_type = (file.content_type or "").lower()
-    if content_type not in ALLOWED_COVER_TYPES:
-        await file.close()
-        raise HTTPException(status_code=422, detail="仅支持 JPG、PNG 或 WebP 图片")
     data = await file.read(MAX_COVER_BYTES + 1)
     original_name = Path(file.filename or "图片").name
     await file.close()
     if len(data) > MAX_COVER_BYTES:
-        raise HTTPException(status_code=413, detail="单张图片不能超过 8MB")
+        raise HTTPException(status_code=413, detail="单张图片不能超过 100MB")
 
     stored_path: Path | None = None
     storage_key: str | None = None

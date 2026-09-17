@@ -37,7 +37,6 @@ from app.services.agent_runtime import AgentRuntimeClient
 from app.services.billing import resolve_task_pricing
 from app.services.image_model_routing import resolve_image_model
 from app.services.media import (
-    ALLOWED_COVER_TYPES,
     MAX_COVER_BYTES,
     InvalidCoverImage,
     save_project_cover,
@@ -297,13 +296,10 @@ async def upload_project_cover(
     session: AsyncSession = Depends(get_session),
 ) -> Project:
     project = await project_for_user(session, project_id, user)
-    if file.content_type not in ALLOWED_COVER_TYPES:
-        raise HTTPException(status_code=415, detail="仅支持 JPG、PNG 或 WebP 图片")
-
     data = await file.read(MAX_COVER_BYTES + 1)
     await file.close()
     if len(data) > MAX_COVER_BYTES:
-        raise HTTPException(status_code=413, detail="封面图片不能超过 8 MB")
+        raise HTTPException(status_code=413, detail="封面图片不能超过 100 MB")
     if not data:
         raise HTTPException(status_code=422, detail="上传的图片为空")
 

@@ -88,13 +88,33 @@ def build_shot_image_references(
                     "asset_description": asset.description,
                 }
             )
+            if (asset.asset_metadata or {}).get("combat_technique"):
+                owner = assets_by_id.get(getattr(asset, "parent_asset_id", None))
+                reference["role"] = "technique_reference"
+                reference["owner_asset_id"] = owner.id if owner else ""
+                reference["owner_name"] = owner.name if owner else ""
+                reference["relationship"] = (
+                    f"招式仅属于{owner.name if owner else asset.name}；只参考特效、武器或召唤物形态。"
+                    "不参考人物性别、面容、服装、站位或镜头构图。"
+                    "依分镜绑定释放手/武器、发力点、目标方向、尺度及遮挡，不增加人物。"
+                )
         references.append(reference)
         by_url[url] = reference
 
-    add_reference(shot.reference_image_url, role="first_frame")
-    for asset_id in shot.asset_ids:
+    identity_asset = next((asset for asset in assets_by_id.values()
+                           if asset.media_url and asset.media_url == shot.reference_image_url), None)
+    add_reference(shot.reference_image_url,
+                  role="asset_reference" if identity_asset else "first_frame", asset=identity_asset)
+    ordered_asset_ids = sorted(shot.asset_ids, key=lambda aid: not bool(
+        (assets_by_id[aid].asset_metadata or {}).get("combat_technique") if aid in assets_by_id else False
+    ))
+    for asset_id in ordered_asset_ids:
         asset = assets_by_id.get(asset_id)
         if asset is not None and asset.media_url:
+            if (asset.asset_metadata or {}).get("combat_technique"):
+                owner = assets_by_id.get(getattr(asset, "parent_asset_id", None))
+                if owner:
+                    add_reference(owner.media_url, role="asset_reference", asset=owner)
             add_reference(asset.media_url, role="asset_reference", asset=asset)
     return references
 
@@ -124,6 +144,10 @@ def build_shot_audio_references(
         asset = assets_by_id.get(asset_id)
         if asset is None or asset.asset_type != AssetType.CHARACTER:
             continue
+        if (asset.asset_metadata or {}).get("combat_technique"):
+            asset = assets_by_id.get(asset.parent_asset_id)
+            if asset is None:
+                continue
         source = asset
         metadata = dict(source.asset_metadata or {})
         if not metadata.get("reference_audio_url") and source.parent_asset_id:

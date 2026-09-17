@@ -67,6 +67,92 @@ body {
   touch-action: pan-x pan-y;
 }
 
+/* Mobile handbook editor: keep the dialog and both editing panes usable. */
+@media (max-width: 700px) {
+  .dialog-content--workbench:has(.handbook-editor-shell) {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    overflow: hidden;
+  }
+
+  .dialog-content--workbench:has(.handbook-editor-shell) .dialog-body {
+    min-width: 0;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 12px;
+  }
+
+  .handbook-editor-shell {
+    display: grid;
+    grid-template-rows: auto auto auto minmax(620px, auto);
+    gap: 12px;
+    min-width: 0;
+    overflow: visible;
+  }
+
+  .handbook-editor-meta,
+  .handbook-editor-fields {
+    width: 100%;
+    min-width: 0;
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .handbook-cover-compact {
+    width: min(100%, 320px);
+    margin-inline: auto;
+  }
+
+  .handbook-file-tabs {
+    width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .handbook-file-tabs button {
+    flex: 0 0 auto;
+    min-height: 40px;
+    padding-inline: 12px;
+    font-size: 11px;
+  }
+
+  .handbook-file-workspace {
+    width: 100%;
+    min-width: 0;
+    min-height: 620px;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(300px, 1fr) minmax(300px, 1fr);
+    overflow: hidden;
+  }
+
+  .handbook-source-editor,
+  .handbook-preview {
+    min-width: 0;
+    min-height: 0;
+  }
+
+  .handbook-source-editor textarea,
+  .handbook-preview .markdown-body {
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
+    overflow-wrap: anywhere;
+    -webkit-overflow-scrolling: touch;
+  }
+
+  .dialog-content--workbench:has(.handbook-editor-shell) .dialog-footer {
+    min-height: 56px;
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+  }
+
+  .dialog-content--workbench:has(.handbook-editor-shell) .dialog-footer .button {
+    min-width: 88px;
+    min-height: 42px;
+  }
+}
+
 button,
 input,
 textarea,
@@ -3300,6 +3386,108 @@ body.agent-focus-open {
   .agent-execution-status-enter-active,
   .agent-execution-status-leave-active {
     transition-duration: 0.01ms;
+  }
+}
+
+/* H5 dialogs must use the full visual viewport; avoid desktop centering gaps. */
+@media (max-width: 760px) {
+  .dialog-overlay {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    height: 100dvh;
+    padding: 0;
+    align-items: stretch;
+    justify-content: stretch;
+  }
+
+  .dialog-content,
+  .dialog-content--wide,
+  .dialog-content--workbench {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    min-width: 0;
+    max-width: none;
+    height: 100dvh;
+    max-height: none;
+    margin: 0;
+    transform: none;
+    border-radius: 0;
+  }
+}
+
+@media (max-width: 700px) {
+  .dialog-content--workbench:has(.handbook-editor-shell) {
+    display: grid;
+    grid-template-rows: auto minmax(0, 1fr) auto;
+    overflow: hidden;
+  }
+  .dialog-content--workbench:has(.handbook-editor-shell) .dialog-body {
+    min-width: 0;
+    min-height: 0;
+    overflow-x: hidden;
+    overflow-y: auto;
+    padding: 12px;
+  }
+  .handbook-editor-shell {
+    display: grid;
+    grid-template-rows: auto auto auto minmax(620px, auto);
+    gap: 12px;
+    min-width: 0;
+    overflow: visible;
+  }
+  .handbook-editor-meta,
+  .handbook-editor-fields {
+    width: 100%;
+    min-width: 0;
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .handbook-cover-compact {
+    width: min(100%, 320px);
+    margin-inline: auto;
+  }
+  .handbook-file-tabs {
+    width: 100%;
+    min-width: 0;
+    overflow-x: auto;
+    overscroll-behavior-x: contain;
+    -webkit-overflow-scrolling: touch;
+  }
+  .handbook-file-tabs button {
+    flex: 0 0 auto;
+    min-height: 40px;
+    padding-inline: 12px;
+    font-size: 11px;
+  }
+  .handbook-file-workspace {
+    width: 100%;
+    min-width: 0;
+    min-height: 620px;
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: minmax(300px, 1fr) minmax(300px, 1fr);
+    overflow: hidden;
+  }
+  .handbook-source-editor,
+  .handbook-preview {
+    min-width: 0;
+    min-height: 0;
+  }
+  .handbook-source-editor textarea,
+  .handbook-preview .markdown-body {
+    min-width: 0;
+    min-height: 0;
+    overflow: auto;
+    overflow-wrap: anywhere;
+    -webkit-overflow-scrolling: touch;
+  }
+  .dialog-content--workbench:has(.handbook-editor-shell) .dialog-footer {
+    min-height: 56px;
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+  }
+  .dialog-content--workbench:has(.handbook-editor-shell) .dialog-footer .button {
+    min-width: 88px;
+    min-height: 42px;
   }
 }
 

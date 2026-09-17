@@ -1130,7 +1130,7 @@ async function loadAutomaticWorkflow(chapterId: string, forceRefresh = false): P
 
 async function startAutomaticWorkflow(): Promise<void> {
   const chapter = selectedChapter.value
-  if (!chapter || automationAction.value || automationLocked.value) return
+  if (!chapter || automationAction.value) return
   if (!chapter.original_content.trim()) {
     toast.show('无法开始全自动制作', { message: '当前章节没有原始文章内容', tone: 'error' })
     return
@@ -1148,8 +1148,8 @@ async function startAutomaticWorkflow(): Promise<void> {
     automaticWorkflowSignature = automaticDetailSignature(detail)
     await activity.refresh()
     scheduleAutomaticWorkflowPoll(chapter.id, 800)
-    toast.show('AI 全自动制作已启动', {
-      message: '本章已锁定，系统会依次完成剧本、资产、分镜和视频',
+    toast.show('AI 全自动进度已同步', {
+      message: detail.workflow.last_message || '复用已完成内容，接续已有任务并推进后续阶段',
       tone: 'success',
     })
   } catch (error) {
@@ -2329,7 +2329,7 @@ function fileSize(bytes: number): string {
             <header><div><strong>本项目塑造资产</strong><span>{{ activeProjectAssetTasks.length ? `${activeProjectAssetTasks.length} 个任务处理中` : `${projectAssets.length} 项资产` }}</span></div><button class="button button--secondary" type="button" @click="openAssetLibrary()"><Boxes :size="15" />管理资产与批量生成</button></header>
             <div v-if="projectAssets.length" class="asset-strip">
               <button v-for="asset in projectAssets.slice(0, 5)" :key="asset.id" type="button" @click="openAssetLibrary('project')">
-                <span><img v-if="asset.media_url" :src="asset.media_url" :alt="asset.name" /><component :is="assetTypeIcon[asset.asset_type]" v-else :size="20" /><i v-if="isAssetBusy(asset.id)"><LoaderCircle class="spin" :size="13" /></i></span>
+                <span><img v-image-preview="asset.media_url" v-if="asset.media_url" :src="asset.media_url" :alt="asset.name" /><component :is="assetTypeIcon[asset.asset_type]" v-else :size="20" /><i v-if="isAssetBusy(asset.id)"><LoaderCircle class="spin" :size="13" /></i></span>
                 <strong>{{ asset.name }}</strong><small>{{ assetStatusLabel[asset.status] }}</small>
               </button>
             </div>
@@ -2354,7 +2354,7 @@ function fileSize(bytes: number): string {
             <article v-for="(shot, index) in storyboardDetail.shots" :key="shot.id" v-motion="{ preset: 'card', index }" class="shot-card">
               <div class="shot-card__visual">
                 <video v-if="activeClips.get(shot.id)?.is_active && activeClips.get(shot.id)?.media_url" :src="activeClips.get(shot.id)?.media_url || undefined" controls preload="metadata"></video>
-                <img v-else-if="shot.reference_image_url" :src="shot.reference_image_url" :alt="shot.title" />
+                <img v-image-preview="shot.reference_image_url" v-else-if="shot.reference_image_url" :src="shot.reference_image_url" :alt="shot.title" />
                 <span v-else><Camera :size="28" /><small>等待镜头画面</small></span>
                 <b class="shot-card__number tabular-nums">{{ String(shot.order_index).padStart(2, '0') }}</b>
                 <i v-if="busyShotIds.has(shot.id)" class="shot-card__status"><LoaderCircle class="spin" :size="14" />{{ activeClips.get(shot.id)?.status === 'generating' ? '视频生成中' : '视频排队中' }}</i>
@@ -2365,7 +2365,7 @@ function fileSize(bytes: number): string {
                 <div class="shot-card__meta"><span><Camera :size="13" />{{ shot.shot_type }}</span><span><Clock3 :size="13" /><b class="tabular-nums">{{ shot.duration_seconds }}</b> 秒</span></div>
                 <p>{{ shot.scene_description }}</p><p class="shot-card__action">{{ shot.action_description }}</p>
                 <blockquote v-if="shot.dialogue"><MessageSquareText :size="14" />{{ shot.dialogue }}</blockquote>
-                <div v-if="shotAssets(shot).length" class="shot-assets"><span v-for="asset in shotAssets(shot)" :key="asset.id"><img v-if="asset.media_url" :src="asset.media_url" :alt="asset.name" /><component :is="assetTypeIcon[asset.asset_type]" v-else :size="12" />{{ asset.name }}</span></div>
+                <div v-if="shotAssets(shot).length" class="shot-assets"><span v-for="asset in shotAssets(shot)" :key="asset.id"><img v-image-preview="asset.media_url" v-if="asset.media_url" :src="asset.media_url" :alt="asset.name" /><component :is="assetTypeIcon[asset.asset_type]" v-else :size="12" />{{ asset.name }}</span></div>
               </div>
               <footer><span v-if="activeClips.get(shot.id)?.is_active"><CircleCheckBig :size="14" />视频 v{{ activeClips.get(shot.id)?.version }} 已生效</span><span v-else><Film :size="14" />尚无生效视频</span><button class="button" :class="activeClips.get(shot.id)?.is_active ? 'button--secondary' : 'button--primary'" type="button" :disabled="!storyboardDetail.version.is_active || busyShotIds.has(shot.id) || !shot.video_prompt" @click="queueShotVideo(shot)"><LoaderCircle v-if="busyShotIds.has(shot.id)" class="spin" :size="15" /><RefreshCw v-else-if="activeClips.get(shot.id)?.is_active" :size="15" /><Play v-else :size="15" />{{ busyShotIds.has(shot.id) ? '处理中' : activeClips.get(shot.id)?.is_active ? '重新生成' : '生成视频' }}<small>{{ price('shot_video_generation', 60) }} 积分</small></button></footer>
             </article>
@@ -2379,7 +2379,7 @@ function fileSize(bytes: number): string {
                 class="video-reference-tile"
                 :title="reference.name"
               >
-                <img :src="reference.url" :alt="reference.name" />
+                <img v-image-preview="reference.url" :src="reference.url" :alt="reference.name" />
                 <span>{{ reference.name }}</span>
               </button>
               <button class="video-reference-tile video-reference-tile--empty" type="button" @click="openAssetLibrary()">
@@ -2461,8 +2461,8 @@ function fileSize(bytes: number): string {
                   <button type="button" :aria-pressed="selectedVideoShotIds.includes(shot.id)" @click.stop="toggleVideoShotSelection(shot.id)"><Check :size="13" /></button>
                   <span>
                     <video v-if="activeClips.get(shot.id)?.media_url" :src="activeClips.get(shot.id)?.media_url || undefined" preload="metadata"></video>
-                    <img v-else-if="shot.reference_image_url" :src="shot.reference_image_url" :alt="shot.title" />
-                    <img v-else-if="shotAssets(shot)[0]?.media_url" :src="shotAssets(shot)[0]?.media_url || undefined" :alt="shot.title" />
+                    <img v-image-preview="shot.reference_image_url" v-else-if="shot.reference_image_url" :src="shot.reference_image_url" :alt="shot.title" />
+                    <img v-image-preview="shotAssets(shot)[0]?.media_url || undefined" v-else-if="shotAssets(shot)[0]?.media_url" :src="shotAssets(shot)[0]?.media_url || undefined" :alt="shot.title" />
                     <Camera v-else :size="20" />
                   </span>
                   <b class="tabular-nums">#{{ shot.order_index }}</b>
@@ -2484,7 +2484,7 @@ function fileSize(bytes: number): string {
             <header><div><UserRoundCog :size="15" /><strong>角色选角</strong></div><span>{{ dubbingOptions.voice_bindings.filter((item) => item.enabled).length }} / {{ dubbingOptions.character_assets.length }} 已绑定</span></header>
             <div v-if="dubbingOptions.character_assets.length" class="voice-casting__rail">
               <article v-for="(character, index) in dubbingOptions.character_assets" :key="character.id" v-motion="{ preset: 'card', index }" :class="{ bound: Boolean(voiceBindingForCharacter(character.id)) }">
-                <button class="voice-character" type="button" @click="openVoiceBinding(character)"><span><img v-if="character.media_url" :src="character.media_url" :alt="character.name" /><UsersRound v-else :size="19" /><i><Mic2 :size="11" /></i></span><span><strong>{{ character.name }}</strong><small>{{ voiceBindingForCharacter(character.id)?.provider_voice_name || voiceBindingForCharacter(character.id)?.provider_voice_id || '待绑定音色' }}</small></span><ChevronRight :size="15" /></button>
+                <button class="voice-character" type="button" @click="openVoiceBinding(character)"><span><img v-image-preview="character.media_url" v-if="character.media_url" :src="character.media_url" :alt="character.name" /><UsersRound v-else :size="19" /><i><Mic2 :size="11" /></i></span><span><strong>{{ character.name }}</strong><small>{{ voiceBindingForCharacter(character.id)?.provider_voice_name || voiceBindingForCharacter(character.id)?.provider_voice_id || '待绑定音色' }}</small></span><ChevronRight :size="15" /></button>
                 <button v-if="voiceBindingForCharacter(character.id)" class="voice-binding-remove" type="button" :title="`移除${character.name}的音色`" @click="removeVoiceBinding(character)"><Trash2 :size="13" /></button>
               </article>
             </div>
@@ -2502,7 +2502,7 @@ function fileSize(bytes: number): string {
           <div v-else-if="dialogueDetail?.lines.length" class="dialogue-list">
             <article v-for="(line, index) in dialogueDetail.lines" :key="line.id" v-motion="{ preset: 'row', index }" class="dialogue-row" :class="{ playing: playingLineId === line.id }">
               <div class="dialogue-row__order tabular-nums">{{ String(line.order_index).padStart(2, '0') }}</div>
-              <div class="dialogue-row__avatar"><img v-if="characterForSpeaker(line.speaker)?.media_url" :src="characterForSpeaker(line.speaker)?.media_url || undefined" :alt="line.speaker" /><UsersRound v-else :size="18" /></div>
+              <div class="dialogue-row__avatar"><img v-image-preview="characterForSpeaker(line.speaker)?.media_url || undefined" v-if="characterForSpeaker(line.speaker)?.media_url" :src="characterForSpeaker(line.speaker)?.media_url || undefined" :alt="line.speaker" /><UsersRound v-else :size="18" /></div>
               <div class="dialogue-row__copy"><header><strong>{{ line.speaker }}</strong><span>{{ line.emotion || '自然' }}</span><small v-if="line.shot_id">已匹配分镜</small><button class="icon-button icon-button--small" type="button" title="编辑台词" :disabled="!dialogueDetail.version.is_active" @click="openDialogueLineEditor(line)"><Pencil :size="13" /></button></header><p>{{ line.text }}</p><small v-if="line.direction">{{ line.direction }}</small></div>
               <div class="dialogue-row__voice"><span :data-ready="Boolean(bindingForLine(line))"><Mic2 :size="13" />{{ bindingForLine(line)?.provider_voice_name || bindingForLine(line)?.provider_voice_id || '未绑定' }}</span><small v-if="activeAudioClips.get(line.id)?.is_active">配音 v{{ activeAudioClips.get(line.id)?.version }} · {{ activeAudioClips.get(line.id)?.duration_seconds || '--' }}s</small><small v-else-if="activeAudioClips.get(line.id)?.status === 'failed'" class="failed">{{ activeAudioClips.get(line.id)?.error_message || '生成失败' }}</small><small v-else>台词稿 v{{ line.version }}</small></div>
               <div class="dialogue-row__actions">
@@ -2583,7 +2583,7 @@ function fileSize(bytes: number): string {
           </div>
         </div>
         <nav class="asset-type-filter" aria-label="资产类型"><button v-for="type in assetTypes" :key="type.value" :class="{ active: assetTypeFilter === type.value }" type="button" @click="assetTypeFilter = type.value"><component :is="type.icon" :size="15" />{{ type.label }}</button></nav>
-        <div class="asset-grid"><article v-for="(asset, index) in visibleAssets" :key="asset.id" v-motion="{ preset: 'card', index }" class="asset-card" :class="{ selected: selectedAssetIds.includes(asset.id), busy: isAssetBusy(asset.id), derivative: Boolean(asset.parent_asset_id) }"><div class="asset-card__visual"><img v-if="asset.media_url" :src="asset.media_url || undefined" :alt="asset.name" /><component :is="assetTypeIcon[asset.asset_type]" v-else :size="25" /><span>{{ assetTypeLabel[asset.asset_type] }}</span><button v-if="asset.scope === 'project'" class="asset-card__select" type="button" :aria-label="`选择${asset.name}`" :aria-pressed="selectedAssetIds.includes(asset.id)" @click="toggleAssetSelection(asset.id)"><Check :size="14" /></button><i v-if="isAssetBusy(asset.id)" class="asset-card__busy"><LoaderCircle class="spin" :size="17" />任务处理中</i></div><div class="asset-card__body"><header><strong>{{ asset.name }}</strong><span :data-status="asset.status">{{ isAssetBusy(asset.id) ? '任务处理中' : assetStatusLabel[asset.status] }}</span></header><p>{{ asset.description || '暂无资产说明' }}</p><small v-if="asset.parent_asset_id"><GitBranchPlus :size="12" />衍生自 {{ assetParent(asset)?.name || '基础资产' }}</small></div><footer><button type="button" @click="transferAsset(asset)"><ArrowUpFromLine v-if="asset.scope === 'project'" :size="14" /><ArrowDownToLine v-else :size="14" />{{ asset.scope === 'project' ? '导出全局' : '导入项目' }}</button><button class="icon-button icon-button--small" type="button" title="编辑资产" @click="openAssetEditor(asset)"><Pencil :size="14" /></button><button class="icon-button icon-button--small icon-button--danger" type="button" title="删除资产" @click="confirmAssetDelete(asset)"><Trash2 :size="14" /></button></footer></article><div v-if="!visibleAssets.length" class="asset-empty"><Boxes :size="28" /><strong>这里还没有资产</strong><span>{{ assetScope === 'project' ? '从剧本提取，或从全局资产库导入' : '创建可供租户内项目复用的资产' }}</span></div></div>
+        <div class="asset-grid"><article v-for="(asset, index) in visibleAssets" :key="asset.id" v-motion="{ preset: 'card', index }" class="asset-card" :class="{ selected: selectedAssetIds.includes(asset.id), busy: isAssetBusy(asset.id), derivative: Boolean(asset.parent_asset_id) }"><div class="asset-card__visual"><img v-image-preview="asset.media_url || undefined" v-if="asset.media_url" :src="asset.media_url || undefined" :alt="asset.name" /><component :is="assetTypeIcon[asset.asset_type]" v-else :size="25" /><span>{{ assetTypeLabel[asset.asset_type] }}</span><button v-if="asset.scope === 'project'" class="asset-card__select" type="button" :aria-label="`选择${asset.name}`" :aria-pressed="selectedAssetIds.includes(asset.id)" @click="toggleAssetSelection(asset.id)"><Check :size="14" /></button><i v-if="isAssetBusy(asset.id)" class="asset-card__busy"><LoaderCircle class="spin" :size="17" />任务处理中</i></div><div class="asset-card__body"><header><strong>{{ asset.name }}</strong><span :data-status="asset.status">{{ isAssetBusy(asset.id) ? '任务处理中' : assetStatusLabel[asset.status] }}</span></header><p>{{ asset.description || '暂无资产说明' }}</p><small v-if="asset.parent_asset_id"><GitBranchPlus :size="12" />衍生自 {{ assetParent(asset)?.name || '基础资产' }}</small></div><footer><button type="button" @click="transferAsset(asset)"><ArrowUpFromLine v-if="asset.scope === 'project'" :size="14" /><ArrowDownToLine v-else :size="14" />{{ asset.scope === 'project' ? '导出全局' : '导入项目' }}</button><button class="icon-button icon-button--small" type="button" title="编辑资产" @click="openAssetEditor(asset)"><Pencil :size="14" /></button><button class="icon-button icon-button--small icon-button--danger" type="button" title="删除资产" @click="confirmAssetDelete(asset)"><Trash2 :size="14" /></button></footer></article><div v-if="!visibleAssets.length" class="asset-empty"><Boxes :size="28" /><strong>这里还没有资产</strong><span>{{ assetScope === 'project' ? '从剧本提取，或从全局资产库导入' : '创建可供租户内项目复用的资产' }}</span></div></div>
       </div>
     </BaseDialog>
 
@@ -2600,7 +2600,7 @@ function fileSize(bytes: number): string {
           <div v-if="assetForm.is_derivative" class="asset-parent-picker">
             <span>选择基础资产</span>
             <div v-if="assetFormParentCandidates.length">
-              <button v-for="candidate in assetFormParentCandidates" :key="candidate.id" type="button" :aria-pressed="assetForm.parent_asset_id === candidate.id" @click="assetForm.parent_asset_id = candidate.id"><span><img v-if="candidate.media_url" :src="candidate.media_url" :alt="candidate.name" /><component :is="assetTypeIcon[candidate.asset_type]" v-else :size="18" /></span><span><strong>{{ candidate.name }}</strong><small>{{ assetTypeLabel[candidate.asset_type] }}基础资产</small></span><CircleCheckBig :size="15" /></button>
+              <button v-for="candidate in assetFormParentCandidates" :key="candidate.id" type="button" :aria-pressed="assetForm.parent_asset_id === candidate.id" @click="assetForm.parent_asset_id = candidate.id"><span><img v-image-preview="candidate.media_url" v-if="candidate.media_url" :src="candidate.media_url" :alt="candidate.name" /><component :is="assetTypeIcon[candidate.asset_type]" v-else :size="18" /></span><span><strong>{{ candidate.name }}</strong><small>{{ assetTypeLabel[candidate.asset_type] }}基础资产</small></span><CircleCheckBig :size="15" /></button>
             </div>
             <aside v-else><TriangleAlert :size="17" /><span><strong>暂无可用基础资产</strong><small>请先在当前资产库创建同类型基础资产</small></span></aside>
           </div>
@@ -2619,7 +2619,7 @@ function fileSize(bytes: number): string {
             </button>
           </div>
           <section :key="selectedAssetRevision.id" class="asset-history__preview">
-            <div><img v-if="selectedAssetRevision.media_url" :src="selectedAssetRevision.media_url" :alt="selectedAssetRevision.name" /><component :is="assetTypeIcon[assetForm.asset_type]" v-else :size="24" /></div>
+            <div><img v-image-preview="selectedAssetRevision.media_url" v-if="selectedAssetRevision.media_url" :src="selectedAssetRevision.media_url" :alt="selectedAssetRevision.name" /><component :is="assetTypeIcon[assetForm.asset_type]" v-else :size="24" /></div>
             <header><span><strong>{{ selectedAssetRevision.name }}</strong><small>{{ assetStatusLabel[selectedAssetRevision.status] }}</small></span><b class="tabular-nums">v{{ selectedAssetRevision.version }}</b></header>
             <p>{{ selectedAssetRevision.description || '此版本没有资产说明' }}</p>
             <details v-if="selectedAssetRevision.generation_prompt"><summary>查看生图提示词</summary><p>{{ selectedAssetRevision.generation_prompt }}</p></details>
@@ -2633,7 +2633,7 @@ function fileSize(bytes: number): string {
 
     <BaseDialog :open="voiceBindingOpen" :title="`角色音色 · ${bindingCharacter?.name || ''}`" description="绑定租户 TTS 模型与平台音色标识" wide @update:open="voiceBindingOpen = $event">
       <form id="voice-binding-form" class="voice-binding-form" @submit.prevent="saveVoiceBinding">
-        <section class="voice-binding-identity"><span><img v-if="bindingCharacter?.media_url" :src="bindingCharacter.media_url" :alt="bindingCharacter.name" /><UsersRound v-else :size="25" /></span><div><small>CHARACTER VOICE</small><strong>{{ bindingCharacter?.name }}</strong><p>{{ bindingCharacter?.description || '暂无角色说明' }}</p></div></section>
+        <section class="voice-binding-identity"><span><img v-image-preview="bindingCharacter.media_url" v-if="bindingCharacter?.media_url" :src="bindingCharacter.media_url" :alt="bindingCharacter.name" /><UsersRound v-else :size="25" /></span><div><small>CHARACTER VOICE</small><strong>{{ bindingCharacter?.name }}</strong><p>{{ bindingCharacter?.description || '暂无角色说明' }}</p></div></section>
         <div class="field"><span>配音模型</span><div v-if="dubbingOptions.tts_models.length" class="tts-model-picker"><button v-for="model in dubbingOptions.tts_models" :key="model.id" type="button" :class="{ active: voiceForm.tts_model_id === model.id }" @click="voiceForm.tts_model_id = model.id"><span><AudioLines :size="17" /></span><span><strong>{{ model.name }}</strong><small>{{ model.model_id }}</small></span><CircleCheckBig :size="15" /></button></div><div v-else class="tts-model-empty"><TriangleAlert :size="17" />管理员尚未配置可用 TTS 模型</div></div>
         <div class="voice-binding-grid"><label class="field"><span>平台音色 ID</span><input v-model="voiceForm.provider_voice_id" required maxlength="255" placeholder="例如：voice_linyao_01" /></label><label class="field"><span>显示名称</span><input v-model="voiceForm.provider_voice_name" maxlength="255" placeholder="例如：林遥 · 克制女声" /></label></div>
         <label class="field"><span>表演风格</span><input v-model="voiceForm.style" maxlength="255" placeholder="自然对白、电影旁白、紧张克制…" /></label>

@@ -18,3 +18,5 @@ skills/tenants/
 *.log.*.bak
 /=
 .DS_Store
+site-backups/
+*.cfbackup

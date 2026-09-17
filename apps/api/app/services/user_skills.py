@@ -34,6 +34,7 @@ USER_SKILL_STAGE_LABELS: dict[UserSkillStage, str] = {
 }
 
 PROMPT_USER_SKILL_STAGES: dict[str, tuple[UserSkillStage, ...]] = {
+    "character-technique-design": (UserSkillStage.ASSET_PROMPT_GENERATION,),
     "project-ai-creation": (UserSkillStage.SCRIPT_GENERATION,),
     "script-generation": (UserSkillStage.SCRIPT_GENERATION,),
     "script-review": (UserSkillStage.SCRIPT_REVIEW,),

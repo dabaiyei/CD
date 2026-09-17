@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { MAX_IMAGE_UPLOAD_BYTES, isSupportedImage } from '@/lib/imageUpload'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import type { ComponentPublicInstance } from 'vue'
@@ -133,13 +134,12 @@ const deletingSession = ref(false)
 const previewMedia = ref<AgentGeneratedMedia | null>(null)
 const directorWorkflow = ref<DirectorWorkflowDetail | null>(null)
 const directorDecisionAction = ref('')
-const supportedAttachmentTypes = new Set(['image/jpeg', 'image/png', 'image/webp'])
 const attachmentExtensions: Record<string, string> = {
   'image/jpeg': 'jpg',
   'image/png': 'png',
   'image/webp': 'webp',
 }
-const maxAttachmentBytes = 8 * 1024 * 1024
+const maxAttachmentBytes = MAX_IMAGE_UPLOAD_BYTES
 const maxAttachmentCount = 4
 let loadVersion = 0
 let runPollTimer: ReturnType<typeof setTimeout> | undefined
@@ -1025,12 +1025,12 @@ async function pasteAttachments(event: ClipboardEvent): Promise<void> {
   const clipboard = event.clipboardData
   if (!clipboard) return
   const itemFiles = Array.from(clipboard.items)
-    .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+    .filter((item) => item.kind === 'file')
     .map((item) => item.getAsFile())
-    .filter((file): file is File => Boolean(file))
+    .filter((file): file is File => Boolean(file) && isSupportedImage(file!))
   const files = itemFiles.length
     ? itemFiles
-    : Array.from(clipboard.files).filter((file) => file.type.startsWith('image/'))
+    : Array.from(clipboard.files).filter(isSupportedImage)
   if (!files.length) return
 
   event.preventDefault()
@@ -1064,16 +1064,16 @@ async function uploadAttachmentFiles(files: File[], fromClipboard = false): Prom
   try {
     for (const [index, file] of files.slice(0, available).entries()) {
       const fileLabel = file.name || '剪贴板图片'
-      if (!supportedAttachmentTypes.has(file.type)) {
+      if (!isSupportedImage(file)) {
         toast.show('图片格式不支持', { message: `${fileLabel} 不是 JPG、PNG 或 WebP`, tone: 'error' })
         continue
       }
       if (file.size > maxAttachmentBytes) {
-        toast.show('图片过大', { message: `${fileLabel} 超过 8MB`, tone: 'error' })
+        toast.show('图片过大', { message: `${fileLabel} 超过 100MB`, tone: 'error' })
         continue
       }
       const body = new FormData()
-      const extension = attachmentExtensions[file.type]
+      const extension = attachmentExtensions[file.type] || 'jpg'
       const filename = file.name || `clipboard-${Date.now()}-${index + 1}.${extension}`
       body.append('file', file, filename)
       const attachment = await api<AgentChatAttachment>(

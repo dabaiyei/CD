@@ -81,7 +81,7 @@ SYSTEM_PROMPTS = (
     ),
     ("script-review", "剧本审核", "独立审核短剧剧本的结构、逻辑、节奏、可视化程度和可制作性。"),
     ("script-repair", "剧本修复", "根据审核问题和用户意见局部修复或完整重写剧本。"),
-    ("script-asset-extraction", "剧本资产提取", "提取角色、场景、道具及其衍生状态。"),
+    ("script-asset-extraction", "剧本资产提取", "剧本阶段提取基础角色、场景、道具；分镜后统一提取衍生状态。"),
     (
         "asset-prompt-generation",
         "资产提示词生成",
@@ -95,6 +95,7 @@ SYSTEM_PROMPTS = (
     ("storyboard-review", "分镜审核", "审核分镜的叙事覆盖、轴线、连续性、节奏和执行可行性。"),
     ("storyboard-repair", "分镜修复", "根据审核问题和用户意见局部修复或重新生成分镜。"),
     ("video-prompt-generation", "视频提示词生成", "基于分镜和视觉手册生成可执行的视频模型提示词。"),
+    ("character-technique-design", "人物招式与神通设计", "设计人物独有招式、大招、召唤、法相与可复用视觉记忆。"),
     ("voice-binding", "音色绑定", "依据角色年龄、性格、处境和台词情绪匹配音色。"),
     (
         "dialogue-extraction",
@@ -124,6 +125,10 @@ HANDBOOK_TASK_FILES: dict[str, dict[HandbookType, tuple[str, ...]]] = {
     "chapter-analysis": {
         HandbookType.VISUAL: ("README.md", "prefix.md"),
         HandbookType.DIRECTOR: ("README.md", "director-planning.md"),
+    },
+    "character-technique-design": {
+        HandbookType.VISUAL: ("README.md", "prefix.md", "character.md", "character-derivative.md", "storyboard.md"),
+        HandbookType.DIRECTOR: ("README.md", "director-planning.md", "storyboard-table.md"),
     },
     "script-generation": {
         HandbookType.VISUAL: ("README.md", "prefix.md"),

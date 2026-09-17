@@ -143,6 +143,7 @@ async def restore_chapter_status(session: AsyncSession, task: AITask) -> None:
 @router.get("", response_model=TaskPage)
 async def list_tasks(
     project_id: str | None = None,
+    task_type: str | None = Query(default=None, max_length=80),
     task_status: TaskStatus | None = Query(default=None, alias="status"),
     before: datetime | None = None,
     limit: int = Query(default=30, ge=1, le=100),
@@ -156,6 +157,8 @@ async def list_tasks(
     )
     if project_id:
         query = query.where(AITask.project_id == project_id)
+    if task_type:
+        query = query.where(AITask.task_type == task_type)
     if task_status:
         query = query.where(AITask.status == task_status)
     if before:
@@ -302,6 +305,9 @@ async def retry_task(
     task = await task_for_user(session, task_id, user, for_update=True)
     if task.status not in {TaskStatus.FAILED, TaskStatus.CANCELLED}:
         raise HTTPException(status_code=409, detail="只有失败或已取消的任务可以重试")
+    if task.task_type == "shot_video_prompt_generation":
+        task.request_payload = {**task.request_payload, "first_frame_waiting": False,
+            "first_frame_attempts": {}, "first_frame_task_ids": []}
     if task.task_type == "project_ai_creation":
         project = await session.get(Project, task.project_id)
         if project is None or project.creation_state.get("task_id") != task.id:

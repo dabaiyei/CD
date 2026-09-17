@@ -10,6 +10,9 @@ from app.services.task_queue import publish_user_event
 
 TERMINAL_STATUSES = {TaskStatus.SUCCEEDED, TaskStatus.FAILED, TaskStatus.CANCELLED}
 TASK_TITLES = {
+    "character_technique_design": "人物招式设计",
+    "shot_first_frame_generation": "战斗镜头首帧",
+    "visual_handbook_generation": "AI 画风手册创建",
     "project_ai_creation": "AI 项目创作",
     "agent_chat_run": "Agent 创作回复",
     "project_cover_generation": "项目封面生成",

@@ -589,7 +589,12 @@ class FakeWorkflowRuntime:
 
     async def run(self, request: AgentRuntimeRequest) -> AgentRuntimeResponse:
         self.requests.append(request)
-        if "asset_type 只能是" in request.prompt:
+        if "本批完整分镜：" in request.prompt:
+            rows = json.loads(request.prompt.split("本批完整分镜：", 1)[1])
+            response = {"assets": [], "shots": [
+                {"order_index": row["order_index"], "asset_names": row["asset_names"]}
+                for row in rows]}
+        elif "asset_type 只能是" in request.prompt:
             response = {
                 "assets": [
                     {
@@ -1171,7 +1176,7 @@ def test_user_avatar_rejects_invalid_images(
         headers=creator_headers,
         files={"file": ("avatar.gif", b"GIF89a", "image/gif")},
     )
-    assert unsupported.status_code == 415
+    assert unsupported.status_code == 422
 
     damaged = client.put(
         "/api/v1/auth/me/avatar",
@@ -5247,6 +5252,88 @@ def test_automatic_director_workflow_resumes_from_approved_script(
     assert detail["workflow"]["context_snapshot"]["resumed_from_chapter_progress"] is True
     assert [child["kind"] for child in detail["child_runs"]] == ["asset_extraction"]
 
+    # Taking over a manually started in-flight workflow preserves the task and
+    # repeated clicks must not submit or charge for another extraction.
+    async def make_manual() -> None:
+        async with SessionLocal() as session:
+            workflow = await session.get(DirectorWorkflowRun, detail["workflow"]["id"])
+            workflow.automation_mode = False
+            await session.commit()
+
+    asyncio.run(make_manual())
+    for _ in range(2):
+        continued = client.post(
+            f"/api/v1/projects/{project_id}/chapters/{chapter_id}/director-workflow/automatic",
+            headers=creator_headers, json={"instruction": "继续"},
+        )
+        assert continued.status_code == 202, continued.text
+        current = continued.json()
+        assert current["workflow"]["id"] == detail["workflow"]["id"]
+        assert current["workflow"]["automation_mode"] is True
+        assert [c["task_id"] for c in current["child_runs"]] == [c["task_id"] for c in detail["child_runs"]]
+
+    # A task submitted from a manual endpoint has no workflow child yet.
+    # The automatic flow must adopt that task rather than pay for a duplicate.
+    async def detach_manual_task() -> None:
+        async with SessionLocal() as session:
+            child = await session.get(DirectorChildRun, detail["child_runs"][0]["id"])
+            task = await session.get(AITask, child.task_id)
+            task.request_payload = {k: v for k, v in task.request_payload.items()
+                                    if k not in {"workflow_id", "child_run_id"}}
+            workflow = await session.get(DirectorWorkflowRun, detail["workflow"]["id"])
+            await session.delete(child)
+            await session.flush()
+            await session.delete(workflow)
+            await session.commit()
+
+    asyncio.run(detach_manual_task())
+    adopted = client.post(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/director-workflow/automatic",
+        headers=creator_headers, json={"instruction": "接着手动任务继续"},
+    )
+    assert adopted.status_code == 202, adopted.text
+    assert [c["task_id"] for c in adopted.json()["child_runs"]] == [c["task_id"] for c in detail["child_runs"]]
+
+
+def test_director_credit_recovery_failure_is_local_to_workflow(
+    client, creator_headers, admin_headers, monkeypatch,
+):
+    from fastapi import HTTPException
+    from app.services import director_orchestration as orchestration
+
+    grant_creator_test_credits(client, creator_headers, admin_headers)
+    project_id = client.get("/api/v1/projects", headers=creator_headers).json()[1]["id"]
+    imported = client.post(f"/api/v1/projects/{project_id}/sources/import", headers=creator_headers,
+                           data={"mode": "novel", "source_name": "积分隔离", "pasted_text": "第一章 重逢\n林遥走进房间。"}).json()
+    chapter_id = imported["chapters"][0]["id"]
+    path = f"/api/v1/projects/{project_id}/chapters/{chapter_id}/director-workflow"
+    started = client.post(f"{path}/automatic", headers=creator_headers,
+                          json={"instruction": "自动完成"}).json()
+    task_id = started["workflow"]["current_task_id"]
+
+    async def mark_terminal():
+        async with SessionLocal() as session:
+            task = await session.get(AITask, task_id)
+            task.status = TaskStatus.SUCCEEDED
+            await session.commit()
+
+    async def billing_rejection(_task_id):
+        raise HTTPException(status_code=402, detail="积分不足")
+
+    asyncio.run(mark_terminal())
+    monkeypatch.setattr(orchestration, "_advance_director_task_terminal", billing_rejection)
+    asyncio.run(recover_automatic_workflows())
+    detail = client.get(path, headers=creator_headers).json()
+    assert detail["workflow"]["status"] == "failed"
+    assert detail["workflow"]["current_task_id"] is None
+    assert "积分不足" in detail["workflow"]["last_error"]
+    assert detail["child_runs"][0]["status"] == "succeeded"
+    assert asyncio.run(recover_automatic_workflows()) == 0
+    notifications = client.get("/api/v1/notifications", headers=creator_headers).json()["items"]
+    assert sum(item["title"] == "自动流程因积分不足暂停" for item in notifications) == 1
+    task = client.get(f"/api/v1/tasks/{task_id}", headers=creator_headers).json()
+    assert task["status"] == "succeeded"
+
 
 def test_automatic_director_workflow_recovers_after_worker_restart(
     client: TestClient,
@@ -5734,7 +5821,9 @@ def test_asset_ai_pipeline_extracts_prompts_and_generates_persistent_images(
         json={"asset_ids": [asset_ids[0]]},
     )
     assert duplicate_images.status_code == 409
-    for task in image_tasks.json():
+    from app.services.task_worker import queued_provider_candidates
+    for task in sorted(image_tasks.json(), key=lambda item: bool(item["request_payload"].get("asset_parent_waiting"))):
+        asyncio.run(queued_provider_candidates())
         assert (
             asyncio.run(
                 process_task(
@@ -6148,11 +6237,15 @@ def test_storyboard_and_restart_safe_video_pipeline(
     assert any(item["kind"] == "video" for item in project_files)
 
 
+@pytest.mark.parametrize("fail_once", [False, True])
 def test_storyboard_batch_video_prompt_and_video_queue(
     client: TestClient,
     creator_headers: dict[str, str],
     admin_headers: dict[str, str],
+    monkeypatch,
+    fail_once,
 ) -> None:
+    # Each shot commits independently and failed attempts resume from saved checkpoints.
     provider_id = client.get("/api/v1/admin/providers", headers=admin_headers).json()[0]["id"]
     assert client.patch(
         f"/api/v1/admin/providers/{provider_id}",
@@ -6244,8 +6337,35 @@ def test_storyboard_batch_video_prompt_and_video_queue(
     assert prompt_task.status_code == 202
     assert prompt_task.json()["task_type"] == "shot_video_prompt_generation"
     assert len(prompt_task.json()["request_payload"]["shot_ids"]) == 2
-    runtime = FakeWorkflowRuntime()
+    class PartialFailureRuntime(FakeWorkflowRuntime):
+        failed = False
+
+        async def run(self, request):
+            if fail_once and len(self.requests) == 1 and not self.failed:
+                self.failed = True
+                raise RuntimeError("second shot failed")
+            return await super().run(request)
+
+    runtime = PartialFailureRuntime()
     assert asyncio.run(process_task(prompt_task.json()["id"], runtime_factory=lambda: runtime)) is True
+    if fail_once:
+        detail = client.get(
+            f"/api/v1/projects/{project_id}/chapters/{chapter_id}/storyboards/{storyboard_id}",
+            headers=creator_headers,
+        ).json()
+        assert bool(detail["shots"][0]["video_prompt"])
+        assert not detail["shots"][1]["video_prompt"]
+        saved_version = detail["shots"][0]["version"]
+        retry = client.post(f"/api/v1/tasks/{prompt_task.json()['id']}/retry", headers=creator_headers)
+        assert retry.status_code == 202, retry.text
+        assert asyncio.run(process_task(prompt_task.json()["id"], runtime_factory=lambda: runtime))
+        detail = client.get(
+            f"/api/v1/projects/{project_id}/chapters/{chapter_id}/storyboards/{storyboard_id}",
+            headers=creator_headers,
+        ).json()
+        assert detail["shots"][0]["version"] == saved_version
+    assert len(runtime.requests) == 2
+    assert runtime.requests[0].session_id != runtime.requests[1].session_id
     prompt_request = runtime.requests[-1]
     assert '"name": "generic"' in prompt_request.prompt
     assert '"preferred_prompt_language": "zh-CN"' in prompt_request.prompt
@@ -7823,11 +7943,11 @@ def test_storyboard_duration_contract_uses_narrative_bands_without_shortening() 
 
     contract = task_worker.storyboard_duration_contract(model)
 
-    assert contract["supported_durations_seconds"] == [float(value) for value in range(4, 16)]
+    assert contract["supported_durations_seconds"] == [float(value) for value in range(4, 13)]
     assert contract["duration_bands_seconds"] == {
         "short": [4.0, 5.0, 6.0],
-        "standard": [7.0, 8.0, 9.0, 10.0, 11.0],
-        "long": [12.0, 13.0, 14.0, 15.0],
+        "standard": [7.0, 8.0, 9.0],
+        "long": [10.0, 11.0, 12.0],
     }
     assert "不得因示例值" in "".join(contract["selection_guide"])
     assert task_worker.normalize_storyboard_duration_for_model(Decimal("6.2"), model) == Decimal("7.0")
@@ -8717,6 +8837,46 @@ def test_personal_chat_additive_image_edit_reuses_reference_and_does_not_save_sk
     assert "没有修改或保存个人 Skill" in assistant["content"]
     learned = client.get("/api/v1/user-skills", headers=creator_headers).json()
     assert all(item["name"] != "巨物美学" for item in learned)
+
+
+@pytest.mark.parametrize("content", [
+    "想做一个视频，中秋节的科普，帮我写一个大概8分钟左右视频所需要的文案",
+    "帮我生成一个故事文案", "写一个视频脚本", "优化生图提示词", "帮我写视频生成提示词",
+])
+def test_text_deliverable_never_uses_media_fallback(content: str) -> None:
+    assert task_worker.requests_text_deliverable(content)
+    assert task_worker.infer_explicit_media_action(
+        content, available_attachments=[], available_models=[],
+    ) is None
+
+
+def test_personal_text_request_blocks_model_media_action(client, creator_headers, admin_headers):
+    provider_id = client.get("/api/v1/admin/providers", headers=admin_headers).json()[0]["id"]
+    client.patch(f"/api/v1/admin/providers/{provider_id}", headers=admin_headers,
+                 json={"api_key": "test-text-only"})
+    session_id = client.post("/api/v1/agent/sessions", headers=creator_headers,
+                             json={"scene": "workspace"}).json()["id"]
+    action = {"type": "video", "generation_mode": "text_to_video", "prompt": "中秋节"}
+    class MistakenRuntime(FakePersonalChatMediaActionRuntime):
+        async def run(self, request):
+            if self.requests:
+                self.response = "中秋文案：月亮升起，家的方向就亮了。"
+            return await super().run(request)
+    runtime = MistakenRuntime(response=f"安排生成视频<CINEFORGE_MEDIA>{json.dumps(action)}</CINEFORGE_MEDIA>")
+    sent = client.post(f"/api/v1/agent/sessions/{session_id}/messages", headers=creator_headers,
+                       json={"content": "想做一个视频，帮我写8分钟视频所需要的文案"})
+    task_id = sent.json()["task"]["id"]
+    def forbidden_gateway(_provider):
+        raise AssertionError("Writing must never call a media provider")
+    assert asyncio.run(process_task(task_id, runtime_factory=lambda: runtime,
+                                    gateway_factory=forbidden_gateway))
+    task = client.get(f"/api/v1/tasks/{task_id}", headers=creator_headers).json()
+    assert task["status"] == "succeeded"
+    assert task["request_payload"]["mode"] == "chat"
+    assert not task["result_payload"].get("media_intent")
+    assert len(runtime.requests) == 2
+    detail = client.get(f"/api/v1/agent/sessions/{session_id}", headers=creator_headers).json()
+    assert "中秋文案" in detail["messages"][-1]["content"]
 
 
 def test_personal_media_fallback_treats_prompt_creation_plus_generation_as_an_action() -> None:

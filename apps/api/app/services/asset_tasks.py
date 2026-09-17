@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Literal
 
 from fastapi import HTTPException
-from sqlalchemy import select
+from sqlalchemy import select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.core.security import SecretBox
@@ -197,6 +197,7 @@ async def queue_asset_prompt_generation_task(
     only_missing_prompt: bool = False,
     auto_queue_images_after_prompt: bool = False,
 ) -> tuple[AITask, TaskEvent, list[Asset]]:
+    await session.execute(update(Project).where(Project.id == project.id).values(name=Project.name))
     selected_assets = (
         [asset for asset in assets if not asset.generation_prompt.strip()]
         if only_missing_prompt
@@ -207,6 +208,9 @@ async def queue_asset_prompt_generation_task(
     if len(selected_assets) > 100:
         raise HTTPException(status_code=422, detail="单次最多生成 100 个资产提示词")
     selected_ids = {asset.id for asset in selected_assets}
+    for pending in await active_tasks(session, project_id=project.id, task_type="asset_image_generation"):
+        if pending.request_payload.get("asset_id") in selected_ids:
+            raise HTTPException(409, "资产正在生图，请完成或取消后再修改提示词")
     for pending in await active_tasks(
         session,
         project_id=project.id,
@@ -263,7 +267,20 @@ async def queue_asset_image_generation_tasks(
     project: Project,
     assets: list[Asset],
     only_missing_image: bool = False,
+    source_prompt_task_id: str | None = None,
 ) -> list[tuple[AITask, TaskEvent, Asset]]:
+    await session.execute(update(Project).where(Project.id == project.id).values(name=Project.name))
+    for asset in assets:
+        seen = {asset.id}
+        ancestor_id = asset.parent_asset_id
+        while ancestor_id:
+            if ancestor_id in seen:
+                raise HTTPException(409, "资产父子关系存在循环，请先修正关系")
+            seen.add(ancestor_id)
+            ancestor = await session.get(Asset, ancestor_id)
+            if ancestor is None or ancestor.project_id != project.id or ancestor.user_id != user.id:
+                raise HTTPException(409, "衍生资产的主资产不可用")
+            ancestor_id = ancestor.parent_asset_id
     selected_assets = []
     for asset in assets:
         if only_missing_image and await asset_has_ready_image(asset):
@@ -292,13 +309,25 @@ async def queue_asset_image_generation_tasks(
         )
 
     selected_ids = {asset.id for asset in selected_assets}
-    for pending in await active_tasks(
+    for pending in await active_tasks(session, project_id=project.id, task_type="asset_prompt_generation"):
+        if pending.id != source_prompt_task_id and selected_ids.intersection(pending.request_payload.get("asset_ids") or []):
+            raise HTTPException(409, "资产提示词正在生成，请等待完成后再生图")
+    pending_images = await active_tasks(
         session,
         project_id=project.id,
         task_type="asset_image_generation",
-    ):
+    )
+    pending_by_asset = {t.request_payload.get("asset_id"): t for t in pending_images}
+    for pending in pending_images:
         if pending.request_payload.get("asset_id") in selected_ids:
             raise HTTPException(status_code=409, detail="部分资产已有生图任务正在处理")
+    for asset in selected_assets:
+        if (asset.asset_metadata or {}).get("combat_technique"):
+            continue
+        if asset.parent_asset_id and asset.parent_asset_id not in selected_ids and asset.parent_asset_id not in pending_by_asset:
+            parent = await session.get(Asset, asset.parent_asset_id)
+            if not await asset_has_ready_image(parent):
+                raise HTTPException(409, f"请先生成主资产“{parent.name}”，或将主资产一起勾选生成")
 
     queued: list[tuple[AITask, TaskEvent, Asset]] = []
     pricing = await resolve_task_pricing(
@@ -326,4 +355,13 @@ async def queue_asset_image_generation_tasks(
         )
         asset.status = AssetStatus.GENERATING
         queued.append((task, event, asset))
+    task_by_asset = {**pending_by_asset, **{asset.id: task for task, _, asset in queued}}
+    for task, event, asset in queued:
+        if (asset.asset_metadata or {}).get("combat_technique"):
+            continue
+        dependency = task_by_asset.get(asset.parent_asset_id)
+        if dependency:
+            task.request_payload = {**task.request_payload, "asset_parent_waiting": True,
+                "asset_parent_task_id": dependency.id}
+            event.message = "等待主资产图片完成后自动生成衍生资产"
     return queued

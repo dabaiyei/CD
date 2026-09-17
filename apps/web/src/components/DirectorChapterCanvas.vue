@@ -302,7 +302,7 @@ function queueBatchVideos(): void {
 }
 
 function openAutomationConfirmation(): void {
-  if (automationRunning.value || props.automationAction) return
+  if (props.automationAction) return
   automationConfirmOpen.value = true
 }
 
@@ -373,7 +373,6 @@ watch(
         <span class="chapter-status" :data-status="chapter.status"><i></i>{{ chapterStatusText }}</span>
         <small><Check :size="13" />AI 自动编排</small>
         <button
-          v-if="!automationRunning"
           class="director-automation-trigger"
           type="button"
           :disabled="Boolean(automationAction)"
@@ -381,7 +380,7 @@ watch(
         >
           <LoaderCircle v-if="automationAction === 'start'" class="spin" :size="15" />
           <Sparkles v-else :size="15" />
-          {{ automationAction === 'start' ? '正在启动' : 'AI 全自动' }}
+          {{ automationAction === 'start' ? '正在接续' : '继续 AI 全自动' }}
         </button>
       </div>
     </header>
@@ -437,7 +436,7 @@ watch(
       <header><div><strong>本章塑造资产</strong><span>{{ readyAssets.length }} / {{ assets.length }} 已定稿</span></div><button type="button" :disabled="automationLocked" @click="emit('openAssets')"><LockKeyhole v-if="automationLocked" :size="15" /><Boxes v-else :size="15" />{{ automationLocked ? '全自动运行中' : '管理资产' }}</button></header>
       <div>
         <article v-for="asset in assets" :key="asset.id">
-          <div><img v-if="asset.media_url" :src="asset.media_url" :alt="asset.name" /><span v-else><Image :size="22" /></span><i :data-ready="Boolean(asset.media_url)">{{ asset.media_url ? '已定稿' : asset.generation_prompt ? '待生图' : '待提示词' }}</i></div>
+          <div><img v-image-preview="asset.media_url" v-if="asset.media_url" :src="asset.media_url" :alt="asset.name" /><span v-else><Image :size="22" /></span><i :data-ready="Boolean(asset.media_url)">{{ asset.media_url ? '已定稿' : asset.generation_prompt ? '待生图' : '待提示词' }}</i></div>
           <strong>{{ asset.name }}</strong><small>{{ asset.asset_type === 'character' ? '人物' : asset.asset_type === 'scene' ? '场景' : asset.asset_type === 'prop' ? '道具' : '素材' }}</small>
         </article>
       </div>
@@ -447,7 +446,7 @@ watch(
       <header><div><strong>导演分镜 v{{ storyboard.version.version }}</strong><span>{{ storyboardShots.length }} 个镜头</span></div><span><Sparkles :size="14" />已通过资产校验</span></header>
       <div>
         <article v-for="shot in storyboardShots" :key="shot.id">
-          <div><img v-if="shot.reference_image_url" :src="shot.reference_image_url" :alt="shot.title" /><span v-else><Camera :size="24" /></span><b class="tabular-nums">{{ String(shot.order_index).padStart(2, '0') }}</b></div>
+          <div><img v-image-preview="shot.reference_image_url" v-if="shot.reference_image_url" :src="shot.reference_image_url" :alt="shot.title" /><span v-else><Camera :size="24" /></span><b class="tabular-nums">{{ String(shot.order_index).padStart(2, '0') }}</b></div>
           <header><strong>{{ shot.title }}</strong><small>{{ shot.shot_type }} · {{ shot.duration_seconds }}s</small></header>
           <p>{{ shot.action_description || shot.scene_description }}</p>
         </article>
@@ -479,7 +478,7 @@ watch(
       <section v-if="selectedVideoShot" class="director-video-focus">
         <div class="director-video-focus__preview">
           <video v-if="playingVideoUrl && playingVideoUrl === selectedVideoUrl" :key="playingVideoUrl" :src="playingVideoUrl" controls playsinline autoplay preload="none"></video>
-          <img v-else-if="shotFallbackImage(selectedVideoShot)" :src="mediaPreview(shotFallbackImage(selectedVideoShot), 640)" :alt="selectedVideoShot.title" decoding="async" />
+          <img v-image-preview="shotFallbackImage(selectedVideoShot)" v-else-if="shotFallbackImage(selectedVideoShot)" :src="mediaPreview(shotFallbackImage(selectedVideoShot), 640)" :alt="selectedVideoShot.title" decoding="async" />
           <span v-else><Camera :size="28" />等待参考图</span>
           <button v-if="selectedVideoUrl && !playingVideoUrl" type="button" class="director-video-play-trigger" @click="playingVideoUrl = selectedVideoUrl"><Play :size="24" />播放视频</button>
           <i :data-status="activeClips.get(selectedVideoShot.id)?.status || 'idle'">{{ shotVideoStatus(selectedVideoShot) }}</i>
@@ -522,7 +521,7 @@ watch(
             </header>
             <div v-if="selectedVideoShotAssets.length">
               <article v-for="asset in selectedVideoShotAssets" :key="asset.id">
-                <span><img v-if="asset.media_url" :src="mediaPreview(asset.media_url)" :alt="asset.name" loading="lazy" decoding="async" /><Image v-else :size="17" /></span>
+                <span><img v-image-preview="asset.media_url" v-if="asset.media_url" :src="mediaPreview(asset.media_url)" :alt="asset.name" loading="lazy" decoding="async" /><Image v-else :size="17" /></span>
                 <div><strong>{{ asset.name }}</strong><small>{{ assetTypeText(asset) }} · {{ asset.media_url ? '已作为参考图' : '缺少图片，生成视频前建议先定稿' }}</small></div>
               </article>
             </div>
@@ -553,7 +552,7 @@ watch(
         >
           <button type="button" :aria-pressed="selectedVideoShotIds.includes(shot.id)" :title="selectedVideoShotIds.includes(shot.id) ? '取消选择' : '选择镜头'" @click.stop="toggleVideoShotSelection(shot.id)"><Check :size="13" /></button>
           <div>
-            <img v-if="shotFallbackImage(shot)" :src="mediaPreview(shotFallbackImage(shot))" :alt="shot.title" loading="lazy" decoding="async" />
+            <img v-image-preview="shotFallbackImage(shot)" v-if="shotFallbackImage(shot)" :src="mediaPreview(shotFallbackImage(shot))" :alt="shot.title" loading="lazy" decoding="async" />
             <span v-else><Camera :size="20" /></span>
             <i :data-status="activeClips.get(shot.id)?.status || 'idle'">{{ shotVideoStatus(shot) }}</i>
           </div>
@@ -580,15 +579,15 @@ watch(
 
   <BaseDialog
     v-model:open="automationConfirmOpen"
-    title="启动 AI 全自动制作"
-    description="确认后系统将接管当前章节的完整生产流程"
+    title="从当前进度继续 AI 全自动"
+    description="复用已完成内容，等待进行中的任务，并完成剩余步骤"
   >
     <div class="automation-confirm">
       <div class="automation-confirm__intro">
         <span><Sparkles :size="22" /></span>
         <div>
           <strong>确认制作“{{ chapter.title }}”吗？</strong>
-          <p>AI 将根据项目手册和当前章节内容，自动编排并执行以下阶段。</p>
+          <p>AI 会核验当前章节进度，接续已有任务，只补充未完成的步骤；待审核问题会交给 AI 修复后重新审核。</p>
         </div>
       </div>
 

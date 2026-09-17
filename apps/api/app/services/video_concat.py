@@ -11,7 +11,7 @@ from uuid import uuid4
 
 from app.services.composition_renderer import output_size
 
-CONCAT_VERSION = 2
+CONCAT_VERSION = 3
 
 
 def media_binary(name: str) -> str | None:
@@ -114,7 +114,8 @@ async def concatenate_videos(paths: list[Path], output: Path, *, resolution: str
                 f"scale={width}:{height}:force_original_aspect_ratio=decrease,"
                 f"pad={width}:{height}:(ow-iw)/2:(oh-ih)/2,setsar=1",
                 "-af",
-                f"aresample=48000,asetpts=PTS-STARTPTS,apad,atrim=end_sample={frames * 1600}",
+                f"aresample=48000,asetpts=PTS-STARTPTS,apad,atrim=end_sample={frames * 1600},"
+                f"afade=t=in:st=0:d=0.01,afade=t=out:st={max(0, duration - 0.01):.6f}:d=0.01",
                 "-t",
                 f"{duration:.9f}",
                 "-c:v",
@@ -189,6 +190,7 @@ async def execute_video_concat_task(task_id: str):
         if not owns_running_task(task):
             return
         payload = dict(task.request_payload)
+        await validate_concat_clips(session, task, payload)
         output = (
             get_settings().uploads_root.resolve()
             / task.tenant_id
@@ -211,6 +213,11 @@ async def execute_video_concat_task(task_id: str):
         if not owns_running_task(task):
             await cleanup_media(key, output)
             return
+        try:
+            await validate_concat_clips(session, task, payload)
+        except Exception:
+            await cleanup_media(key, output)
+            raise
         session.add(
             ProjectFile(
                 tenant_id=task.tenant_id,
@@ -236,3 +243,12 @@ async def execute_video_concat_task(task_id: str):
         )
         await session.commit()
         await publish_task_event(task, event)
+
+
+async def validate_concat_clips(session, task, payload):
+    from app.db.models import VideoClip, VideoClipStatus
+    for item in payload["clips"]:
+        clip = await session.get(VideoClip, item["clip_id"])
+        if (not clip or clip.user_id != task.user_id or clip.project_id != task.project_id
+            or not clip.is_active or clip.status != VideoClipStatus.READY):
+            raise RuntimeError("拼接所用视频已失效或被重做，请刷新并重新发起拼接")

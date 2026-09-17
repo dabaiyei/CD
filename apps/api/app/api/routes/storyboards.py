@@ -130,7 +130,7 @@ async def active_script_and_extraction(
     )
     missing: list[str] = []
     for asset in assets:
-        if asset.asset_type.value == "audio":
+        if asset.asset_type.value == "audio" or asset.parent_asset_id:
             continue
         key = object_key_from_media_url(asset.media_url)
         if asset.status != AssetStatus.READY or not key:
@@ -274,6 +274,11 @@ async def create_storyboard(
     await session.flush()
     records: list[StoryboardShot] = []
     for index, payload in enumerate(shots, start=1):
+        if payload.combat_plan:
+            try:
+                payload.combat_plan.validate_duration(float(payload.duration_seconds))
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
         await validate_shot_assets(
             session,
             asset_ids=payload.asset_ids,
@@ -288,7 +293,7 @@ async def create_storyboard(
             chapter_id=chapter.id,
             storyboard_version_id=version.id,
             order_index=index,
-            **payload.model_dump(),
+            **payload.model_dump(exclude={"continuity_group", "frame_layout", "combat_plan"}),
         )
         session.add(shot)
         records.append(shot)
@@ -943,6 +948,36 @@ async def update_storyboard_shot(
         if shot.id in (pending.request_payload.get("shot_ids") or []):
             raise HTTPException(status_code=409, detail="该镜头正在生成视频提示词，完成后才能编辑")
     values = payload.model_dump(exclude_unset=True)
+    if "combat_plan" in values:
+        plan = values.pop("combat_plan")
+        if not any(item.get("order_index") == shot.order_index for item in (storyboard.content or [])):
+            storyboard.content = [*(storyboard.content or []), {"order_index": shot.order_index}]
+        if payload.combat_plan:
+            try:
+                payload.combat_plan.validate_duration(float(values.get("duration_seconds") or shot.duration_seconds))
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+        storyboard.content = [
+            {**item, "combat_plan": plan, "combat_design": None} if item.get("order_index") == shot.order_index else item
+            for item in storyboard.content
+        ]
+    elif {"action_description", "duration_seconds", "asset_ids"}.intersection(values):
+        storyboard.content = [
+            {**item, "combat_plan": None, "combat_design": None} if item.get("order_index") == shot.order_index else item
+            for item in storyboard.content
+        ]
+    if {"image_prompt", "scene_description", "shot_type", "asset_ids"}.intersection(values):
+        # A manual composition edit must not be overridden by an older generated layout.
+        storyboard.content = [
+            {**item, "frame_layout": None} if item.get("order_index") == shot.order_index else item
+            for item in storyboard.content
+        ]
+    if "continuity_group" in values:
+        group = values.pop("continuity_group") or ""
+        storyboard.content = [
+            {**item, "continuity_group": group} if item.get("order_index") == shot.order_index else item
+            for item in storyboard.content
+        ]
     if "asset_ids" in values:
         await validate_shot_assets(
             session,
@@ -961,9 +996,16 @@ async def update_storyboard_shot(
                 )
             )
         )
+    if "combat_plan" in payload.model_fields_set and payload.combat_plan:
+        try:
+            payload.combat_plan.validate_duration(float(values.get("duration_seconds") or shot.duration_seconds))
+        except ValueError as exc:
+            raise HTTPException(422, str(exc)) from exc
     for field, value in values.items():
         setattr(shot, field, value)
     shot.version += 1
+    from app.services.video_continuity import invalidate_descendants
+    await invalidate_descendants(session, shot.id, "")
     await invalidate_compositions(
         session,
         chapter_id=chapter.id,

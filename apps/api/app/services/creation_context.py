@@ -8,6 +8,29 @@ from pathlib import PurePosixPath
 from app.db.models import HandbookType
 from app.services.managed_skills import HANDBOOK_TASK_FILES
 
+COMBAT_PRIORITY = (
+    "【战斗动作专项优先级】仅对战斗动作编排、招式生成词、攻防连续性及大招镜头表现，"
+    "系统战斗专项规则优先于导演手册、画风手册和通用精简要求。"
+    "手册中的克制运镜、禁止慢镜头或简写动作等冲突约束不得削弱本次战斗设计。"
+    "该覆盖不改变画风、人物外观、世界观、既有招式归属、剧情胜负和用户明确要求；"
+    "实际模型能力、合法时长、参考媒体和输出结构仍是硬约束。"
+)
+
+SCRIPT_COMBAT_STAGES = frozenset({"script-generation", "script-review", "script-repair"})
+
+def combat_stage_guidance(prompt_code: str, source: str) -> str:
+    from app.services.combat_choreography import PLANNING_RULES
+    planning = SCRIPT_COMBAT_STAGES | {"storyboard-generation", "storyboard-review", "storyboard-repair"}
+    if prompt_code in planning:
+        return COMBAT_PRIORITY + PLANNING_RULES
+    if contains_combat(source):
+        return (COMBAT_PRIORITY + "详细打斗由独立战斗编排模块生成，逐时间段保留攻防、运镜与光影；"
+                "不得二次总结删减。用户明确的静止与固定机位仍优先。")
+    return ""
+
+def contains_combat(text: str) -> bool:
+    return bool(re.search(r"战斗|打斗|搏斗|格斗|交锋|对抗|厮杀|追逐|追击|袭击|攻击|闪避|格挡|挥剑|挥刀|挥砍|突刺|劈砍|横斩|枪刺|连斩|变招|拆招|反击|大招|龙爪|剑气|对决|交手|追杀|连招|破招|终结技|法天象地|宝术|神诀|combat|fight|battle|duel", text, re.I))
+
 SCRIPT_OUTPUT_BOUNDARY = (
     "输出隔离规则：content 只能包含剧本场次、动作和对白。"
     "人物状态、事件总结、伏笔清单和章节记忆只能放在独立 continuity_summary 字段，"

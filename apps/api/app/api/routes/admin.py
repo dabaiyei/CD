@@ -92,7 +92,6 @@ from app.services.managed_skills import (
     write_prompt_file,
 )
 from app.services.media import (
-    ALLOWED_COVER_TYPES,
     MAX_COVER_BYTES,
     InvalidCoverImage,
     save_handbook_cover,
@@ -1599,6 +1598,19 @@ async def list_handbooks(
     return list((await session.scalars(select(Handbook).where(Handbook.tenant_id == admin.tenant_id))).all())
 
 
+@router.post("/handbooks/ai-create", status_code=202)
+async def ai_create_visual_handbook(
+    files: list[UploadFile] = File(...),
+    admin: User = Depends(require_admin),
+    session: AsyncSession = Depends(get_session),
+):
+    from app.services.visual_handbook_ai import submit
+    try:
+        return await submit(session, admin, files)
+    except InvalidCoverImage as error:
+        raise HTTPException(422, str(error)) from error
+
+
 @router.get("/handbooks/manifests", response_model=list[HandbookManifestPublic])
 async def list_handbook_manifests(
     _admin: User = Depends(require_admin),
@@ -1724,13 +1736,10 @@ async def upload_handbook_cover(
     session: AsyncSession = Depends(get_session),
 ) -> Handbook:
     handbook = await tenant_record(session, Handbook, handbook_id, admin.tenant_id)
-    if file.content_type not in ALLOWED_COVER_TYPES:
-        raise HTTPException(status_code=415, detail="仅支持 JPG、PNG 或 WebP 图片")
-
     data = await file.read(MAX_COVER_BYTES + 1)
     await file.close()
     if len(data) > MAX_COVER_BYTES:
-        raise HTTPException(status_code=413, detail="封面图片不能超过 8 MB")
+        raise HTTPException(status_code=413, detail="封面图片不能超过 100 MB")
     if not data:
         raise HTTPException(status_code=422, detail="上传的图片为空")
 

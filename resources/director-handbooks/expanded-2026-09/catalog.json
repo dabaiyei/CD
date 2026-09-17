@@ -1,0 +1,43 @@
+[
+  {
+    "slug": "mystery",
+    "name": "悬疑推理",
+    "description": "以公平线索、信息差和证据反转推进剧情，适合调查、犯罪谜案与心理悬念。"
+  },
+  {
+    "slug": "urban-romance",
+    "name": "都市爱情",
+    "description": "以潜台词、双向选择和关系距离组织镜头，适合都市恋爱、重逢与情感拉扯。"
+  },
+  {
+    "slug": "power-intrigue",
+    "name": "权谋博弈",
+    "description": "用目标、筹码、信息与代价构建攻防，适合宫廷、商战、组织竞争与谈判。"
+  },
+  {
+    "slug": "earned-reversal",
+    "name": "逆袭成长",
+    "description": "以能力积累、兑现伏笔和可见成果组织爽点，适合职场逆袭、竞赛与身份反转。"
+  },
+  {
+    "slug": "martial-action",
+    "name": "动作武侠",
+    "description": "强调空间、攻防因果与连贯动作，适合武侠决斗、追逐、救援和动作短剧。"
+  },
+  {
+    "slug": "fantasy-adventure",
+    "name": "奇幻冒险",
+    "description": "用世界规则、探索目标与队伍协作驱动旅程，适合仙幻、异世界与秘境冒险。"
+  },
+  {
+    "slug": "science-fiction",
+    "name": "科幻悬念",
+    "description": "以技术规则、异常验证和伦理选择组织叙事，适合近未来、太空与人工智能题材。"
+  },
+  {
+    "slug": "everyday-healing",
+    "name": "生活治愈",
+    "description": "以日常细节、倾听和微小改变建立情绪余韵，适合生活流、陪伴与温柔成长。"
+  }
+]
+

@@ -11,6 +11,7 @@ from app.core.config import get_settings
 from app.db.migration_guard import assert_database_current
 from app.services.task_queue import close_redis, dequeue_task
 from app.services.task_worker import process_next_task, process_task, recover_stale_tasks
+from app.services.site_maintenance import activity
 
 logger = logging.getLogger(__name__)
 
@@ -27,21 +28,41 @@ async def recover_stale_tasks_periodically() -> None:
     while True:
         await asyncio.sleep(interval)
         try:
-            await recover_stale_tasks()
+            async with activity() as allowed:
+                if allowed:
+                    await recover_stale_tasks()
         except Exception:
             logger.exception("Periodic stale task recovery failed")
+
+
+async def recover_pending_workflows() -> None:
+    from app.services.director_orchestration import (
+        recover_automatic_workflows,
+        recover_orphaned_agent_script_reviews,
+    )
+
+    for recover in (recover_stale_tasks, recover_automatic_workflows, recover_orphaned_agent_script_reviews):
+        try:
+            async with activity() as allowed:
+                if allowed:
+                    await recover()
+        except Exception:
+            logger.exception("%s failed; worker continues", recover.__name__)
 
 
 async def worker_slot(slot: int) -> None:
     settings = get_settings()
     while True:
         try:
-            task_id = await dequeue_task(settings.task_poll_interval_seconds)
-            if task_id and await process_task(task_id):
-                continue
-            processed = await process_next_task()
-            if processed is None and (not settings.redis_url or task_id is not None):
-                await asyncio.sleep(settings.task_poll_interval_seconds)
+            async with activity() as allowed:
+                if allowed:
+                    task_id = await dequeue_task(settings.task_poll_interval_seconds)
+                    if task_id and await process_task(task_id):
+                        continue
+                    processed = await process_next_task()
+                    if processed is not None:
+                        continue
+            await asyncio.sleep(settings.task_poll_interval_seconds)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -50,11 +71,6 @@ async def worker_slot(slot: int) -> None:
 
 
 async def run_worker() -> None:
-    from app.services.director_orchestration import (
-        recover_automatic_workflows,
-        recover_orphaned_agent_script_reviews,
-    )
-
     settings = get_settings()
     logger.info(
         "Starting worker with database=%s concurrency=%s agent_chat_idle_timeout=%ss "
@@ -66,13 +82,7 @@ async def run_worker() -> None:
         settings.task_recovery_interval_seconds,
     )
     await assert_database_current()
-    await recover_stale_tasks()
-    recovered_automatic = await recover_automatic_workflows()
-    if recovered_automatic:
-        logger.info("Reconciled %s automatic director workflow tasks", recovered_automatic)
-    recovered_reviews = await recover_orphaned_agent_script_reviews()
-    if recovered_reviews:
-        logger.info("Recovered %s orphaned Agent script review workflows", recovered_reviews)
+    await recover_pending_workflows()
     recovery = asyncio.create_task(recover_stale_tasks_periodically())
     slots = [
         asyncio.create_task(worker_slot(index + 1), name=f"worker-slot-{index + 1}")

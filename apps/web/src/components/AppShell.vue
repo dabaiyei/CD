@@ -8,6 +8,7 @@ import {
   BrainCircuit,
   Camera,
   LayoutGrid,
+  Boxes,
   MessageSquareText,
   Download,
   LogOut,
@@ -28,6 +29,7 @@ import ActivityCenter from '@/components/ActivityCenter.vue'
 import AvatarCropDialog from '@/components/AvatarCropDialog.vue'
 import ThemeToggle from '@/components/ThemeToggle.vue'
 import PwaInstallPrompt from '@/components/PwaInstallPrompt.vue'
+import LiquidGlass from '@/components/LiquidGlass.vue'
 import type { User } from '@/types'
 import { usePwaInstall } from '@/lib/pwa'
 
@@ -54,6 +56,7 @@ const currentSectionImage = computed(() => {
 const navItems = computed(() => [
   { label: 'Agent', icon: MessageSquareText, to: '/workspace', active: route.path.startsWith('/workspace') },
   { label: '项目', icon: LayoutGrid, to: '/projects', active: route.path === '/projects' || route.name === 'director' },
+  { label: '资产库', icon: Boxes, to: '/assets', active: route.name === 'asset-library' },
   { label: 'Skills', icon: BrainCircuit, to: '/skills', active: route.path.startsWith('/skills') },
   { label: '广场', icon: Sparkles, to: '/marketplace/skill', active: route.path.startsWith('/marketplace') },
   ...(auth.isAdmin
@@ -92,11 +95,11 @@ async function installApp(): Promise<void> {
 
 <template>
   <div
-    class="app-shell app-shell--top-navigation"
-    :class="{ 'app-shell--agent-home': route.name === 'workspace' }"
+    class="app-shell app-shell--top-navigation app-shell--glass-system"
+    :class="{ 'app-shell--agent-home': route.name === 'workspace', 'app-shell--glass-workspace': route.name === 'workspace' || route.name === 'projects' }"
   >
     <section class="shell-main">
-      <header class="topbar topbar--scene">
+      <LiquidGlass as="header" class="topbar topbar--scene" intensity="subtle">
         <div class="topbar__navigation">
           <RouterLink class="topbar-brand" to="/workspace" aria-label="CineForge 创作台">
             <span class="topbar-brand__mark"><Clapperboard :size="19" /></span>
@@ -195,7 +198,7 @@ async function installApp(): Promise<void> {
             </PopoverRoot>
           </div>
         </div>
-      </header>
+      </LiquidGlass>
 
       <main class="page-content"><slot /></main>
     </section>

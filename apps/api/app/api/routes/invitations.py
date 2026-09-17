@@ -40,7 +40,7 @@ from app.domain.schemas import (
     TokenResponse,
 )
 from app.services.auth_security import private_fingerprint
-from app.services.media import ALLOWED_COVER_TYPES, MAX_COVER_BYTES, InvalidCoverImage, save_user_avatar
+from app.services.media import MAX_COVER_BYTES, InvalidCoverImage, save_user_avatar
 from app.services.object_storage import delete_media_file, persist_media_file
 
 router = APIRouter(tags=["invitations"])
@@ -326,13 +326,10 @@ async def register_with_invitation(
     storage_key: str | None = None
     avatar_url: str | None = None
     if avatar is not None:
-        if avatar.content_type not in ALLOWED_COVER_TYPES:
-            await avatar.close()
-            raise HTTPException(status_code=415, detail="头像仅支持 JPG、PNG 或 WebP 图片")
         data = await avatar.read(MAX_COVER_BYTES + 1)
         await avatar.close()
         if len(data) > MAX_COVER_BYTES:
-            raise HTTPException(status_code=413, detail="头像图片不能超过 8 MB")
+            raise HTTPException(status_code=413, detail="头像图片不能超过 100 MB")
         if not data:
             raise HTTPException(status_code=422, detail="上传的头像为空")
         try:

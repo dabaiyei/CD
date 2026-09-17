@@ -1,0 +1,270 @@
+/* One continuous backdrop; only controls carry glass. Keep home flex/scroll
+   geometry in product-surface.css, including the mobile keyboard contract. */
+:root .app-shell.app-shell--glass-workspace {
+  --workspace-glass-fill: rgba(255, 255, 255, .48);
+  --workspace-glass-menu: rgba(245, 249, 252, .88);
+  --workspace-glass-line: rgba(255, 255, 255, .7);
+  --workspace-glass-shadow: inset 0 1px 0 rgba(255, 255, 255, .8),
+    inset 0 -1px 0 rgba(90, 119, 146, .1), 0 8px 28px rgba(36, 58, 78, .08);
+  --workspace-backdrop: url('/covers/studio-hero-light.webp');
+  --workspace-veil: rgba(237, 244, 248, .78);
+  isolation: isolate;
+  background: var(--bg);
+}
+
+:root[data-theme='dark'] .app-shell.app-shell--glass-workspace {
+  --workspace-glass-fill: rgba(31, 40, 54, .5);
+  --workspace-glass-menu: rgba(25, 33, 45, .91);
+  --workspace-glass-line: rgba(188, 213, 242, .2);
+  --workspace-glass-shadow: inset 0 1px 0 rgba(220, 236, 255, .16),
+    inset 0 -1px 0 rgba(0, 0, 0, .2), 0 8px 28px rgba(0, 0, 0, .18);
+  --workspace-backdrop: url('/covers/studio-hero-v2.webp');
+  --workspace-veil: rgba(12, 18, 29, .8);
+}
+
+:root .app-shell.app-shell--glass-workspace::before {
+  content: '';
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  pointer-events: none;
+  background: linear-gradient(var(--workspace-veil), var(--workspace-veil)),
+    var(--workspace-backdrop) center / cover no-repeat;
+}
+
+/* Override the legacy canvas surfaces, without introducing another scroll box
+   or a backdrop-filter containing block around fixed menus. */
+:root .app-shell.app-shell--glass-workspace :is(.shell-main, .page-content,
+  .workspace-page, .workspace-agent-stage--home, .agent-studio,
+  .agent-composer-shell, .agent-workspace-body, .agent-conversation,
+  .agent-thread, .agent-workbench-header, .project-library,
+  .project-library__header, .workspace-command-grid--projects) {
+  background: transparent !important;
+  border: 0;
+  border-radius: 0;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+:root .app-shell.app-shell--glass-workspace .workspace-page {
+  isolation: auto;
+}
+
+:root .app-shell.app-shell--glass-workspace .workspace-page::before,
+:root .app-shell.app-shell--glass-workspace .workspace-page::after,
+:root .app-shell.app-shell--glass-workspace .topbar::before,
+:root .app-shell.app-shell--glass-workspace .topbar::after {
+  display: none;
+}
+
+:root .app-shell.app-shell--glass-workspace .topbar {
+  background: var(--workspace-glass-fill) !important;
+  border: 0;
+  border-bottom: 1px solid var(--workspace-glass-line);
+  border-radius: 0;
+  box-shadow: inset 0 1px 0 var(--workspace-glass-line);
+  -webkit-backdrop-filter: blur(22px) saturate(140%);
+  backdrop-filter: blur(22px) saturate(140%);
+}
+
+:root .app-shell.app-shell--glass-workspace .workspace-agent-stage--home .agent-empty-guide {
+  width: 100%;
+  max-width: none;
+  min-height: 0;
+  margin: 0 auto;
+  padding: clamp(16px, 4vh, 48px) 20px;
+  flex: 1 1 0;
+  align-self: stretch;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  border: 0;
+  border-radius: 0;
+  background: transparent !important;
+  box-shadow: none;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+}
+
+:root .app-shell.app-shell--glass-workspace .agent-empty-guide > div {
+  max-width: min(720px, 100%);
+}
+
+/* These selectors intentionally outrank the old light/dark product surfaces. */
+:root .app-shell.app-shell--glass-workspace .workspace-page :is(
+  .agent-composer, .agent-empty-guide__icon, .agent-starters > button,
+  .project-card, .new-project-tile, .project-skeleton, .empty-state,
+  .search-field, .workspace-create-button, .agent-generated-media,
+  .agent-media-progress__preview) {
+  color: var(--ink);
+  border: 1px solid var(--workspace-glass-line);
+  background: var(--workspace-glass-fill) !important;
+  box-shadow: var(--workspace-glass-shadow);
+  -webkit-backdrop-filter: blur(20px) saturate(145%);
+  backdrop-filter: blur(20px) saturate(145%);
+}
+
+:root .app-shell.app-shell--glass-workspace .workspace-page .agent-composer {
+  border-radius: 22px;
+  overflow: visible;
+}
+
+:root .app-shell.app-shell--glass-workspace .workspace-page .agent-composer:focus-within {
+  border-color: color-mix(in srgb, var(--brand) 45%, var(--workspace-glass-line));
+  box-shadow: var(--workspace-glass-shadow), 0 0 0 3px color-mix(in srgb, var(--brand) 8%, transparent);
+}
+
+:root .app-shell.app-shell--glass-workspace .workspace-page :is(
+  .agent-composer textarea, .agent-composer__actions, .agent-inline-parameters,
+  .project-card__body, .search-field input) {
+  background: transparent !important;
+}
+
+:root .app-shell.app-shell--glass-workspace .agent-starters {
+  justify-content: center;
+  gap: 10px;
+}
+
+:root .app-shell.app-shell--glass-workspace .agent-starters > button {
+  padding: 10px 16px;
+  border-radius: 14px;
+}
+
+/* Streaming assistant text remains unfiltered for readability and performance. */
+:root .app-shell.app-shell--glass-workspace .agent-message--assistant .agent-message__content {
+  background: transparent;
+  border: 0;
+  box-shadow: none;
+}
+
+:root .app-shell.app-shell--glass-workspace .agent-message--user .agent-message__content {
+  background: var(--workspace-glass-fill);
+  color: var(--ink);
+  border: 1px solid var(--workspace-glass-line);
+}
+
+:root .app-shell.app-shell--glass-workspace :is(.agent-inline-select__menu,
+  .agent-mode-dropdown__panel, .agent-context-switcher__popover,
+  .agent-history-drawer, .agent-skill-command) {
+  background: var(--workspace-glass-menu) !important;
+  color: var(--ink);
+  border: 1px solid var(--workspace-glass-line);
+  box-shadow: var(--workspace-glass-shadow);
+  -webkit-backdrop-filter: blur(24px) saturate(145%);
+  backdrop-filter: blur(24px) saturate(145%);
+}
+
+:root .app-shell.app-shell--glass-workspace .workspace-page:has(.workspace-command-grid--projects) {
+  width: 100%;
+  max-width: 1520px;
+  margin-inline: auto;
+  padding: clamp(20px, 3vw, 48px) clamp(16px, 3vw, 40px) 40px;
+}
+
+:root .app-shell.app-shell--glass-workspace .project-library {
+  min-height: 0;
+  align-content: start;
+  gap: 28px;
+}
+
+:root .app-shell.app-shell--glass-workspace .project-library__header {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 20px;
+  padding: 0;
+}
+
+:root .app-shell.app-shell--glass-workspace .workspace-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 10px;
+  max-width: 100%;
+  min-width: 0;
+  padding: 0;
+  background: transparent;
+}
+
+:root .app-shell.app-shell--glass-workspace .workspace-toolbar .search-field {
+  flex: 1 1 200px;
+  width: 240px;
+  min-width: 0;
+  border-radius: 14px;
+}
+
+:root .app-shell.app-shell--glass-workspace .workspace-create-button {
+  flex: 0 0 auto;
+  width: auto;
+  min-height: 42px;
+  border-radius: 14px;
+  white-space: nowrap;
+}
+
+:root .app-shell.app-shell--glass-workspace .workspace-create-button.button--primary {
+  color: var(--brand);
+  background: color-mix(in srgb, var(--brand) 14%, var(--workspace-glass-fill)) !important;
+}
+
+:root .app-shell.app-shell--glass-workspace .workspace-page :is(.project-card, .new-project-tile) {
+  border-radius: 20px;
+  text-shadow: none;
+}
+
+:root .app-shell.app-shell--glass-workspace .project-card__body {
+  padding: 18px;
+}
+
+:root .app-shell.app-shell--glass-workspace .project-card__body :is(h2, p) {
+  text-shadow: none;
+}
+
+:root .app-shell.app-shell--glass-workspace .project-card__meta :is(span, time) {
+  color: var(--ink-secondary);
+  text-shadow: none;
+}
+
+:root .app-shell.app-shell--glass-workspace .project-card__meta span {
+  background: color-mix(in srgb, var(--workspace-glass-fill) 70%, transparent);
+}
+
+:root .app-shell.app-shell--glass-workspace .workspace-page :is(.project-card, .new-project-tile):hover {
+  border-color: color-mix(in srgb, var(--brand) 35%, var(--workspace-glass-line));
+  box-shadow: var(--workspace-glass-shadow), 0 12px 32px color-mix(in srgb, var(--brand) 10%, transparent);
+}
+
+@media (max-width: 720px) {
+  :root .app-shell.app-shell--glass-workspace .workspace-page .agent-composer {
+    border-radius: 18px;
+  }
+
+  :root .app-shell.app-shell--glass-workspace .workspace-agent-stage--home .agent-empty-guide {
+    padding: 12px 16px;
+  }
+
+  :root .app-shell.app-shell--glass-workspace .workspace-toolbar {
+    width: 100%;
+  }
+
+  :root .app-shell.app-shell--glass-workspace .workspace-toolbar .search-field {
+    flex-basis: calc(100% - 90px);
+    width: auto;
+  }
+
+  :root .app-shell.app-shell--glass-workspace .workspace-create-button {
+    flex: 1 1 auto;
+  }
+
+  :root .app-shell.app-shell--glass-workspace .project-library {
+    gap: 20px;
+  }
+}
+
+@supports not (backdrop-filter: blur(1px)) {
+  :root .app-shell.app-shell--glass-workspace {
+    --workspace-glass-fill: var(--surface);
+    --workspace-glass-menu: var(--surface);
+  }
+}

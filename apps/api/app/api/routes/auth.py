@@ -38,7 +38,6 @@ from app.services.auth_security import (
     private_fingerprint,
 )
 from app.services.media import (
-    ALLOWED_COVER_TYPES,
     MAX_COVER_BYTES,
     InvalidCoverImage,
     save_user_avatar,
@@ -425,13 +424,10 @@ async def upload_avatar(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> User:
-    if file.content_type not in ALLOWED_COVER_TYPES:
-        raise HTTPException(status_code=415, detail="仅支持 JPG、PNG 或 WebP 图片")
-
     data = await file.read(MAX_COVER_BYTES + 1)
     await file.close()
     if len(data) > MAX_COVER_BYTES:
-        raise HTTPException(status_code=413, detail="头像图片不能超过 8 MB")
+        raise HTTPException(status_code=413, detail="头像图片不能超过 100 MB")
     if not data:
         raise HTTPException(status_code=422, detail="上传的图片为空")
 

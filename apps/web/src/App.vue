@@ -4,6 +4,7 @@ import type { RouteLocationNormalizedLoaded } from 'vue-router'
 
 import AppShell from '@/components/AppShell.vue'
 import ToastViewport from '@/components/ToastViewport.vue'
+import ProjectImageViewer from '@/components/ProjectImageViewer.vue'
 import { cancelRouteMotion, enterRoute, leaveRoute } from '@/lib/motion'
 
 function routeMotionKey(route: RouteLocationNormalizedLoaded): string {
@@ -41,4 +42,5 @@ function routeMotionKey(route: RouteLocationNormalizedLoaded): string {
     </AppShell>
   </RouterView>
   <ToastViewport />
+  <ProjectImageViewer />
 </template>

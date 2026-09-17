@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { MAX_IMAGE_UPLOAD_BYTES, isSupportedImage } from '@/lib/imageUpload'
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import Cropper from 'cropperjs'
 import 'cropperjs/dist/cropper.css'
@@ -92,10 +93,10 @@ function chooseFile(): void {
 }
 
 function validateFile(file: File): string | null {
-  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+  if (!isSupportedImage(file)) {
     return '仅支持 JPG、PNG 或 WebP 图片'
   }
-  if (file.size > 8 * 1024 * 1024) return '头像图片不能超过 8 MB'
+  if (file.size > MAX_IMAGE_UPLOAD_BYTES) return '头像图片不能超过 100 MB'
   if (!file.size) return '图片文件为空'
   return null
 }
@@ -255,7 +256,7 @@ async function deleteAvatar(): Promise<void> {
         <button v-else class="avatar-editor__empty" type="button" @click="chooseFile">
           <span class="avatar-editor__empty-icon"><ImagePlus :size="26" /></span>
           <span><strong>选择一张头像图片</strong><small>点击选择或拖放到这里</small></span>
-          <em>JPG · PNG · WEBP，最大 8 MB</em>
+          <em>JPG · PNG · WEBP，最大 100 MB</em>
         </button>
         <div v-if="dragging" class="avatar-editor__drop-hint">
           <Upload :size="24" />

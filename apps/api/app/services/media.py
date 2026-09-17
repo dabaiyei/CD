@@ -6,26 +6,43 @@ from uuid import uuid4
 
 from PIL import Image, ImageOps, UnidentifiedImageError
 
-MAX_COVER_BYTES = 8 * 1024 * 1024
+MAX_COVER_BYTES = 100 * 1024 * 1024
 MAX_COVER_EDGE = 4096
 MIN_COVER_EDGE = 64
 AVATAR_EDGE = 512
 ALLOWED_COVER_TYPES = {"image/jpeg", "image/png", "image/webp"}
 ALLOWED_COVER_FORMATS = {"JPEG", "PNG", "WEBP"}
 
-Image.MAX_IMAGE_PIXELS = 40_000_000
+MAX_UPLOAD_PIXELS = 100_000_000
+Image.MAX_IMAGE_PIXELS = MAX_UPLOAD_PIXELS
 
 
 class InvalidCoverImage(ValueError):
     pass
 
 
-def _save_normalized_cover(data: bytes, target_dir: Path) -> Path:
+def validate_uploaded_image(data: bytes) -> None:
+    """Trust decoded contents, not the browser MIME label; bound decode memory."""
+    if len(data) > MAX_COVER_BYTES:
+        raise InvalidCoverImage("单张图片不能超过 100MB")
     try:
         with Image.open(BytesIO(data)) as source:
-            source.verify()
+            if source.width * source.height > MAX_UPLOAD_PIXELS:
+                raise InvalidCoverImage("图片像素过大，请将总像素缩小至 1 亿以内后上传")
             if source.format not in ALLOWED_COVER_FORMATS:
                 raise InvalidCoverImage("仅支持 JPG、PNG 或 WebP 图片")
+            source.verify()
+    except Image.DecompressionBombError as exc:
+        raise InvalidCoverImage("图片像素过大，请将总像素缩小至 1 亿以内后上传") from exc
+    except (UnidentifiedImageError, OSError, ValueError) as exc:
+        if isinstance(exc, InvalidCoverImage):
+            raise
+        raise InvalidCoverImage("图片文件无效或已损坏") from exc
+
+
+def _save_normalized_cover(data: bytes, target_dir: Path) -> Path:
+    try:
+        validate_uploaded_image(data)
 
         with Image.open(BytesIO(data)) as source:
             image = ImageOps.exif_transpose(source)
@@ -82,10 +99,7 @@ def save_user_avatar(
     user_id: str,
 ) -> tuple[str, Path]:
     try:
-        with Image.open(BytesIO(data)) as source:
-            source.verify()
-            if source.format not in ALLOWED_COVER_FORMATS:
-                raise InvalidCoverImage("仅支持 JPG、PNG 或 WebP 图片")
+        validate_uploaded_image(data)
 
         with Image.open(BytesIO(data)) as source:
             image = ImageOps.exif_transpose(source)
@@ -131,10 +145,7 @@ def save_asset_image(
     asset_id: str,
 ) -> tuple[str, Path]:
     try:
-        with Image.open(BytesIO(data)) as source:
-            source.verify()
-            if source.format not in ALLOWED_COVER_FORMATS:
-                raise InvalidCoverImage("仅支持 JPG、PNG 或 WebP 图片")
+        validate_uploaded_image(data)
 
         with Image.open(BytesIO(data)) as source:
             image = ImageOps.exif_transpose(source)

@@ -1,4 +1,5 @@
 <script setup lang="ts">
+import { MAX_IMAGE_UPLOAD_BYTES, isSupportedImage } from '@/lib/imageUpload'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import {
@@ -50,6 +51,8 @@ import {
 import AdminUsersPanel from '@/components/AdminUsersPanel.vue'
 import AdminInvitationsPanel from '@/components/AdminInvitationsPanel.vue'
 import AdminBrandingPanel from '@/components/AdminBrandingPanel.vue'
+import AdminBackupsPanel from '@/components/AdminBackupsPanel.vue'
+import VisualHandbookCreator from '@/components/VisualHandbookCreator.vue'
 import BaseDialog from '@/components/BaseDialog.vue'
 import SkillTree from '@/components/SkillTree.vue'
 import UiSelect from '@/components/UiSelect.vue'
@@ -142,7 +145,7 @@ const pendingHandbookCover = ref<File | null>(null)
 const pendingHandbookCoverPreview = ref<string | null>(null)
 let adminTabsResizeObserver: ResizeObserver | null = null
 
-const validSections = ['overview', 'users', 'invitations', 'branding', 'models', 'pricing', 'agents', 'prompts', 'handbooks', 'skills', 'security'] as const
+const validSections = ['overview', 'users', 'invitations', 'branding', 'models', 'pricing', 'agents', 'prompts', 'handbooks', 'skills', 'security', 'backups'] as const
 const section = computed(() => {
   const value = String(route.params.section || 'overview')
   return validSections.includes(value as (typeof validSections)[number]) ? value : 'overview'
@@ -160,6 +163,7 @@ const tabs = [
   { id: 'handbooks', label: '创作手册', icon: BookOpen },
   { id: 'skills', label: 'Skills', icon: Sparkles },
   { id: 'security', label: '安全审计', icon: ShieldCheck },
+  { id: 'backups', label: '备份与还原', icon: Download },
 ]
 
 const providerForm = reactive({
@@ -471,7 +475,8 @@ const selectedDiscoveryCount = computed(() => selectableDiscoveryRows.value.filt
 const allDiscoverySelected = computed(() => selectableDiscoveryRows.value.length > 0 && selectedDiscoveryCount.value === selectableDiscoveryRows.value.length)
 
 onMounted(async () => {
-  await loadAll()
+  if (section.value === 'backups') loading.value = false
+  else await loadAll()
   if (section.value === 'security') await loadSecurityEvents(true)
   await revealActiveTab(false)
   if (adminTabs.value) {
@@ -480,7 +485,8 @@ onMounted(async () => {
     updateAdminTabScrollState()
   }
 })
-watch(section, async (value) => {
+watch(section, async (value, previous) => {
+  if (previous === 'backups' && value !== 'backups') await loadAll()
   window.scrollTo({ top: 0, behavior: 'smooth' })
   if (value === 'security' && securityEvents.value.length === 0) await loadSecurityEvents(true)
   await revealActiveTab(true)
@@ -1023,6 +1029,12 @@ async function openHandbook(handbook?: Handbook, handbookType: HandbookType = 'v
   }
 }
 
+async function openGeneratedHandbook(id: string): Promise<void> {
+  handbooks.value = await api<Handbook[]>('/admin/handbooks')
+  const handbook = handbooks.value.find(item => item.id === id)
+  if (handbook) await openHandbook(handbook)
+}
+
 function closeDialog(): void {
   if (dialog.value === 'handbook') clearPendingHandbookCover()
   if (dialog.value === 'handbook') {
@@ -1036,13 +1048,13 @@ function chooseHandbookCover(event: Event): void {
   const input = event.target as HTMLInputElement
   const file = input.files?.[0]
   if (!file) return
-  if (!['image/jpeg', 'image/png', 'image/webp'].includes(file.type)) {
+  if (!isSupportedImage(file)) {
     toast.show('请选择 JPG、PNG 或 WebP 图片', { tone: 'error' })
     input.value = ''
     return
   }
-  if (file.size > 8 * 1024 * 1024) {
-    toast.show('封面图片不能超过 8 MB', { tone: 'error' })
+  if (file.size > MAX_IMAGE_UPLOAD_BYTES) {
+    toast.show('封面图片不能超过 100 MB', { tone: 'error' })
     input.value = ''
     return
   }
@@ -1387,6 +1399,7 @@ async function saveSkill(): Promise<void> {
         </div>
       </section>
 
+      <AdminBackupsPanel v-else-if="section === 'backups'" />
       <AdminUsersPanel v-else-if="section === 'users'" />
 
       <AdminInvitationsPanel v-else-if="section === 'invitations'" />
@@ -1596,6 +1609,7 @@ async function saveSkill(): Promise<void> {
 
       <section v-else-if="section === 'handbooks'" class="admin-section">
         <header class="section-heading handbook-heading"><div><h2>创作手册</h2><p>固定结构的视觉与导演 Skills 技能包</p></div><div><button class="button button--secondary" type="button" @click="openHandbook(undefined, 'director')"><BookMarked :size="17" />新建导演手册</button><button class="button button--primary" type="button" @click="openHandbook(undefined, 'visual')"><Sparkles :size="17" />新建视觉手册</button></div></header>
+        <VisualHandbookCreator @created="openGeneratedHandbook" />
         <div class="handbook-grid">
           <button v-for="(handbook, index) in handbooks" :key="handbook.id" v-motion="{ preset: 'card', index }" class="handbook-item" type="button" @click="openHandbook(handbook)">
             <div class="handbook-item__cover"><img :src="handbook.cover_url || '/covers/login-studio.jpg'" :alt="handbook.name" /></div>
@@ -1798,7 +1812,7 @@ async function saveSkill(): Promise<void> {
                   <img :src="handbookCoverPreview" alt="手册封面预览" />
                   <span><ImagePlus :size="17" />{{ pendingHandbookCover ? '已选择' : '更换封面' }}</span>
                 </button>
-                <small>{{ pendingHandbookCover?.name || '建议 16:9，最大 8 MB' }}</small>
+                <small>{{ pendingHandbookCover?.name || '建议 16:9，最大 100 MB' }}</small>
                 <input ref="handbookCoverInput" class="sr-only" type="file" accept="image/jpeg,image/png,image/webp" @change="chooseHandbookCover" />
               </div>
             </div>

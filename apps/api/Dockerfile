@@ -20,7 +20,7 @@ COPY skills /var/lib/cineforge/skills
 RUN python -m pip install --no-cache-dir ".[postgres,s3]" \
     && groupadd --system --gid 10001 cineforge \
     && useradd --system --uid 10001 --gid cineforge --create-home cineforge \
-    && mkdir -p /var/lib/cineforge/uploads \
+    && mkdir -p /var/lib/cineforge/uploads /var/lib/cineforge/site-backups \
     && chown -R cineforge:cineforge /srv/cineforge-api /var/lib/cineforge
 
 USER cineforge

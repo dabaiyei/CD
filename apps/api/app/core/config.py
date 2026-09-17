@@ -41,8 +41,10 @@ class Settings(BaseSettings):
     jwt_algorithm: str = "HS256"
     jwt_issuer: str = "cineforge-api"
     jwt_audience: str = "cineforge-web"
-    access_token_minutes: int = 15
-    refresh_token_days: int = 30
+    # Keep normal browser sessions alive for at least one month. The refresh
+    # cookie extends beyond the access token so silent renewal remains possible.
+    access_token_minutes: int = 30 * 24 * 60
+    refresh_token_days: int = 90
     login_max_failures: int = 5
     login_lockout_minutes: int = 15
     login_rate_limit: int = 30
@@ -78,6 +80,10 @@ class Settings(BaseSettings):
     agent_chat_task_timeout_seconds: float = Field(default=300.0, gt=0, le=300.0)
     media_request_timeout_seconds: float = 300.0
     allow_private_media_urls: bool = False
+    site_backup_root: Path = PROJECT_ROOT / "site-backups"
+    site_backup_runtime_root: Path = PROJECT_ROOT / "services/agent-runtime/agentscope/runtime-data"
+    site_backup_admin_emails: list[str] = Field(default_factory=list)
+    site_backup_max_bytes: int = Field(default=100 * 1024**3, ge=1024)
 
     @field_validator("database_url", mode="after")
     @classmethod

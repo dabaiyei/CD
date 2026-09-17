@@ -18,8 +18,12 @@ if TEST_DATABASE.exists():
 
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{TEST_DATABASE.as_posix()}"
 os.environ["SEED_DEMO_DATA"] = "true"
+os.environ["SITE_BACKUP_ADMIN_EMAILS"] = '["admin@cineforge.local"]'
 os.environ["SKILLS_ROOT"] = str(TEST_SKILLS)
 os.environ["UPLOADS_ROOT"] = str(TEST_UPLOADS)
+os.environ["SITE_BACKUP_ROOT"] = str(TEST_UPLOADS.parent / (TEST_UPLOADS.name + "-backups"))
+os.environ["SITE_BACKUP_RUNTIME_ROOT"] = str(TEST_UPLOADS.parent / (TEST_UPLOADS.name + "-runtime"))
+Path(os.environ["SITE_BACKUP_RUNTIME_ROOT"]).mkdir(exist_ok=True)
 
 from app.db.session import engine  # noqa: E402
 from app.main import app  # noqa: E402
@@ -34,6 +38,8 @@ def client() -> Iterator[TestClient]:
         TEST_DATABASE.unlink()
     shutil.rmtree(TEST_UPLOADS, ignore_errors=True)
     shutil.rmtree(TEST_SKILLS, ignore_errors=True)
+    shutil.rmtree(os.environ["SITE_BACKUP_ROOT"], ignore_errors=True)
+    shutil.rmtree(os.environ["SITE_BACKUP_RUNTIME_ROOT"], ignore_errors=True)
 
 
 def login(client: TestClient, email: str, password: str) -> dict[str, str]:

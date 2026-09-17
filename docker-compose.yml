@@ -76,9 +76,15 @@ services:
     restart: unless-stopped
     environment:
       APP_ENV: production
+      SITE_BACKUP_ROOT: /var/lib/cineforge/site-backups
+      SITE_BACKUP_RUNTIME_ROOT: /var/lib/cineforge-agent-runtime
+      SITE_BACKUP_ADMIN_EMAILS: ${SITE_BACKUP_ADMIN_EMAILS:-[]}
+      SITE_BACKUP_MAX_BYTES: ${SITE_BACKUP_MAX_BYTES:-107374182400}
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-cineforge}:${POSTGRES_PASSWORD:-cineforge-local-password}@postgres:5432/${POSTGRES_DB:-cineforge}
       REDIS_URL: redis://redis:6379/0
       JWT_SECRET: ${JWT_SECRET:-cineforge-local-jwt-secret-change-me}
+      ACCESS_TOKEN_MINUTES: ${ACCESS_TOKEN_MINUTES:-43200}
+      REFRESH_TOKEN_DAYS: ${REFRESH_TOKEN_DAYS:-90}
       LOGIN_MAX_FAILURES: ${LOGIN_MAX_FAILURES:-5}
       LOGIN_LOCKOUT_MINUTES: ${LOGIN_LOCKOUT_MINUTES:-15}
       LOGIN_RATE_LIMIT: ${LOGIN_RATE_LIMIT:-30}
@@ -103,6 +109,8 @@ services:
     volumes:
       - uploads_data:/var/lib/cineforge/uploads
       - skills_data:/var/lib/cineforge/skills
+      - site_backup_data:/var/lib/cineforge/site-backups
+      - agent_runtime_data:/var/lib/cineforge-agent-runtime
     depends_on:
       postgres:
         condition: service_healthy
@@ -131,6 +139,7 @@ services:
     restart: unless-stopped
     command: ["python", "-m", "app.worker"]
     environment:
+      SITE_BACKUP_ROOT: /var/lib/cineforge/site-backups
       APP_ENV: production
       DATABASE_URL: postgresql+asyncpg://${POSTGRES_USER:-cineforge}:${POSTGRES_PASSWORD:-cineforge-local-password}@postgres:5432/${POSTGRES_DB:-cineforge}
       REDIS_URL: redis://redis:6379/0
@@ -155,6 +164,7 @@ services:
     volumes:
       - uploads_data:/var/lib/cineforge/uploads
       - skills_data:/var/lib/cineforge/skills
+      - site_backup_data:/var/lib/cineforge/site-backups
     depends_on:
       api:
         condition: service_healthy
@@ -188,3 +198,4 @@ volumes:
   skills_data:
   agent_runtime_data:
   object_storage_data:
+  site_backup_data:
