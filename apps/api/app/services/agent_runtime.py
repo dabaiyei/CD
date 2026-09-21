@@ -79,6 +79,60 @@ class AgentRuntimeRequestError(RuntimeError):
         self.status_code = status_code
 
 
+REASONING_EFFORTS = ("minimal", "low", "medium", "high", "xhigh")
+
+
+def resolve_reasoning_effort(
+    agent_config: dict[str, Any] | None,
+    model_capabilities: dict[str, Any] | None,
+) -> str | None:
+    """Decide the thinking level sent to the provider, or None to leave it alone.
+
+    The model declares which levels it accepts; the agent picks one. An agent
+    value the model does not support would be silently accepted by most
+    providers and quietly ignored, so it is dropped here instead of looking
+    like a setting that does nothing.
+    """
+    agent_value = str((agent_config or {}).get("reasoning_effort") or "").strip().lower()
+    if agent_value == "none":
+        return "none"
+    supported = [
+        str(level).strip().lower()
+        for level in (model_capabilities or {}).get("reasoning_efforts") or []
+        if str(level).strip()
+    ]
+    if not agent_value:
+        # Fall back to the model's own default so a capable model can be made
+        # to think without every agent having to restate it.
+        default = str((model_capabilities or {}).get("default_reasoning_effort") or "").strip().lower()
+        if not default:
+            return None
+        if default not in REASONING_EFFORTS and default not in supported:
+            return None
+        return default if not supported or default in supported else None
+    if agent_value not in REASONING_EFFORTS:
+        return None
+    return agent_value if not supported or agent_value in supported else None
+
+
+def resolve_max_tokens(
+    agent_config: dict[str, Any] | None,
+    model_capabilities: dict[str, Any] | None,
+    *,
+    ceiling: int | None = None,
+) -> int | None:
+    """Agent override, else the model default, optionally capped by the caller."""
+    for value in (
+        (agent_config or {}).get("max_tokens"),
+        (model_capabilities or {}).get("max_tokens"),
+    ):
+        if isinstance(value, bool) or not isinstance(value, (int, float)) or value <= 0:
+            continue
+        resolved = int(value)
+        return min(resolved, ceiling) if ceiling else resolved
+    return None
+
+
 async def raise_for_runtime_status(response: httpx.Response) -> None:
     if response.is_success:
         return

@@ -39,6 +39,7 @@ from app.db.models import (
 from app.db.session import get_session
 from app.domain.schemas import (
     ChapterAnalysisPublic,
+    ChapterContent,
     ChapterPublic,
     ProjectFileCreate,
     ProjectFileDetail,
@@ -60,6 +61,7 @@ from app.services.director_orchestration import ensure_chapter_not_automating
 from app.services.object_storage import delete_media_file, materialize_media_file, object_storage
 from app.services.source_import import (
     MAX_EPUB_BYTES,
+    MAX_TXT_BYTES,
     InvalidSourceFile,
     extract_chapters,
     parse_source,
@@ -368,12 +370,30 @@ async def list_chapters(
     unlocked = True
     result = []
     for chapter in chapters:
-        row = ChapterPublic.model_validate(chapter)
-        row.script_created = chapter.id in scripted
-        row.locked = project.creation_mode == "ai" and not unlocked
-        unlocked = unlocked and row.script_created
-        result.append(row)
+        locked = project.creation_mode == "ai" and not unlocked
+        script_created = chapter.id in scripted
+        result.append(ChapterPublic.from_chapter(chapter, locked=locked, script_created=script_created))
+        unlocked = unlocked and script_created
     return result
+
+
+@router.get(
+    "/{project_id}/chapters/{chapter_id}/content",
+    response_model=ChapterContent,
+)
+async def get_chapter_content(
+    project_id: str,
+    chapter_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> ChapterContent:
+    """Return one chapter's original text, which the list omits."""
+    chapter = await chapter_for_user(session, project_id, chapter_id, user)
+    return ChapterContent(
+        id=chapter.id,
+        title=chapter.title,
+        original_content=chapter.original_content or "",
+    )
 
 
 async def cleanup_chapter_media(storage_paths: set[str], chapter_id: str) -> None:
@@ -413,7 +433,9 @@ async def redo_chapter(
     await session.commit()
     await session.refresh(chapter)
     await cleanup_chapter_media(cleanup.storage_paths, chapter.id)
-    return chapter
+    # Built explicitly: returning the ORM row would leave the summary flags at
+    # their defaults, reporting an empty chapter.
+    return ChapterPublic.from_chapter(chapter)
 
 
 @router.delete("/{project_id}/chapters/{chapter_id}", status_code=status.HTTP_204_NO_CONTENT)
@@ -844,7 +866,10 @@ async def import_source(
     stored_keys: list[str] = []
     if file is not None:
         filename = Path(file.filename or "source.txt").name
-        data = await file.read(MAX_EPUB_BYTES + 1)
+        # Read the cap for this file's own type; using the smaller EPUB cap here
+        # would silently truncate a large TXT before parse_source could accept it.
+        read_cap = MAX_TXT_BYTES if Path(filename).suffix.lower() == ".txt" else MAX_EPUB_BYTES
+        data = await file.read(read_cap + 1)
         await file.close()
         try:
             text = await run_in_threadpool(parse_source, data, filename)
@@ -935,4 +960,10 @@ async def import_source(
         await session.refresh(original)
     for chapter in chapters:
         await session.refresh(chapter)
-    return SourceImportResult(source_file=source_file, original_file=original, chapters=chapters)
+    # Summaries only: returning every chapter's body here meant a fresh import
+    # of a full novel shipped several megabytes in one response.
+    return SourceImportResult(
+        source_file=source_file,
+        original_file=original,
+        chapters=[ChapterPublic.from_chapter(chapter) for chapter in chapters],
+    )

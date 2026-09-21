@@ -12,6 +12,7 @@ from app.db.models import AITask, Asset, Chapter, Project, ScriptVersion, Storyb
 from app.db.session import SessionLocal
 from app.services.agent_runtime import AgentRuntimeResponse
 from app.services.combat_techniques import CombatTechnique
+from app.services.combat_choreography import VERSION
 from app.services.shot_first_frames import needs_combat_frame
 from app.services.task_worker import process_task, queued_provider_candidates
 
@@ -457,7 +458,302 @@ def test_combat_prompts_use_assets_without_independent_frames(client, creator_he
             board = await session.get(StoryboardVersion, board_id)
             for action in design_payload()["beats"][0]["actions"]:
                 assert action in shot.video_prompt
-            assert board.content[0]["combat_design"]["version"] == "2"
+            assert board.content[0]["combat_design"]["version"] == VERSION
             assert "sword.md" in board.content[0]["combat_design"]["skill_retrieval"]["selected"]
     asyncio.run(check_saved_actions())
     assert not finished["request_payload"].get("first_frame_task_ids")
+
+
+def _frame_shot(action, reference, title="龙爪压落"):
+    from types import SimpleNamespace
+    return SimpleNamespace(title=title, scene_description="云海孤峰",
+                           action_description=action, reference_image_url=reference)
+
+
+def _frame_asset(asset_id, media_url):
+    from types import SimpleNamespace
+    return SimpleNamespace(id=asset_id, media_url=media_url, asset_metadata={})
+
+
+ASSET_ID = "9ff5aa40-cf4e-4b65-91bf-7b22f337c85b"
+CURRENT_PORTRAIT = f"/uploads/t/projects/p/assets/{ASSET_ID}-42e686ae-dc1f-4955-92c0-14fd475d9bcb.webp"
+STALE_PORTRAIT = f"/uploads/t/projects/p/assets/{ASSET_ID}-15f1e173-29e8-48cd-a705-fed8d30efb6f.webp"
+DESIGNED_FRAME = "/uploads/t/projects/p/agent-attachments/a1b2c3d4-frame.webp"
+PORTRAIT_ASSETS = [_frame_asset(ASSET_ID, CURRENT_PORTRAIT)]
+
+
+def test_regenerated_asset_portrait_still_requires_a_combat_frame():
+    # Regenerating an asset keeps its id but changes the file name. Comparing the
+    # shot's reference URL by exact string then read the stale portrait as an
+    # already-designed first frame, so combat shots rendered from a character
+    # sheet and the subject never faced the opponent.
+    from app.services.shot_first_frames import needs_combat_frame
+
+    assert needs_combat_frame(_frame_shot("龙爪自云隙压落", STALE_PORTRAIT), PORTRAIT_ASSETS) is True
+    assert needs_combat_frame(_frame_shot("龙爪自云隙压落", CURRENT_PORTRAIT), PORTRAIT_ASSETS) is True
+    assert needs_combat_frame(_frame_shot("龙爪自云隙压落", None), PORTRAIT_ASSETS) is True
+    # A first frame the platform actually designed must not be regenerated.
+    assert needs_combat_frame(_frame_shot("龙爪自云隙压落", DESIGNED_FRAME), PORTRAIT_ASSETS) is False
+
+
+def test_non_combat_shot_never_requests_a_combat_frame():
+    from app.services.shot_first_frames import needs_combat_frame
+
+    assert needs_combat_frame(_frame_shot("她静立于岩台边缘眺望", STALE_PORTRAIT, title="晨雾"),
+                              PORTRAIT_ASSETS) is False
+    assert needs_combat_frame(_frame_shot("她静立于岩台边缘眺望", None, title="晨雾"),
+                              PORTRAIT_ASSETS) is False
+
+
+def test_technique_asset_triggers_a_combat_frame_without_keyword_match():
+    from app.services.shot_first_frames import needs_combat_frame
+
+    technique = _frame_asset("tc", "/x.webp")
+    technique.asset_metadata = {"combat_technique": {"kind": "剑气"}}
+    assert needs_combat_frame(_frame_shot("她静立不动", STALE_PORTRAIT, title="晨雾"),
+                              [*PORTRAIT_ASSETS, technique]) is True
+
+
+@pytest.mark.parametrize("url,expected", [
+    (CURRENT_PORTRAIT, ASSET_ID),
+    (STALE_PORTRAIT, ASSET_ID),
+    (DESIGNED_FRAME, ""),
+    ("/uploads/t/projects/p/assets/notauuid-x.webp", ""),
+    (None, ""),
+    ("", ""),
+])
+def test_portrait_detection_reads_the_asset_id_not_the_file_name(url, expected):
+    from app.services.shot_first_frames import _portrait_asset_id
+
+    assert _portrait_asset_id(url) == expected
+
+
+def _runtime_context(**overrides):
+    from app.services.task_worker import TaskRuntimeContext
+    values = dict(tenant_id="t", project_id="p", task_id="task-1",
+                  system_prompt_head="HEAD", system_prompt_tail="TAIL", skill_context="SKILLS",
+                  model_binding={"model": "m"}, prompt_versions={}, skill_versions={}, skills=[],
+                  template_content="TEMPLATE", memory_enabled=False, memory_user_id="u")
+    values.update(overrides)
+    return TaskRuntimeContext(**values)
+
+
+def test_shared_context_assembles_the_original_prompt_order():
+    # The shot loop builds one task-level context and reuses it; the per-shot
+    # request must keep the original section order exactly.
+    from app.services.task_worker import assemble_runtime_request
+
+    request = assemble_runtime_request(_runtime_context(), prompt="SHOT", prompt_appendix="APPENDIX")
+    assert request.prompt == "TEMPLATE\n\nAPPENDIX\n\nSKILLS\n\nSHOT"
+    assert request.system_prompt == "HEADTAIL"
+    # With no appendix the template must still precede the skills.
+    assert assemble_runtime_request(_runtime_context(), prompt="SHOT").prompt == "TEMPLATE\n\nSKILLS\n\nSHOT"
+
+
+def test_per_shot_combat_guidance_splices_between_the_task_level_halves():
+    from app.services.task_worker import assemble_runtime_request
+
+    request = assemble_runtime_request(_runtime_context(), prompt="SHOT", combat_guidance="\nGUIDE")
+    assert request.system_prompt == "HEAD\nGUIDETAIL"
+
+
+def test_shot_prompt_parses_both_supported_reply_shapes():
+    from app.services.task_worker import parse_shot_video_prompt
+
+    row = {"shot_id": "shot-1", "order_index": 3}
+    by_id = json.dumps({"shots": [{"shot_id": "shot-1", "video_prompt": " 提示词A "}]})
+    assert parse_shot_video_prompt(by_id, row) == "提示词A"
+    by_index = json.dumps({"prompts": [{"shot_order_index": 3, "prompt": " 提示词B "}]})
+    assert parse_shot_video_prompt(by_index, row) == "提示词B"
+
+
+@pytest.mark.parametrize("payload,message", [
+    ({"shots": [{"shot_id": "other", "video_prompt": "x"}]}, "镜头 ID 不匹配"),
+    ({"prompts": [{"shot_order_index": 99, "prompt": "x"}]}, "镜头序号不匹配"),
+    ({"shots": [{"shot_id": "shot-1", "video_prompt": "   "}]}, "视频提示词为空"),
+])
+def test_shot_prompt_rejects_a_mismatched_or_empty_reply(payload, message):
+    from app.services.task_worker import parse_shot_video_prompt
+
+    with pytest.raises(RuntimeError, match=message):
+        parse_shot_video_prompt(json.dumps(payload), {"shot_id": "shot-1", "order_index": 3})
+
+
+def test_non_combat_shot_retries_invalid_model_output(monkeypatch):
+    # The combat path always retried three times; without the same tolerance a
+    # single malformed reply failed the shot, which is most of any storyboard.
+    from app.services import task_worker as worker
+
+    calls = []
+
+    class Reply:
+        finish_reason = "completed"
+        manifest = {}
+
+        def __init__(self, body):
+            self.final_response = body
+
+    class Runtime:
+        async def run(self, request):
+            calls.append(request)
+            if len(calls) == 1:
+                return Reply("不是 JSON")
+            return Reply(json.dumps({"shots": [{"shot_id": "shot-1", "video_prompt": "最终提示词"}]}))
+
+    async def fake_request(context, base_prompt, row, appendix):
+        prompt = base_prompt + json.dumps([row], ensure_ascii=False)
+        return worker.assemble_runtime_request(context, prompt=prompt)
+
+    monkeypatch.setattr(worker, "runtime_request_from_context", fake_request)
+    text = asyncio.run(worker.generate_shot_video_prompt(
+        _runtime_context(), "BASE", {"shot_id": "shot-1", "order_index": 1},
+        protocol_appendix="", runtime_factory=Runtime))
+    assert text == "最终提示词"
+    assert len(calls) == 2
+    assert "请修正" in calls[1].prompt          # the failure is fed back
+    assert calls[1].session_id.endswith("-retry-1")  # and it is a fresh session
+
+
+def test_non_combat_shot_gives_up_after_three_attempts(monkeypatch):
+    from app.services import task_worker as worker
+
+    calls = []
+
+    class Reply:
+        finish_reason = "completed"
+        manifest = {}
+        final_response = "坏回复"
+
+    class Runtime:
+        async def run(self, request):
+            calls.append(request)
+            return Reply()
+
+    async def fake_request(context, base_prompt, row, appendix):
+        return worker.assemble_runtime_request(context, prompt=base_prompt)
+
+    monkeypatch.setattr(worker, "runtime_request_from_context", fake_request)
+    with pytest.raises(RuntimeError, match="连续 3 次未通过校验"):
+        asyncio.run(worker.generate_shot_video_prompt(
+            _runtime_context(), "BASE", {"shot_id": "s", "order_index": 2},
+            protocol_appendix="", runtime_factory=Runtime))
+    assert len(calls) == 3
+
+
+def _budget_project(preferences):
+    from types import SimpleNamespace
+    return SimpleNamespace(creation_state={"preferences": preferences})
+
+
+def test_chapter_budget_is_read_only_from_a_valid_preference():
+    from app.services.task_worker import chapter_duration_budget
+
+    assert chapter_duration_budget(_budget_project({"chapter_duration_seconds": 30})) == 30
+    # A missing, zeroed or malformed preference means "no budget", not "zero budget",
+    # so such a chapter must not have every board rejected.
+    for preferences in ({}, {"chapter_duration_seconds": 0},
+                        {"chapter_duration_seconds": "30"},
+                        {"chapter_duration_seconds": True},
+                        {"chapter_duration_seconds": -5}):
+        assert chapter_duration_budget(_budget_project(preferences)) is None
+    assert chapter_duration_budget(SimpleNamespace(creation_state=None)) is None
+
+
+def test_board_over_the_chapter_budget_is_rejected_with_the_real_total():
+    from app.services.task_worker import validate_duration_budget
+
+    def shots(*durations):
+        from types import SimpleNamespace
+        return [SimpleNamespace(duration_seconds=value) for value in durations]
+
+    # 30-second chapters were producing several minutes of storyboard.
+    with pytest.raises(ValueError) as error:
+        validate_duration_budget(shots(*[7.5] * 10), 30)
+    message = str(error.value)
+    assert "75" in message and "30" in message
+    assert "10 个镜头" in message
+    # Fitting the budget passes, and so does rounding to the nearest legal clip.
+    validate_duration_budget(shots(*[3] * 10), 30)
+    validate_duration_budget(shots(*[3.4] * 10), 30)
+    # Seven 5-second clips land on 35s: ordinary rounding, not a real overshoot.
+    validate_duration_budget(shots(*[5] * 7), 30)
+
+
+def test_budget_slack_is_a_fraction_but_never_less_than_one_clip():
+    from app.services.task_worker import validate_duration_budget
+
+    def shots(*durations):
+        from types import SimpleNamespace
+        return [SimpleNamespace(duration_seconds=value) for value in durations]
+
+    # Large budget: slack is the larger 20% share.
+    validate_duration_budget(shots(*[6] * 20), 100)        # 120s, inside +20%
+    with pytest.raises(ValueError):
+        validate_duration_budget(shots(*[6] * 21), 100)     # 126s, outside
+    # Small budget: the one-clip floor keeps rounding from being rejected, while
+    # a multiple-times overshoot is still refused.
+    validate_duration_budget(shots(5, 5, 5, 5), 15)         # 20s, inside the floor
+    with pytest.raises(ValueError):
+        validate_duration_budget(shots(10, 10, 10), 15)     # 30s, double the budget
+
+
+def test_budget_does_not_constrain_chapters_without_one():
+    from app.services.task_worker import validate_duration_budget
+
+    def shots(count, each):
+        from types import SimpleNamespace
+        return [SimpleNamespace(duration_seconds=each) for _ in range(count)]
+
+    validate_duration_budget(shots(20, 10), None)   # 200s, no budget -> allowed
+
+
+def test_budget_contract_is_omitted_when_there_is_no_budget():
+    from app.services.task_worker import duration_budget_contract
+
+    assert duration_budget_contract(None) == {}
+    contract = duration_budget_contract(30)
+    assert contract["chapter_target_duration_seconds"] == 30
+    # The model must be told the sum, not just a per-shot cap.
+    assert "总时长" in contract["budget_rule"]
+    assert "30" in contract["budget_rule"]
+
+
+def test_source_timeline_runtime_outranks_the_chapter_budget():
+    # Explicit timestamps in the source state the runtime the author wants, so a
+    # shorter AI-creation budget must not reject that board (or loop forever
+    # asking the model to fit a length the text contradicts).
+    from app.services.storyboard_generation import allocate_timeline
+
+    source = "0-5秒 开场\n5-15秒 冲突\n15-60秒 高潮\n60-180秒 收尾"
+    plan = allocate_timeline(source, [5, 10])
+    assert plan, "explicit full timeline must produce a timing plan"
+    assert sum(part["duration_seconds"] for part in plan) == pytest.approx(180)
+
+    # A chapter without such a timeline yields no plan, which is the signal the
+    # caller uses to decide whether the budget applies.
+    assert allocate_timeline("纯文字章节，没有任何时间标记。", [5, 10]) == []
+
+
+def test_a_media_task_without_an_agent_can_still_rewrite_prompts():
+    # Media tasks carry no agent_profile_id and their model_id is an image model,
+    # yet the safety-rewrite step needs a text agent. Both used to make that step
+    # raise "任务所用 Agent 已停用", hiding the upstream policy rejection it was
+    # meant to resolve; the tenant's general agent must be used instead.
+    import asyncio
+
+    from sqlalchemy import select
+
+    from app.db.models import AgentKind, AgentProfile, Project
+    from app.db.session import SessionLocal
+
+    async def probe():
+        async with SessionLocal() as session:
+            project = await session.scalar(select(Project).limit(1))
+            general = await session.scalar(
+                select(AgentProfile).where(AgentProfile.kind == AgentKind.GENERAL).limit(1))
+            return (project.text_model_id if project else None,
+                    general.text_model_id if general else None, general is not None)
+
+    project_text_model, agent_text_model, has_general = asyncio.run(probe())
+    assert has_general, "a general agent is required for media prompt rewriting"
+    assert agent_text_model or project_text_model, "the rewrite needs a text model to call"

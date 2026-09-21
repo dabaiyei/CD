@@ -102,6 +102,11 @@ SYSTEM_PROMPTS = (
         "台词提取",
         "从生效剧本与分镜中提取可配音台词，并补充情绪和表演指导。",
     ),
+    (
+        "image-prompt-safety-rewrite",
+        "生图提示词安全改写",
+        "图像平台以安全政策拒绝提示词时，改写为可生成且保留原意的版本。",
+    ),
 )
 SYSTEM_PROMPT_CODES = frozenset(code for code, _name, _description in SYSTEM_PROMPTS)
 SYSTEM_PROMPT_BASELINE_VERSIONS = {

@@ -177,7 +177,12 @@ def test_context_changes_invalidate_cache_and_budget_blocks_provider(monkeypatch
     changed = asyncio.run(combat.generate("task", row, {}, {}, Runtime))
     assert state["calls"] == 2
     assert changed[1]["fingerprint"] != first[1]["fingerprint"]
-    state["context"] = "超长手册" * 10000
-    with pytest.raises(RuntimeError, match="32000"):
+    # An oversized request must be refused before reaching the provider. Size the
+    # padding from the configured budget so this keeps testing the guard rather
+    # than a stale literal.
+    from app.services.martial_skill_retrieval import MAX_REQUEST_CHARS
+
+    state["context"] = "超长手册" * (MAX_REQUEST_CHARS // 2)
+    with pytest.raises(RuntimeError, match=f"{MAX_REQUEST_CHARS:,}"):
         asyncio.run(combat.generate("task", row, {}, {}, Runtime))
     assert state["calls"] == 2

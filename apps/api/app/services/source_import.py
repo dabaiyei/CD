@@ -8,7 +8,7 @@ from pathlib import Path
 from bs4 import BeautifulSoup
 from ebooklib import ITEM_DOCUMENT, epub
 
-MAX_TXT_BYTES = 10 * 1024 * 1024
+MAX_TXT_BYTES = 100 * 1024 * 1024
 MAX_EPUB_BYTES = 30 * 1024 * 1024
 MAX_CHAPTERS = 2000
 
@@ -67,7 +67,7 @@ def parse_source(data: bytes, filename: str) -> str:
     suffix = Path(filename).suffix.lower()
     if suffix == ".txt":
         if len(data) > MAX_TXT_BYTES:
-            raise InvalidSourceFile("TXT 文件不能超过 10 MB")
+            raise InvalidSourceFile("TXT 文件不能超过 100 MB")
         text = decode_text(data)
     elif suffix == ".epub":
         if len(data) > MAX_EPUB_BYTES:

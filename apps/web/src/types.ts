@@ -371,11 +371,21 @@ export interface Chapter {
   source_mode: SourceMode
   order_index: number
   title: string
-  original_content: string
   status: ChapterStatus
   active_script_version_id: string | null
   created_at: string
   updated_at: string
+  /** Body length, so the list can show a size without shipping the text. */
+  content_length?: number
+  has_content?: boolean
+  /** The chapter body arrives separately, for the chapter being read. */
+  original_content?: string
+}
+
+export interface ChapterContent {
+  id: string
+  title: string
+  original_content: string
 }
 
 export interface ChapterAnalysisEvent {
@@ -587,13 +597,24 @@ export interface StoryboardShot {
   scene_description: string
   action_description: string
   dialogue: string
-  image_prompt: string
-  video_prompt: string
   asset_ids: string[]
   reference_image_url: string | null
   version: number
   created_at: string
   updated_at: string
+  /** Prompt bodies arrive separately, for the shot the user actually opens. */
+  image_prompt?: string
+  video_prompt?: string
+  /** Whether each prompt exists, so lists can show status without the text. */
+  has_image_prompt?: boolean
+  has_video_prompt?: boolean
+}
+
+export interface StoryboardShotPrompts {
+  id: string
+  version: number
+  image_prompt: string
+  video_prompt: string
 }
 
 export type VideoClipStatus = 'queued' | 'generating' | 'ready' | 'failed' | 'cancelled'

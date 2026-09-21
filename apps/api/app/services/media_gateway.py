@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import ipaddress
+import mimetypes
 import re
 import socket
 import unicodedata
@@ -44,7 +45,38 @@ _AGNES_IMAGE_21_PROMPT_SANITIZATION: dict[str, bool] = {
 
 
 class ModelGatewayError(RuntimeError):
-    pass
+    """Upstream model-platform failure, with the HTTP status when there was one."""
+
+    def __init__(self, message: str, *, status_code: int | None = None, detail: str = "") -> None:
+        super().__init__(message)
+        self.status_code = status_code
+        self.detail = detail
+
+
+# Phrases upstreams use when they refuse a prompt rather than fail to serve it.
+# Matching is deliberately narrow: rewriting and retrying only helps when the
+# request itself was judged unacceptable.
+PROMPT_REJECTION_MARKERS = (
+    "安全政策", "安全策略", "内容政策", "内容策略", "违规", "不合规",
+    "无法用于生成", "不适合进行图像", "被拦截", "被拒绝", "拒绝生成",
+    "safety", "policy", "moderation", "content filter", "blocked",
+    "violat", "inappropriate", "not allowed", "prohibited",
+)
+
+
+def prompt_was_rejected(error: BaseException) -> bool:
+    """Whether the platform refused this prompt on policy grounds.
+
+    A rejected prompt is worth rewriting and retrying; a malformed request, an
+    exhausted quota or a network fault is not, and retrying those would only
+    spend another generation attempt on the same guaranteed failure.
+    """
+    if not isinstance(error, ModelGatewayError):
+        return False
+    if error.status_code not in {400, 403, 451}:
+        return False
+    haystack = f"{error.detail} {error}".lower()
+    return any(marker in haystack for marker in PROMPT_REJECTION_MARKERS)
 
 
 def image_prompt_for_provider(
@@ -94,6 +126,39 @@ class ImageGenerationRequest:
     reference_image_url: str | None = None
     generation_mode: str = "text_to_image"
     reference_image_urls: list[str] | None = None
+
+
+@dataclass(slots=True)
+class _ImageRequestVariant:
+    """One way of handing reference images to an image provider.
+
+    Providers disagree about where reference images belong: OpenAI-compatible
+    relays take an ``image`` array alongside the generation call, older
+    self-hosted gateways take a single ``image_url``, and the OpenAI edit
+    contract takes multipart uploads on ``images/edits``. A wrong choice is not
+    always an error -- some relays silently ignore an unknown field and return
+    a freshly invented picture, which is how a "keep my face" edit turns into a
+    different person. The variants are therefore tried in order of likelihood.
+    """
+
+    body: dict[str, object]
+    strip_fields: tuple[str, ...] = ()
+    multipart_edits: bool = False
+    reference_urls: tuple[str, ...] = ()
+
+
+def _data_uri_payload(url: str) -> tuple[str, bytes] | None:
+    """Decode a ``data:`` URI into (mime type, bytes), or None for real URLs."""
+    if not url.startswith("data:"):
+        return None
+    header, _, encoded = url.partition(",")
+    if not encoded:
+        return None
+    mime = header[5:].split(";", 1)[0] or "image/png"
+    try:
+        return mime, base64.b64decode(encoded, validate=True)
+    except ValueError:
+        return None
 
 
 @dataclass(slots=True)
@@ -195,48 +260,7 @@ class OpenAICompatibleMediaGateway:
         reference_urls = list(request.reference_image_urls or [])
         if request.reference_image_url and request.reference_image_url not in reference_urls:
             reference_urls.insert(0, request.reference_image_url)
-        if reference_urls:
-            is_agnes_image = (
-                self.provider_code == AGNES_PROVIDER_CODE
-                or request.model in {AGNES_IMAGE_21_MODEL_ID, AGNES_IMAGE_MODEL_ID}
-            )
-            if is_agnes_image:
-                # Older persisted presets may still advertise image_url. Agnes
-                # interprets that as a text-image queue request and rejects it.
-                payload.pop("image_url", None)
-                payload.pop("generation_mode", None)
-                reference_parameter = "image"
-                reference_container = "extra_body"
-                reference_multiple = True
-            else:
-                reference_parameter = request.capabilities.get("image_reference_parameter")
-                if not isinstance(reference_parameter, str) or not reference_parameter.strip():
-                    reference_parameter = "image_url"
-                reference_container = request.capabilities.get("image_reference_container")
-                if not isinstance(reference_container, str) or not reference_container.strip():
-                    reference_container = ""
-                reference_multiple = request.capabilities.get("image_reference_multiple")
-                if not isinstance(reference_multiple, bool):
-                    reference_multiple = False
-            reference_value: object = reference_urls if reference_multiple else reference_urls[0]
-            if reference_container:
-                nested = payload.get(reference_container)
-                nested_payload = dict(nested) if isinstance(nested, dict) else {}
-                nested_payload[reference_parameter] = reference_value
-                payload[reference_container] = nested_payload
-            else:
-                payload[reference_parameter] = reference_value
-
-            generation_mode_parameter = (
-                ""
-                if is_agnes_image
-                else request.capabilities.get(
-                    "image_generation_mode_parameter",
-                    "generation_mode",
-                )
-            )
-            if isinstance(generation_mode_parameter, str) and generation_mode_parameter.strip():
-                payload[generation_mode_parameter] = request.generation_mode
+        variants = self._image_request_variants(request, payload, reference_urls)
 
         headers = {**self.headers, "Idempotency-Key": request.idempotency_key}
         timeout = httpx.Timeout(get_settings().media_request_timeout_seconds)
@@ -244,28 +268,9 @@ class OpenAICompatibleMediaGateway:
             # 供应商通常返回对象存储/CDN URL。部分 CDN 会先返回 301/302，
             # 如果不跟随重定向，响应体可能为空，最终会被误判为“空文件”。
             async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-                response: httpx.Response | None = None
-                for attempt in range(IMAGE_REQUEST_ATTEMPTS):
-                    try:
-                        response = await client.post(
-                            f"{self.base_url}/{endpoint}", headers=headers, json=payload
-                        )
-                    except (httpx.TimeoutException, httpx.NetworkError):
-                        if attempt + 1 >= IMAGE_REQUEST_ATTEMPTS:
-                            raise
-                        await asyncio.sleep(0.75 * (2**attempt))
-                        continue
-                    if (
-                        response.status_code not in RETRYABLE_IMAGE_STATUS_CODES
-                        or attempt + 1 >= IMAGE_REQUEST_ATTEMPTS
-                    ):
-                        break
-                    retry_after = response.headers.get("retry-after", "")
-                    try:
-                        delay = min(max(float(retry_after), 0.25), 5.0)
-                    except ValueError:
-                        delay = 0.75 * (2**attempt)
-                    await asyncio.sleep(delay)
+                response = await self._post_image_variants(
+                    client, endpoint, headers, variants
+                )
                 if response is None:
                     raise ModelGatewayError("图片平台未返回响应")
                 response.raise_for_status()
@@ -297,13 +302,204 @@ class OpenAICompatibleMediaGateway:
                     return _bounded_image(downloaded.content)
         except httpx.HTTPStatusError as exc:
             raise ModelGatewayError(
-                _http_error_message(exc.response, prefix="图片平台返回")
+                _http_error_message(exc.response, prefix="图片平台返回"),
+                status_code=exc.response.status_code,
+                detail=_upstream_error_detail(exc.response),
             ) from exc
         except httpx.HTTPError as exc:
             raise ModelGatewayError("无法连接图片模型平台") from exc
         except ValueError as exc:
             raise ModelGatewayError("图片平台返回了无效 JSON") from exc
         raise ModelGatewayError("图片平台未返回图片数据")
+
+    def _image_request_variants(
+        self,
+        request: ImageGenerationRequest,
+        base_payload: dict[str, object],
+        reference_urls: list[str],
+    ) -> list[_ImageRequestVariant]:
+        """Ordered list of reference-image request shapes to attempt.
+
+        Without references there is exactly one shape. With references the
+        provider's declared contract is tried first, then the OpenAI-style
+        ``image`` array, then ``images/edits`` multipart uploads. Ordering
+        matters because a relay that does not understand a shape may answer
+        with a plausible but unrelated picture instead of an error, which is
+        exactly the silent failure that loses the uploaded face.
+        """
+        base = dict(base_payload)
+        if not reference_urls:
+            return [_ImageRequestVariant(body=base)]
+
+        is_agnes_image = (
+            self.provider_code == AGNES_PROVIDER_CODE
+            or request.model in {AGNES_IMAGE_21_MODEL_ID, AGNES_IMAGE_MODEL_ID}
+        )
+        variants: list[_ImageRequestVariant] = []
+        configured_parameter = request.capabilities.get("image_reference_parameter")
+        configured_container = request.capabilities.get("image_reference_container")
+        configured_multiple = request.capabilities.get("image_reference_multiple")
+        has_declared_contract = (
+            isinstance(configured_parameter, str) and configured_parameter.strip()
+        )
+
+        if is_agnes_image:
+            # Older persisted presets may still advertise image_url, which Agnes
+            # reads as a text-image queue request and rejects. The array has to
+            # be merged into extra_body so the response_format override survives.
+            merged = dict(base)
+            nested = dict(merged.get("extra_body") or {})
+            nested["image"] = reference_urls
+            merged["extra_body"] = nested
+            variants.append(
+                _ImageRequestVariant(
+                    body=merged,
+                    strip_fields=("image_url", "generation_mode"),
+                )
+            )
+        elif has_declared_contract:
+            parameter = str(configured_parameter).strip()
+            container = (
+                str(configured_container).strip()
+                if isinstance(configured_container, str) and configured_container.strip()
+                else ""
+            )
+            value: object = reference_urls if configured_multiple is True else reference_urls[0]
+            body = dict(base)
+            if container:
+                nested = dict(body.get(container) or {})
+                nested[parameter] = value
+                body[container] = nested
+            else:
+                body[parameter] = value
+            mode_parameter = request.capabilities.get(
+                "image_generation_mode_parameter", "generation_mode"
+            )
+            if isinstance(mode_parameter, str) and mode_parameter.strip():
+                body[mode_parameter] = request.generation_mode
+            variants.append(_ImageRequestVariant(body=body))
+
+        # Universal fallbacks. ``generation_mode`` and ``image_url`` are dropped
+        # because relays commonly reject the whole request when they see the
+        # wrong reference key; the array is the shape the OpenAI edit contract
+        # and the relays built on it actually read.
+        array_body = dict(base)
+        array_body["image"] = reference_urls
+        variants.append(
+            _ImageRequestVariant(
+                body=array_body,
+                strip_fields=("image_url", "generation_mode"),
+            )
+        )
+        # Only usable when every reference is inline: multipart needs the bytes,
+        # and a remote URL would have to be fetched first.
+        if reference_urls and all(_data_uri_payload(url) for url in reference_urls):
+            variants.append(
+                _ImageRequestVariant(
+                    body=dict(base),
+                    strip_fields=("image", "image_url", "generation_mode"),
+                    multipart_edits=True,
+                    reference_urls=tuple(reference_urls),
+                )
+            )
+        if not has_declared_contract and not is_agnes_image:
+            # Legacy self-hosted gateways used a single top-level image_url.
+            # It is last because a relay that does not know the key may answer
+            # successfully without ever seeing the photo, which is the silent
+            # failure this ordering exists to avoid.
+            legacy_body = dict(base)
+            legacy_body["image_url"] = reference_urls[0]
+            variants.append(
+                _ImageRequestVariant(
+                    body=legacy_body,
+                    strip_fields=("image", "generation_mode"),
+                )
+            )
+        return variants
+
+    async def _post_image_variants(
+        self,
+        client: httpx.AsyncClient,
+        endpoint: str,
+        headers: dict[str, str],
+        variants: list[_ImageRequestVariant],
+    ) -> httpx.Response | None:
+        """Send each variant, returning the first response worth parsing.
+
+        A 4xx while probing is expected and falls through to the next shape.
+        Only the final shape retries transient upstream statuses, so probing
+        does not multiply the cost of a genuinely failing provider.
+        """
+        last_response: httpx.Response | None = None
+        for index, variant in enumerate(variants):
+            attempts = IMAGE_REQUEST_ATTEMPTS if index + 1 >= len(variants) else 1
+            for attempt in range(attempts):
+                try:
+                    response = await self._post_image_variant(
+                        client, endpoint, headers, variant
+                    )
+                except (httpx.TimeoutException, httpx.NetworkError):
+                    if attempt + 1 >= attempts:
+                        raise
+                    await asyncio.sleep(0.75 * (2**attempt))
+                    continue
+                if response.status_code < 400:
+                    return response
+                last_response = response
+                if (
+                    response.status_code not in RETRYABLE_IMAGE_STATUS_CODES
+                    or attempt + 1 >= attempts
+                ):
+                    break
+                retry_after = response.headers.get("retry-after", "")
+                try:
+                    delay = min(max(float(retry_after), 0.25), 5.0)
+                except ValueError:
+                    delay = 0.75 * (2**attempt)
+                await asyncio.sleep(delay)
+        return last_response
+
+    async def _post_image_variant(
+        self,
+        client: httpx.AsyncClient,
+        endpoint: str,
+        headers: dict[str, str],
+        variant: _ImageRequestVariant,
+    ) -> httpx.Response:
+        body = {
+            key: value
+            for key, value in variant.body.items()
+            if key not in variant.strip_fields
+        }
+        if not variant.multipart_edits:
+            return await client.post(
+                f"{self.base_url}/{endpoint}", headers=headers, json=body
+            )
+        reference_fields: list[tuple[str, tuple[str, bytes, str]]] = []
+        # The multipart shape strips the JSON "image" key, so the URLs travel on
+        # the variant itself rather than inside body.
+        for url in (variant.reference_urls or tuple(variant.body.get("image") or [])):
+            decoded = _data_uri_payload(str(url))
+            if decoded is None:
+                continue
+            mime, payload = decoded
+            extension = mimetypes.guess_extension(mime) or ".png"
+            reference_fields.append(
+                ("image", (f"reference{extension}", payload, mime))
+            )
+        if not reference_fields:
+            raise ModelGatewayError("参考图缺少可上传的图片数据")
+        fields = {
+            key: str(value)
+            for key, value in body.items()
+            if isinstance(value, (str, int, float)) and not isinstance(value, bool)
+        }
+        return await client.post(
+            f"{self.base_url}/images/edits",
+            headers=headers,
+            data=fields,
+            files=reference_fields,
+        )
 
     async def submit_video(self, request: VideoGenerationRequest) -> VideoGenerationResult:
         if self.provider_code == DOLA_PROVIDER_CODE:
@@ -1048,9 +1244,8 @@ def _first_string(*sources: dict[str, object], keys: tuple[str, ...]) -> str | N
     return None
 
 
-def _http_error_message(response: httpx.Response, *, prefix: str) -> str:
-    """Expose a useful upstream validation error without returning raw response data."""
-    detail: object = None
+def _upstream_error_detail(response: httpx.Response) -> str:
+    """Upstream's own explanation, extracted without exposing raw response data."""
     try:
         payload = response.json()
     except (ValueError, TypeError):
@@ -1062,11 +1257,16 @@ def _http_error_message(response: httpx.Response, *, prefix: str) -> str:
         elif isinstance(error, str):
             detail = error
         detail = detail or payload.get("detail") or payload.get("message")
-    if not detail:
-        raw_text = str(getattr(response, "text", "") or "").strip()
-        if raw_text and len(raw_text) <= 500:
-            detail = raw_text
-    suffix = f"：{str(detail).strip()}" if detail else ""
+        if detail:
+            return str(detail).strip()
+    raw_text = str(getattr(response, "text", "") or "").strip()
+    return raw_text if raw_text and len(raw_text) <= 500 else ""
+
+
+def _http_error_message(response: httpx.Response, *, prefix: str) -> str:
+    """Expose a useful upstream validation error without returning raw response data."""
+    detail = _upstream_error_detail(response)
+    suffix = f"：{detail}" if detail else ""
     return f"{prefix} HTTP {response.status_code}{suffix}"
 
 

@@ -206,6 +206,40 @@ class FakeAgnesImageUrlClient:
         return FakeResponse(content=b"valid-image-bytes", content_type="application/octet-stream")
 
 
+class FakeRelayImageClient:
+    """A relay that only honours the OpenAI ``image`` array.
+
+    This mirrors the production failure: the relay answers 400 for the
+    ``image_url`` shape and 200 for the array, so a client that sends the wrong
+    key never receives the reference image at all.
+    """
+
+    requests: list[tuple[str, dict]] = []
+
+    def __init__(self, **_kwargs) -> None:
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args) -> None:
+        return None
+
+    async def post(self, url: str, **kwargs) -> FakeResponse:
+        payload = kwargs.get("json") or kwargs.get("data") or {}
+        self.__class__.requests.append((url, payload))
+        if "image" not in payload:
+            response = FakeResponse()
+            response.status_code = 400
+            return response
+        return FakeResponse(
+            {"data": [{"b64_json": base64.b64encode(b"valid-image-bytes").decode()}]}
+        )
+
+    async def get(self, url: str, **_kwargs) -> FakeResponse:
+        raise AssertionError(f"unexpected download: {url}")
+
+
 def adapter_config() -> dict:
     return {
         "schema_version": 1,
@@ -832,3 +866,180 @@ def test_autodl_minimax_h3_preset_renders_indexed_data_uri_references(monkeypatc
         "ref_image_0": first,
         "ref_image_1": second,
     }
+
+
+def test_image_reference_falls_back_to_array_when_provider_declares_nothing(
+    monkeypatch,
+) -> None:
+    """A relay with no declared contract must still receive the reference image.
+
+    Production symptom this guards: the request went out with ``image_url``, the
+    relay ignored the unknown key, and the user's uploaded photo was replaced by
+    an unrelated generated person. The client has to reach the ``image`` array
+    shape on its own.
+    """
+    FakeRelayImageClient.requests.clear()
+    monkeypatch.setattr(media_gateway.httpx, "AsyncClient", FakeRelayImageClient)
+    gateway = OpenAICompatibleMediaGateway(
+        base_url="https://relay.example.test/v1",
+        api_key="secret",
+        extra_headers={},
+        provider_code="chensub",
+    )
+    reference = "data:image/png;base64,Zmlyc3Q="
+
+    result = asyncio.run(
+        gateway.generate_image(
+            ImageGenerationRequest(
+                model="gpt-image-2.5",
+                prompt="restyle the outfit, keep the face",
+                resolution="1K",
+                aspect_ratio="1:1",
+                capabilities={},
+                idempotency_key="relay-image-task",
+                reference_image_url=reference,
+                reference_image_urls=[reference],
+                generation_mode="image_to_image",
+            )
+        )
+    )
+
+    assert result == b"valid-image-bytes"
+    sent = [payload for _url, payload in FakeRelayImageClient.requests]
+    assert sent, "gateway never called the provider"
+    assert sent[-1]["image"] == [reference]
+    # The keys that made the relay silently ignore the reference must be gone.
+    assert "image_url" not in sent[-1]
+    assert "generation_mode" not in sent[-1]
+
+
+def test_image_reference_prefers_declared_contract_over_fallback(monkeypatch) -> None:
+    """An explicit provider contract is honoured before any generic fallback."""
+    FakeRelayImageClient.requests.clear()
+    monkeypatch.setattr(media_gateway.httpx, "AsyncClient", FakeRelayImageClient)
+    gateway = OpenAICompatibleMediaGateway(
+        base_url="https://custom.example.test/v1",
+        api_key="secret",
+        extra_headers={},
+    )
+    first = "data:image/png;base64,Zmlyc3Q="
+    second = "data:image/webp;base64,c2Vjb25k"
+    capabilities = {
+        "image_reference_parameter": "image",
+        "image_reference_container": "",
+        "image_reference_multiple": True,
+        "image_generation_mode_parameter": "",
+    }
+
+    asyncio.run(
+        gateway.generate_image(
+            ImageGenerationRequest(
+                model="custom-image-model",
+                prompt="combine the two references",
+                resolution="2K",
+                aspect_ratio="16:9",
+                capabilities=capabilities,
+                idempotency_key="declared-contract-task",
+                reference_image_url=first,
+                reference_image_urls=[first, second],
+                generation_mode="image_to_image",
+            )
+        )
+    )
+
+    sent = FakeRelayImageClient.requests[0][1]
+    assert sent["image"] == [first, second]
+    assert len(FakeRelayImageClient.requests) == 1
+
+
+def test_image_without_references_makes_a_single_text_request(monkeypatch) -> None:
+    FakeRelayImageClient.requests.clear()
+    monkeypatch.setattr(media_gateway.httpx, "AsyncClient", FakeRelayImageClient)
+    gateway = OpenAICompatibleMediaGateway(
+        base_url="https://relay.example.test/v1",
+        api_key="secret",
+        extra_headers={},
+    )
+
+    # A plain text-to-image request carries no image key, so this fake answers
+    # 400; the point is that only one shape is attempted, not four.
+    with pytest.raises(media_gateway.ModelGatewayError):
+        asyncio.run(
+            gateway.generate_image(
+                ImageGenerationRequest(
+                    model="gpt-image-2.5",
+                    prompt="a red cup",
+                    resolution="1K",
+                    aspect_ratio="1:1",
+                    capabilities={},
+                    idempotency_key="text-only-task",
+                )
+            )
+        )
+
+    assert len(FakeRelayImageClient.requests) == 1
+    assert "image" not in FakeRelayImageClient.requests[0][1]
+
+
+class FakeEditsOnlyImageClient:
+    """A relay that only accepts the multipart ``images/edits`` contract."""
+
+    requests: list[tuple[str, dict]] = []
+
+    def __init__(self, **_kwargs) -> None:
+        pass
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *_args) -> None:
+        return None
+
+    async def post(self, url: str, **kwargs) -> FakeResponse:
+        self.__class__.requests.append((url, kwargs))
+        if not url.endswith("/images/edits"):
+            response = FakeResponse()
+            response.status_code = 400
+            return response
+        return FakeResponse(
+            {"data": [{"b64_json": base64.b64encode(b"valid-image-bytes").decode()}]}
+        )
+
+    async def get(self, url: str, **_kwargs) -> FakeResponse:
+        raise AssertionError(f"unexpected download: {url}")
+
+
+def test_image_reference_falls_back_to_multipart_edits(monkeypatch) -> None:
+    """When only ``images/edits`` works, the data URI is uploaded as a file."""
+    FakeEditsOnlyImageClient.requests.clear()
+    monkeypatch.setattr(media_gateway.httpx, "AsyncClient", FakeEditsOnlyImageClient)
+    gateway = OpenAICompatibleMediaGateway(
+        base_url="https://edits.example.test/v1",
+        api_key="secret",
+        extra_headers={},
+    )
+    reference = "data:image/png;base64," + base64.b64encode(b"fake-png-bytes").decode()
+
+    result = asyncio.run(
+        gateway.generate_image(
+            ImageGenerationRequest(
+                model="edits-only-model",
+                prompt="change only the clothing",
+                resolution="1K",
+                aspect_ratio="1:1",
+                capabilities={},
+                idempotency_key="edits-task",
+                reference_image_url=reference,
+                reference_image_urls=[reference],
+                generation_mode="image_to_image",
+            )
+        )
+    )
+
+    assert result == b"valid-image-bytes"
+    url, kwargs = FakeEditsOnlyImageClient.requests[-1]
+    assert url.endswith("/images/edits")
+    # The reference must travel as a real file part, not as a JSON field.
+    assert kwargs["files"][0][0] == "image"
+    assert kwargs["files"][0][1][1] == b"fake-png-bytes"
+    assert "image" not in kwargs["data"]

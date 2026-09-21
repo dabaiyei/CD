@@ -11528,10 +11528,7 @@ body.agent-focus-open {
 }
 
 .asset-grid {
-  display: grid;
   max-height: min(470px, 55dvh);
-  grid-template-columns: repeat(3, minmax(0, 1fr));
-  gap: 10px;
   overflow-y: auto;
   padding: 2px;
 }
@@ -18860,10 +18857,6 @@ body.agent-focus-open {
     height: 148px;
   }
 
-  .asset-grid {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-
   .admin-users-section {
     min-width: 0;
   }
@@ -19550,10 +19543,6 @@ body.agent-focus-open {
     padding-inline: 7px;
   }
 
-  .asset-grid {
-    gap: 8px;
-  }
-
   .asset-card {
     grid-template-rows: 104px minmax(92px, 1fr) 42px;
   }
@@ -19881,11 +19870,8 @@ body.agent-focus-open {
   scale: .96;
 }
 
-.director-asset-board>div,
-.director-storyboard-board>div {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 12px;
+.director-asset-board>.virtual-grid,
+.director-storyboard-board>.virtual-grid {
   margin-top: 12px;
 }
 
@@ -20311,10 +20297,8 @@ body.agent-focus-open {
   font-weight: 650;
 }
 
-.director-video-shot-grid {
-  display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(150px, 1fr));
-  gap: 12px;
+.director-video-shot-grid.virtual-grid {
+  display: block;
 }
 
 .director-video-shot-grid article {
@@ -21606,10 +21590,35 @@ body.director-resizing {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
   align-items: center;
+  box-sizing: border-box;
+  padding-bottom: 3px;
   border-radius: 8px;
   transition-property: background-color, box-shadow, transform;
   transition-duration: var(--duration-fast, 250ms);
   transition-timing-function: var(--ease-smooth-out, cubic-bezier(0.22, 1, 0.36, 1));
+}
+
+/* Virtual chapter rail: only rows near the viewport are mounted. The rail
+   itself keeps scrolling while the inner canvas is absolutely positioned. */
+.chapter-list {
+  position: relative;
+  display: block;
+}
+
+.chapter-list__virtual {
+  position: relative;
+  min-height: 100%;
+}
+
+.chapter-list__virtual.is-horizontal {
+  flex: 0 0 auto;
+  height: 62px;
+  min-height: 0;
+}
+
+.chapter-item-row.is-horizontal {
+  flex: none;
+  padding: 0 8px 0 0;
 }
 
 .chapter-item-row .chapter-item {

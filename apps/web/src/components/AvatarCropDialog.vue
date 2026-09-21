@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { MAX_IMAGE_UPLOAD_BYTES, isSupportedImage } from '@/lib/imageUpload'
+import { IMAGE_ACCEPT_ATTRIBUTE, MAX_IMAGE_UPLOAD_BYTES, isSupportedImage } from '@/lib/imageUpload'
 import { nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import Cropper from 'cropperjs'
 import 'cropperjs/dist/cropper.css'
@@ -237,7 +237,7 @@ async function deleteAvatar(): Promise<void> {
       ref="fileInput"
       class="sr-only"
       type="file"
-      accept="image/jpeg,image/png,image/webp"
+      :accept="IMAGE_ACCEPT_ATTRIBUTE"
       @change="onFileChange"
     />
 
@@ -256,7 +256,7 @@ async function deleteAvatar(): Promise<void> {
         <button v-else class="avatar-editor__empty" type="button" @click="chooseFile">
           <span class="avatar-editor__empty-icon"><ImagePlus :size="26" /></span>
           <span><strong>选择一张头像图片</strong><small>点击选择或拖放到这里</small></span>
-          <em>JPG · PNG · WEBP，最大 100 MB</em>
+          <em>手机照片 JPG/JPEG · PNG · WEBP，最大 100 MB</em>
         </button>
         <div v-if="dragging" class="avatar-editor__drop-hint">
           <Upload :size="24" />

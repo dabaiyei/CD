@@ -628,11 +628,42 @@ class ChapterPublic(ApiModel):
     source_mode: SourceMode
     order_index: int
     title: str
-    original_content: str
     status: ChapterStatus
     active_script_version_id: str | None
     created_at: datetime
     updated_at: datetime
+    # The chapter body is fetched on demand: a long novel has thousands of
+    # chapters, and sending every original_content with the list transferred
+    # megabytes of text the reader never opened.
+    content_length: int = 0
+    has_content: bool = False
+
+    @classmethod
+    def from_chapter(cls, chapter, *, locked: bool = False, script_created: bool = False):
+        return cls(
+            locked=locked,
+            script_created=script_created,
+            id=chapter.id,
+            project_id=chapter.project_id,
+            source_file_id=chapter.source_file_id,
+            source_mode=chapter.source_mode,
+            order_index=chapter.order_index,
+            title=chapter.title,
+            status=chapter.status,
+            active_script_version_id=chapter.active_script_version_id,
+            created_at=chapter.created_at,
+            updated_at=chapter.updated_at,
+            content_length=len(chapter.original_content or ""),
+            has_content=bool((chapter.original_content or "").strip()),
+        )
+
+
+class ChapterContent(BaseModel):
+    """One chapter's original text, read when the reader opens it."""
+
+    id: str
+    title: str
+    original_content: str
 
 
 class ChapterAnalysisPublic(ApiModel):
@@ -929,6 +960,63 @@ class StoryboardShotPublic(ApiModel):
     updated_at: datetime
 
 
+class StoryboardShotSummary(ApiModel):
+    """A shot without the two prompt bodies, for lists and board loads.
+
+    `video_prompt` is by far the largest field and is only read when a shot is
+    opened in the editor; sending it for every shot made opening a chapter
+    transfer megabytes the user never looks at. Consumers that only need to know
+    whether a prompt exists can read the flags below.
+    """
+
+    id: str
+    storyboard_version_id: str
+    order_index: int
+    title: str
+    shot_type: str
+    duration_seconds: Decimal
+    scene_description: str
+    action_description: str
+    dialogue: str
+    asset_ids: list[str]
+    reference_image_url: str | None
+    version: int
+    created_at: datetime
+    updated_at: datetime
+    has_image_prompt: bool = False
+    has_video_prompt: bool = False
+
+    @classmethod
+    def from_shot(cls, shot) -> StoryboardShotSummary:
+        return cls(
+            id=shot.id,
+            storyboard_version_id=shot.storyboard_version_id,
+            order_index=shot.order_index,
+            title=shot.title,
+            shot_type=shot.shot_type,
+            duration_seconds=shot.duration_seconds,
+            scene_description=shot.scene_description,
+            action_description=shot.action_description,
+            dialogue=shot.dialogue,
+            asset_ids=list(shot.asset_ids or []),
+            reference_image_url=shot.reference_image_url,
+            version=shot.version,
+            created_at=shot.created_at,
+            updated_at=shot.updated_at,
+            has_image_prompt=bool((shot.image_prompt or "").strip()),
+            has_video_prompt=bool((shot.video_prompt or "").strip()),
+        )
+
+
+class StoryboardShotPrompts(BaseModel):
+    """The prompt bodies for one shot, fetched on demand."""
+
+    id: str
+    version: int
+    image_prompt: str
+    video_prompt: str
+
+
 class StoryboardVersionCreate(BaseModel):
     shots: list[StoryboardShotCreate] = Field(min_length=1, max_length=200)
 
@@ -963,7 +1051,8 @@ class VideoClipPublic(ApiModel):
 
 class StoryboardVersionDetail(BaseModel):
     version: StoryboardVersionPublic
-    shots: list[StoryboardShotPublic]
+    # Summaries only: prompt bodies are fetched per shot when opened.
+    shots: list[StoryboardShotSummary]
     video_clips: list[VideoClipPublic]
 
 

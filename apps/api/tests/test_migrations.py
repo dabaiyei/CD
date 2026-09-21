@@ -101,6 +101,9 @@ def test_initial_migration_round_trip_and_revision_guard(tmp_path: Path) -> None
         workflow_columns = {
             row[1] for row in connection.execute("PRAGMA table_info('director_workflow_runs')")
         }
+        script_columns = {
+            row[1] for row in connection.execute("PRAGMA table_info('script_versions')")
+        }
     assert {
         "tenants",
         "ai_tasks",
@@ -177,7 +180,8 @@ def test_initial_migration_round_trip_and_revision_guard(tmp_path: Path) -> None
     assert "invite_url_prefix" in tenant_columns
     assert "ix_image_resolution_routes_tenant_model" in image_route_indexes
     assert {"automation_mode", "stop_requested"} <= workflow_columns
-    assert revision == ("ab83e2196c40",)
+    assert "technique_plan" in script_columns
+    assert revision == ("b7c41e9a52f8",)
 
     checked = run_alembic(database, "check")
     assert "No new upgrade operations detected" in checked.stdout + checked.stderr

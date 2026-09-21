@@ -11,14 +11,64 @@ MAX_COVER_EDGE = 4096
 MIN_COVER_EDGE = 64
 AVATAR_EDGE = 512
 ALLOWED_COVER_TYPES = {"image/jpeg", "image/png", "image/webp"}
-ALLOWED_COVER_FORMATS = {"JPEG", "PNG", "WEBP"}
-
-MAX_UPLOAD_PIXELS = 100_000_000
+# Phone cameras store HDR, portrait and burst shots as a JPEG carrying a second
+# embedded picture (MPO), which Pillow reports as "MPO" rather than "JPEG".
+ALLOWED_COVER_FORMATS = {"JPEG", "MPO", "PNG", "WEBP"}
+# Only these decode at reduced scale while reading (see _sampled).
+SAMPLED_FORMATS = {"JPEG", "MPO"}
+# 108MP and 200MP phone sensors exceed the old 100MP bound while still being
+# ordinary JPEGs that decode in bounded memory once sampling is applied.
+MAX_UPLOAD_PIXELS = 240_000_000
+# Formats without a sampling decoder expand to their full frame, so they keep
+# the previous, stricter bound.
+MAX_UPLOAD_PIXELS_LOSSLESS = 100_000_000
+# Peak decoded frame for sampled formats. The JPEG decoder only scales by whole
+# powers of two, so this budget — not the upload size — is what bounds memory:
+# 64MP is ~192MB of RGB, still below the 100MP (300MB) the previous limit allowed.
+MAX_DECODE_PIXELS = 64_000_000
+SAMPLING_STEPS = (1, 2, 4, 8)
 Image.MAX_IMAGE_PIXELS = MAX_UPLOAD_PIXELS
+
+HEIF_BRANDS = {b"heic", b"heix", b"hevc", b"hevx", b"heim", b"heis", b"mif1", b"msf1", b"avif"}
 
 
 class InvalidCoverImage(ValueError):
     pass
+
+
+def _sampled(data: bytes) -> Image.Image:
+    """Open bytes and let the decoder scale very large JPEG/MPO files down.
+
+    libjpeg-turbo decodes those at 1/2, 1/4 or 1/8 scale in the DCT domain, so a
+    240MP photo never expands to its full ~720MB RGB frame on the way to WebP.
+    The divisor is chosen to stay within MAX_DECODE_PIXELS while keeping the
+    frame at or above MAX_COVER_EDGE, so nothing a caller stores is undersized
+    and ordinary photos are still decoded at full resolution.
+    """
+    image = Image.open(BytesIO(data))
+    if image.format in SAMPLED_FORMATS:
+        image.draft("RGB", _draft_target(image))
+    return image
+
+
+def _draft_target(image: Image.Image) -> tuple[int, int]:
+    """Edge that makes the decoder land at the smallest step within budget.
+
+    Pillow keeps the smaller of width//target and height//target, so the target
+    is expressed in the file's own dimensions to select exactly `step`.
+    """
+    step = SAMPLING_STEPS[-1]
+    for candidate in SAMPLING_STEPS:
+        width, height = image.width // candidate, image.height // candidate
+        if width * height <= MAX_DECODE_PIXELS:
+            step = candidate
+            break
+    return (max(1, image.width // step), max(1, image.height // step))
+
+
+def _heif_hint(data: bytes) -> bool:
+    """Detect iPhone/AVIF containers Pillow cannot decode, for a clearer error."""
+    return len(data) > 12 and data[4:8] == b"ftyp" and data[8:12].lower() in HEIF_BRANDS
 
 
 def validate_uploaded_image(data: bytes) -> None:
@@ -27,16 +77,23 @@ def validate_uploaded_image(data: bytes) -> None:
         raise InvalidCoverImage("单张图片不能超过 100MB")
     try:
         with Image.open(BytesIO(data)) as source:
-            if source.width * source.height > MAX_UPLOAD_PIXELS:
-                raise InvalidCoverImage("图片像素过大，请将总像素缩小至 1 亿以内后上传")
+            limit = MAX_UPLOAD_PIXELS if source.format in SAMPLED_FORMATS else MAX_UPLOAD_PIXELS_LOSSLESS
+            if source.width * source.height > limit:
+                raise InvalidCoverImage(
+                    f"图片像素过大，请将总像素缩小至 {limit / 100_000_000:g} 亿以内后上传"
+                )
             if source.format not in ALLOWED_COVER_FORMATS:
                 raise InvalidCoverImage("仅支持 JPG、PNG 或 WebP 图片")
             source.verify()
     except Image.DecompressionBombError as exc:
-        raise InvalidCoverImage("图片像素过大，请将总像素缩小至 1 亿以内后上传") from exc
+        raise InvalidCoverImage("图片像素过大，无法安全处理，请缩小分辨率后重试") from exc
     except (UnidentifiedImageError, OSError, ValueError) as exc:
         if isinstance(exc, InvalidCoverImage):
             raise
+        if _heif_hint(data):
+            raise InvalidCoverImage(
+                "该图片是 HEIC/HEIF 等手机压缩格式，请先转为 JPG 或 PNG 后上传"
+            ) from exc
         raise InvalidCoverImage("图片文件无效或已损坏") from exc
 
 
@@ -46,7 +103,7 @@ def _save_normalized_cover(data: bytes, target_dir: Path, *, webp_method: int = 
     try:
         validate_uploaded_image(data)
 
-        with Image.open(BytesIO(data)) as source:
+        with _sampled(data) as source:
             already_normalized = (
                 preserve_webp and source.format == "WEBP"
                 and not getattr(source, "is_animated", False)
@@ -114,7 +171,7 @@ def save_user_avatar(
     try:
         validate_uploaded_image(data)
 
-        with Image.open(BytesIO(data)) as source:
+        with _sampled(data) as source:
             image = ImageOps.exif_transpose(source)
             if min(image.size) < MIN_COVER_EDGE:
                 raise InvalidCoverImage("头像尺寸过小，宽高均需至少 64 像素")
@@ -160,7 +217,7 @@ def save_asset_image(
     try:
         validate_uploaded_image(data)
 
-        with Image.open(BytesIO(data)) as source:
+        with _sampled(data) as source:
             image = ImageOps.exif_transpose(source)
             if min(image.size) < MIN_COVER_EDGE:
                 raise InvalidCoverImage("资产图片尺寸过小，宽高均需至少 64 像素")

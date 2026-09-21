@@ -45,7 +45,9 @@ from app.db.session import get_session
 from app.domain.schemas import (
     StoryboardShotBatchRequest,
     StoryboardShotCreate,
+    StoryboardShotPrompts,
     StoryboardShotPublic,
+    StoryboardShotSummary,
     StoryboardShotUpdate,
     StoryboardVersionCreate,
     StoryboardVersionDetail,
@@ -562,7 +564,7 @@ async def get_storyboard(
     )
     return StoryboardVersionDetail(
         version=StoryboardVersionPublic.model_validate(storyboard),
-        shots=[StoryboardShotPublic.model_validate(shot) for shot in shots],
+        shots=[StoryboardShotSummary.from_shot(shot) for shot in shots],
         video_clips=[VideoClipPublic.model_validate(clip) for clip in clips],
     )
 
@@ -806,7 +808,7 @@ async def save_storyboard(
         await session.refresh(shot)
     return StoryboardVersionDetail(
         version=StoryboardVersionPublic.model_validate(version),
-        shots=[StoryboardShotPublic.model_validate(shot) for shot in shots],
+        shots=[StoryboardShotSummary.from_shot(shot) for shot in shots],
         video_clips=[],
     )
 
@@ -905,6 +907,37 @@ async def activate_storyboard(
     await session.commit()
     await session.refresh(storyboard)
     return storyboard
+
+
+@router.get(
+    "/{project_id}/chapters/{chapter_id}/storyboards/{storyboard_id}/shots/{shot_id}/prompts",
+    response_model=StoryboardShotPrompts,
+)
+async def get_storyboard_shot_prompts(
+    project_id: str,
+    chapter_id: str,
+    storyboard_id: str,
+    shot_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> StoryboardShotPrompts:
+    """Return one shot's prompt bodies, which the board listing omits."""
+    _, storyboard = await storyboard_for_user(
+        session,
+        project_id=project_id,
+        chapter_id=chapter_id,
+        storyboard_id=storyboard_id,
+        user=user,
+    )
+    shot = await session.get(StoryboardShot, shot_id)
+    if shot is None or shot.storyboard_version_id != storyboard.id or shot.user_id != user.id:
+        raise HTTPException(status_code=404, detail="镜头不存在")
+    return StoryboardShotPrompts(
+        id=shot.id,
+        version=shot.version,
+        image_prompt=shot.image_prompt or "",
+        video_prompt=shot.video_prompt or "",
+    )
 
 
 @router.patch(

@@ -522,6 +522,10 @@ class ScriptVersion(Base, TimestampMixin):
     content: Mapped[str] = mapped_column(Text)
     status: Mapped[str] = mapped_column(String(40), default="draft", index=True)
     review_notes: Mapped[str] = mapped_column(Text, default="")
+    # Techniques this chapter commits to (name, owner, purpose, duration). The
+    # design is realised at the asset stage; keeping the plan on the version
+    # means every later stage reads the same names instead of inventing new ones.
+    technique_plan: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, server_default="{}")
     is_active: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
 
 

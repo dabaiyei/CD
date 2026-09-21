@@ -48,12 +48,12 @@ class ShotBinding(BaseModel):
 
 
 async def storyboard_response(task_id, prompt_code, prompt, runtime_factory, *, validator=None,
-                              timing_plan=None, durations=None):
+                              timing_plan=None, durations=None, script="", budget=None):
     """Keep the exact board across extraction retries; never regenerate batch inputs."""
     from app.services import task_worker as worker
     from types import SimpleNamespace
     key = hashlib.sha256((prompt + json.dumps([timing_plan, durations], sort_keys=True)
-                          + "structured-board-v2-clips").encode()).hexdigest()
+                          + "structured-board-v3-scenes").encode()).hexdigest()
     state = {}
     async with worker.SessionLocal() as session:
         task = await worker.owned_task_for_update(session, task_id)
@@ -87,7 +87,8 @@ async def storyboard_response(task_id, prompt_code, prompt, runtime_factory, *, 
             await worker.record_progress(task_id, 35, message)
 
         text, manifest = await generate(request, runtime_factory, plan=timing_plan or [],
-            durations=durations, state=state, save=save, progress=progress)
+            durations=durations, state=state, save=save, progress=progress, script=script,
+            budget=budget)
         if validator:
             validator(text)
         result = SimpleNamespace(final_response=text, manifest=manifest)

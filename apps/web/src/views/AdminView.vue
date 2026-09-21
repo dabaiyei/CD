@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { MAX_IMAGE_UPLOAD_BYTES, isSupportedImage } from '@/lib/imageUpload'
+import { IMAGE_ACCEPT_ATTRIBUTE, MAX_IMAGE_UPLOAD_BYTES, isSupportedImage } from '@/lib/imageUpload'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { RouterLink, useRoute } from 'vue-router'
 import {
@@ -212,6 +212,36 @@ function cloneJsonRecord(value: unknown): Record<string, unknown> {
   }
 }
 
+function toggleModelReasoning(level: string): void {
+  const levels = modelForm.reasoning_efforts
+  modelForm.reasoning_efforts = levels.includes(level)
+    ? levels.filter((item) => item !== level)
+    : [...levels, level]
+  // A default the model no longer supports must not stay selected.
+  if (!modelForm.reasoning_efforts.includes(modelForm.default_reasoning_effort)) {
+    modelForm.default_reasoning_effort = ''
+  }
+}
+
+/** Reasoning support the model editor declares, written into its capabilities. */
+function textModelReasoningCapabilities(): Record<string, unknown> {
+  const levels = modelForm.reasoning_efforts
+  const fallback = modelForm.default_reasoning_effort
+  return {
+    reasoning_efforts: levels,
+    default_reasoning_effort: fallback && levels.includes(fallback) ? fallback : '',
+    max_tokens: typeof modelForm.max_tokens === 'number' && modelForm.max_tokens > 0 ? modelForm.max_tokens : null,
+  }
+}
+
+/** Only persist an override the agent actually chose; blank follows the model. */
+function agentReasoningConfig(): Record<string, unknown> {
+  const config: Record<string, unknown> = {}
+  if (agentForm.reasoning_effort.trim()) config.reasoning_effort = agentForm.reasoning_effort.trim()
+  if (typeof agentForm.max_tokens === 'number' && agentForm.max_tokens > 0) config.max_tokens = agentForm.max_tokens
+  return config
+}
+
 function stringList(value: unknown): string[] {
   if (!Array.isArray(value)) return []
   return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0)
@@ -242,6 +272,10 @@ const modelForm = reactive({
   model_type: 'text' as ModelType,
   capabilities: {} as ReturnType<typeof defaultVideoCapabilities>,
   agent_api_mode: 'chat_completions' as 'chat_completions' | 'responses',
+  // Declared on the model so an agent can only pick from what the provider takes.
+  reasoning_efforts: [] as string[],
+  default_reasoning_effort: '',
+  max_tokens: null as number | null,
   enabled: true,
   is_default: false,
 })
@@ -253,6 +287,9 @@ const agentForm = reactive({
   system_prompt: '',
   text_model_id: '',
   routing_priority: 0,
+  // Empty means "follow the model default"; the model limits the choices.
+  reasoning_effort: '',
+  max_tokens: null as number | null,
   memory_enabled: true,
   enabled: true,
 })
@@ -446,6 +483,32 @@ const agentKindOptions = [
   { value: 'screenplay', label: '剧本 Agent', description: '故事骨架、改编策略与剧本创作', icon: Bot },
   { value: 'general', label: '通用 AI', description: '事件、资产与台词等辅助能力', icon: Sparkles },
 ]
+const REASONING_LEVELS = [
+  { value: 'minimal', label: '最低' },
+  { value: 'low', label: '低' },
+  { value: 'medium', label: '中' },
+  { value: 'high', label: '高' },
+  { value: 'xhigh', label: '最高' },
+]
+const modelReasoningOptions = REASONING_LEVELS
+// An agent may only pick what its chosen model declares, plus "follow default".
+const agentReasoningOptions = computed(() => {
+  const model = models.value.find((item) => item.id === agentForm.text_model_id)
+  const supported = (model?.capabilities?.reasoning_efforts ?? []) as string[]
+  return [
+    { value: '', label: '跟随模型默认', description: '不覆盖模型的思考设置' },
+    ...REASONING_LEVELS.filter((level) => supported.includes(level.value)),
+    { value: 'none', label: '关闭思考', description: '显式要求模型不思考' },
+  ]
+})
+const selectedModelReasoningHint = computed(() => {
+  const model = models.value.find((item) => item.id === agentForm.text_model_id)
+  if (!model) return '先选择文本模型'
+  const supported = (model?.capabilities?.reasoning_efforts ?? []) as string[]
+  if (!supported.length) return '该模型未声明思考档位；如需开启请先在模型编辑中勾选'
+  const fallback = String(model.capabilities?.default_reasoning_effort ?? '')
+  return `模型支持 ${supported.join('、')}${fallback ? `，默认 ${fallback}` : ''}`
+})
 const handbookTypeOptions = [
   { value: 'visual', label: '视觉手册', description: '画风与视觉资产生成约束', icon: Sparkles },
   { value: 'director', label: '导演手册', description: '叙事规划与分镜技法', icon: BookOpen },
@@ -772,6 +835,9 @@ function openModel(model?: AIModel, providerId?: string, modelType?: ModelType):
       ? normalizedVideoCapabilities(model?.capabilities ?? {})
       : cloneJsonRecord(model?.capabilities ?? {}),
     agent_api_mode: model?.capabilities?.agent_api_mode === 'responses' ? 'responses' : 'chat_completions',
+    reasoning_efforts: [...((model?.capabilities?.reasoning_efforts ?? []) as string[])],
+    default_reasoning_effort: String(model?.capabilities?.default_reasoning_effort ?? ''),
+    max_tokens: typeof model?.capabilities?.max_tokens === 'number' ? model.capabilities.max_tokens : null,
     enabled: model?.enabled ?? true,
     is_default: model?.is_default ?? false,
   })
@@ -943,6 +1009,8 @@ function openAgent(agent?: AgentProfile): void {
     system_prompt: agent?.system_prompt ?? '',
     text_model_id: agent?.text_model_id ?? models.value.find((item) => item.model_type === 'text')?.id ?? '',
     routing_priority: Number(agent?.config.routing_priority ?? 0),
+    reasoning_effort: String(agent?.config.reasoning_effort ?? ''),
+    max_tokens: typeof agent?.config.max_tokens === 'number' ? agent.config.max_tokens : null,
     memory_enabled: agent?.memory_enabled ?? true,
     enabled: agent?.enabled ?? true,
   })
@@ -1105,7 +1173,7 @@ async function saveDialog(): Promise<void> {
             name: modelForm.name,
             ...(modelForm.model_type === 'video'
               ? { capabilities: modelForm.capabilities }
-              : { capabilities: { ...modelForm.capabilities, agent_api_mode: modelForm.agent_api_mode } }),
+              : { capabilities: { ...modelForm.capabilities, agent_api_mode: modelForm.agent_api_mode, ...textModelReasoningCapabilities() } }),
             enabled: modelForm.enabled,
             is_default: modelForm.is_default,
           }
@@ -1116,7 +1184,7 @@ async function saveDialog(): Promise<void> {
             model_type: modelForm.model_type,
             ...(modelForm.model_type === 'video'
               ? { capabilities: modelForm.capabilities }
-              : { capabilities: { ...modelForm.capabilities, agent_api_mode: modelForm.agent_api_mode } }),
+              : { capabilities: { ...modelForm.capabilities, agent_api_mode: modelForm.agent_api_mode, ...textModelReasoningCapabilities() } }),
             enabled: modelForm.enabled,
             is_default: modelForm.is_default,
           }
@@ -1128,11 +1196,11 @@ async function saveDialog(): Promise<void> {
         body: JSON.stringify({ unit_cost: pricingForm.unit_cost }),
       })
     } else if (dialog.value === 'agent') {
-      const { id: _id, routing_priority, ...values } = agentForm
+      const { id: _id, routing_priority, reasoning_effort, max_tokens, ...values } = agentForm
       const payload = {
         ...values,
         text_model_id: agentForm.text_model_id || null,
-        config: { ...agentConfigBase.value, routing_priority },
+        config: { ...agentConfigBase.value, routing_priority, ...agentReasoningConfig() },
       }
       const path = agentForm.id ? `/admin/agents/${agentForm.id}` : '/admin/agents'
       await api(path, { method: agentForm.id ? 'PUT' : 'POST', body: JSON.stringify(payload) })
@@ -1765,6 +1833,17 @@ async function saveSkill(): Promise<void> {
           <label class="field"><span>模型 ID</span><input v-model="modelForm.model_id" :disabled="Boolean(modelForm.id)" required placeholder="上游请求使用的模型标识" /></label>
           <label class="field"><span>显示名称</span><input v-model="modelForm.name" required placeholder="便于管理员与项目识别" /></label>
           <label v-if="modelForm.model_type === 'text'" class="field"><span>Agent 接口模式</span><UiSelect v-model="modelForm.agent_api_mode" :options="[{ value: 'chat_completions', label: 'Chat Completions', description: '传统 /chat/completions 工具调用' }, { value: 'responses', label: 'Responses API', description: '请求 /responses，适合支持 Responses 的中转模型' }]" /></label>
+          <template v-if="modelForm.model_type === 'text'">
+            <div class="field--full reasoning-declaration">
+              <span>支持的思考程度</span>
+              <div class="reasoning-levels">
+                <button v-for="level in modelReasoningOptions" :key="level.value" type="button" class="capability-switch" :aria-pressed="modelForm.reasoning_efforts.includes(level.value)" @click="toggleModelReasoning(level.value)"><span><i></i></span><div><strong>{{ level.label }}</strong></div></button>
+              </div>
+              <small>勾选该模型真正接受的档位；未勾选时 Agent 无法选择，避免设置看似生效却被上游忽略。</small>
+            </div>
+            <label class="field"><span>模型默认思考程度</span><UiSelect v-model="modelForm.default_reasoning_effort" :options="[{ value: '', label: '不指定' }, ...modelReasoningOptions.filter((level) => modelForm.reasoning_efforts.includes(level.value))]" /><small>Agent 未覆盖时使用</small></label>
+            <label class="field"><span>默认输出上限</span><input v-model.number="modelForm.max_tokens" type="number" min="0" step="256" placeholder="留空使用上游默认" /><small>tokens；Agent 可覆盖</small></label>
+          </template>
           <VideoCapabilityEditor v-if="modelForm.model_type === 'video'" v-model="modelForm.capabilities" />
           <div class="model-publish-controls field--full">
             <button class="capability-switch" type="button" :disabled="editingRequiredDefault" :aria-pressed="modelForm.is_default" @click="modelForm.is_default = !modelForm.is_default"><span><i></i></span><div><strong>默认模型</strong><small>项目未指定模型时自动使用</small></div></button>
@@ -1782,6 +1861,8 @@ async function saveSkill(): Promise<void> {
           <label class="field"><span>名称</span><input v-model="agentForm.name" required /></label>
           <label class="field field--full"><span>说明</span><input v-model="agentForm.description" /></label>
           <label class="field"><span>文本模型</span><UiSelect v-model="agentForm.text_model_id" :options="textModelOptions" /></label>
+          <label class="field"><span>思考程度</span><UiSelect v-model="agentForm.reasoning_effort" :options="agentReasoningOptions" /><small>{{ selectedModelReasoningHint }}</small></label>
+          <label class="field"><span>输出上限</span><input v-model.number="agentForm.max_tokens" type="number" min="0" step="256" placeholder="留空使用模型默认" /><small>tokens；长输出任务可提高以避免被截断</small></label>
           <label class="field"><span>自动调用优先级</span><input v-model.number="agentForm.routing_priority" type="number" min="0" max="1000" step="1" /><small>同类型 Agent 优先调用数值更高的配置</small></label>
           <label class="check-field"><input v-model="agentForm.memory_enabled" type="checkbox" /><span>启用持久记忆</span></label>
           <label class="check-field"><input v-model="agentForm.enabled" type="checkbox" /><span>发布此 Agent</span></label>
@@ -1813,7 +1894,7 @@ async function saveSkill(): Promise<void> {
                   <span><ImagePlus :size="17" />{{ pendingHandbookCover ? '已选择' : '更换封面' }}</span>
                 </button>
                 <small>{{ pendingHandbookCover?.name || '建议 16:9，最大 100 MB' }}</small>
-                <input ref="handbookCoverInput" class="sr-only" type="file" accept="image/jpeg,image/png,image/webp" @change="chooseHandbookCover" />
+                <input ref="handbookCoverInput" class="sr-only" type="file" :accept="IMAGE_ACCEPT_ATTRIBUTE" @change="chooseHandbookCover" />
               </div>
             </div>
             <div class="handbook-files-heading"><div><Files :size="17" /><strong>固定 Skills 文件</strong><span>{{ validHandbookFileCount }}/{{ handbookFiles.length }} 已填写</span></div><small><LockKeyhole :size="13" />文件不可新增、删除或重命名</small></div>

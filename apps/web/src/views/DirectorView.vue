@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import VideoConcatButton from '@/components/VideoConcatButton.vue'
-import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import { useVirtualizer } from '@tanstack/vue-virtual'
+import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
+import type { ComponentPublicInstance } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ArrowLeft,
@@ -63,7 +65,10 @@ import AgentChatPanel from '@/components/AgentChatPanel.vue'
 import AssetLibraryWorkbench from '@/components/AssetLibraryWorkbench.vue'
 import ChapterFinishingPanel from '@/components/ChapterFinishingPanel.vue'
 import DirectorChapterCanvas from '@/components/DirectorChapterCanvas.vue'
+import VirtualGrid from '@/components/VirtualGrid.vue'
 import { api, getToken } from '@/lib/api'
+import { chapterContentLength } from '@/lib/chapterContent'
+import { shotHasVideoPrompt } from '@/lib/storyboardShot'
 import { useActivityStore } from '@/stores/activity'
 import { useProjectsStore } from '@/stores/projects'
 import { useToastStore } from '@/stores/toast'
@@ -75,6 +80,7 @@ import type {
   AssetType,
   Chapter,
   ChapterAnalysis,
+  ChapterContent,
   ChapterStatus,
   DialogueLine,
   DialogueVersion,
@@ -91,6 +97,7 @@ import type {
   ScriptReviewResult,
   SourceMode,
   StoryboardShot,
+  StoryboardShotPrompts,
   StoryboardVersion,
   StoryboardVersionDetail,
   VideoClip,
@@ -240,6 +247,54 @@ const directorWorkspaceStyle = computed(() => ({
 const selectedChapter = computed(
   () => chapters.value.find((item) => item.id === selectedChapterId.value) ?? chapters.value[0],
 )
+// A 1000+ chapter novel used to mount every row (and its enter animation) at
+// once, which locked the project page. Only the rows near the viewport are
+// rendered now; the list stays virtual on both the desktop rail and the
+// horizontal mobile rail.
+const chapterList = ref<HTMLElement | null>(null)
+const chapterListHorizontal = ref(false)
+let chapterListMediaQuery: MediaQueryList | null = null
+let horizontalChapterRowSize = 0
+function syncChapterListAxis(event: MediaQueryList | MediaQueryListEvent): void {
+  chapterListHorizontal.value = event.matches
+  void nextTick(() => chapterVirtualizer.value.measure())
+}
+// Rows carry their own trailing gap so the measured size stays stable on the
+// desktop rail and the horizontal mobile rail (virtual-core has no gap option).
+function estimateChapterRow(): number {
+  if (!chapterListHorizontal.value) return 61
+  // Matches the mobile rail rule: clamp(260px, calc(100vw - 48px), 304px).
+  // The row keeps its trailing gap inside the measured border box.
+  return horizontalChapterRowSize
+    || Math.min(304, Math.max(260, window.innerWidth - 48))
+}
+const chapterVirtualizer = useVirtualizer<HTMLElement, HTMLElement>(computed(() => ({
+  count: chapters.value.length,
+  getScrollElement: () => chapterList.value,
+  estimateSize: estimateChapterRow,
+  getItemKey: (index: number) => chapters.value[index]?.id ?? index,
+  overscan: 8,
+  horizontal: chapterListHorizontal.value,
+})))
+const virtualChapters = computed(() => chapterVirtualizer.value.getVirtualItems().flatMap((virtualRow) => {
+  const chapter = chapters.value[virtualRow.index]
+  return chapter ? [{ virtualRow, chapter }] : []
+}))
+const chapterVirtualSize = computed(() => chapterVirtualizer.value.getTotalSize())
+
+function measureChapterRow(element: Element | ComponentPublicInstance | null): void {
+  const node = element instanceof Element ? element : element?.$el
+  if (!(node instanceof HTMLElement)) return
+  chapterVirtualizer.value.measureElement(node)
+  if (chapterListHorizontal.value) horizontalChapterRowSize = node.offsetWidth
+}
+
+async function scrollSelectedChapterIntoView(): Promise<void> {
+  const index = chapters.value.findIndex((chapter) => chapter.id === selectedChapter.value?.id)
+  if (index < 0) return
+  await nextTick()
+  chapterVirtualizer.value.scrollToIndex(index, { align: 'auto' })
+}
 const selectedScript = computed(
   () => scripts.value.find((item) => item.id === selectedScriptId.value) ?? scripts.value[0] ?? null,
 )
@@ -461,7 +516,7 @@ const videoPromptEligibleShots = computed(() => selectedVideoShots.value.filter(
 const videoEligibleShots = computed(() => selectedVideoShots.value.filter(
   (shot) => !busyShotIds.value.has(shot.id)
     && !busyVideoPromptShotIds.value.has(shot.id)
-    && Boolean(shot.video_prompt.trim())
+    && shotHasVideoPrompt(shot)
     && !(activeClips.value.get(shot.id)?.is_active && activeClips.value.get(shot.id)?.status === 'ready'),
 ))
 const downloadableVideoClips = computed(() => selectedVideoShots.value
@@ -651,12 +706,16 @@ function adjustDirectorSplit(event: KeyboardEvent): void {
 
 onMounted(() => {
   loadDirectorSplit()
+  chapterListMediaQuery = window.matchMedia('(max-width: 760px)')
+  syncChapterListAxis(chapterListMediaQuery)
+  chapterListMediaQuery.addEventListener('change', syncChapterListAxis)
   void loadWorkspace()
 })
 
 onBeforeUnmount(() => {
   document.body.classList.remove('director-resizing')
   if (automaticWorkflowTimer) clearTimeout(automaticWorkflowTimer)
+  chapterListMediaQuery?.removeEventListener('change', syncChapterListAxis)
 })
 
 watch(projectId, loadDirectorSplit)
@@ -672,6 +731,7 @@ watch(selectedChapterId, async (chapterId) => {
   selectedAssetIds.value = []
   selectedVideoShotId.value = ''
   selectedVideoShotIds.value = []
+  void scrollSelectedChapterIntoView()
   await Promise.all([
     loadAnalyses(chapterId),
     loadScripts(chapterId),
@@ -679,6 +739,7 @@ watch(selectedChapterId, async (chapterId) => {
     loadStoryboards(chapterId),
     loadDialogues(chapterId),
     loadAutomaticWorkflow(chapterId),
+    loadChapterContent(chapterId),
   ])
 })
 
@@ -695,6 +756,8 @@ watch(storyboardDetail, (detail) => {
   if (!shots.some((shot) => shot.id === selectedVideoShotId.value)) {
     selectedVideoShotId.value = shots[0]?.id ?? ''
   }
+  // The board omits prompt bodies; load the one the view shows first.
+  if (selectedVideoShotId.value) void loadShotPrompts([selectedVideoShotId.value])
   const availableIds = new Set(shots.map((shot) => shot.id))
   selectedVideoShotIds.value = selectedVideoShotIds.value.filter((id) => availableIds.has(id))
 })
@@ -760,6 +823,9 @@ async function loadWorkspace(): Promise<void> {
     ])
     project.value = projectRow
     chapters.value = chapterRows
+    await nextTick()
+    chapterVirtualizer.value.measure()
+    void scrollSelectedChapterIntoView()
     files.value = fileRows
     projectAssets.value = projectAssetRows
     globalAssets.value = globalAssetRows
@@ -872,6 +938,45 @@ async function loadAssetExtractions(chapterId: string): Promise<void> {
   }
 }
 
+/**
+ * The chapter list carries only metadata, so the body of the chapter being read
+ * is fetched here and merged into the list row. A long novel has thousands of
+ * chapters; loading them all with the list meant megabytes of text the reader
+ * never opened.
+ */
+const chapterContentRequests = new Map<string, Promise<void>>()
+
+async function loadChapterContent(chapterId: string, { force = false } = {}): Promise<void> {
+  if (!chapterId) return
+  const chapter = chapters.value.find((item) => item.id === chapterId)
+  if (!chapter) return
+  if (!force && typeof chapter.original_content === 'string') return
+  // Known-empty chapters need no request, but still get a value so the reader
+  // and the automation precheck read an empty string rather than undefined.
+  if (!force && chapter.has_content === false) {
+    chapter.original_content = ''
+    return
+  }
+  let request = chapterContentRequests.get(chapterId)
+  if (!request) {
+    request = api<ChapterContent>(
+      `/projects/${projectId.value}/chapters/${chapterId}/content`,
+    ).then((content) => {
+      const current = chapters.value.find((item) => item.id === chapterId)
+      if (current) current.original_content = content.original_content
+    }).catch((error) => {
+      toast.show('章节原文读取失败', {
+        message: error instanceof Error ? error.message : undefined,
+        tone: 'error',
+      })
+    }).finally(() => {
+      chapterContentRequests.delete(chapterId)
+    })
+    chapterContentRequests.set(chapterId, request)
+  }
+  await request
+}
+
 async function loadStoryboards(chapterId: string): Promise<void> {
   if (!chapterId) {
     storyboards.value = []
@@ -915,6 +1020,53 @@ async function selectStoryboard(storyboardId: string): Promise<void> {
   } finally {
     storyboardLoading.value = false
   }
+}
+
+/**
+ * Prompt bodies are large and are not part of the board listing. Fetch them for
+ * the shots actually on screen, then merge so the editor and preview keep
+ * working off the same object.
+ */
+const shotPromptRequests = new Map<string, Promise<void>>()
+
+async function loadShotPrompts(shotIds: string[]): Promise<void> {
+  const detail = storyboardDetail.value
+  if (!detail || !selectedChapter.value) return
+  const chapterId = selectedChapter.value.id
+  const storyboardId = detail.version.id
+  const pending: Promise<void>[] = []
+  for (const shotId of new Set(shotIds)) {
+    const shot = detail.shots.find((item) => item.id === shotId)
+    if (!shot) continue
+    // Already loaded, or known to have nothing to load.
+    if (shot.video_prompt !== undefined && shot.image_prompt !== undefined) continue
+    if (!shot.has_video_prompt && !shot.has_image_prompt) {
+      Object.assign(shot, { image_prompt: '', video_prompt: '' })
+      continue
+    }
+    let request = shotPromptRequests.get(shotId)
+    if (!request) {
+      request = api<StoryboardShotPrompts>(
+        `/projects/${projectId.value}/chapters/${chapterId}/storyboards/${storyboardId}/shots/${shotId}/prompts`,
+      ).then((prompts) => {
+        const current = storyboardDetail.value?.shots.find((item) => item.id === shotId)
+        if (current) Object.assign(current, {
+          image_prompt: prompts.image_prompt,
+          video_prompt: prompts.video_prompt,
+        })
+      }).catch((error) => {
+        toast.show('提示词读取失败', {
+          message: error instanceof Error ? error.message : undefined,
+          tone: 'error',
+        })
+      }).finally(() => {
+        shotPromptRequests.delete(shotId)
+      })
+      shotPromptRequests.set(shotId, request)
+    }
+    pending.push(request)
+  }
+  await Promise.all(pending)
 }
 
 async function loadDubbingOptions(): Promise<void> {
@@ -1131,7 +1283,9 @@ async function loadAutomaticWorkflow(chapterId: string, forceRefresh = false): P
 async function startAutomaticWorkflow(): Promise<void> {
   const chapter = selectedChapter.value
   if (!chapter || automationAction.value) return
-  if (!chapter.original_content.trim()) {
+  // The body may not be loaded yet; fetch it before deciding there is none.
+  await loadChapterContent(chapter.id)
+  if (!(chapter.original_content ?? '').trim()) {
     toast.show('无法开始全自动制作', { message: '当前章节没有原始文章内容', tone: 'error' })
     return
   }
@@ -1423,7 +1577,9 @@ async function activateStoryboardVersion(): Promise<void> {
   }
 }
 
-function openShotEditor(shot: StoryboardShot): void {
+async function openShotEditor(shot: StoryboardShot): Promise<void> {
+  // The editor writes the prompt bodies, so load them before filling the form.
+  await loadShotPrompts([shot.id])
   editingShot.value = shot
   Object.assign(shotForm, {
     title: shot.title,
@@ -2156,12 +2312,30 @@ function fileSize(bytes: number): string {
     <div v-if="chapters.length" class="director-production">
       <aside class="chapter-rail">
         <header><div><strong>章节</strong><span class="tabular-nums">{{ chapters.length }}</span></div><button class="icon-button icon-button--small" type="button" title="继续导入" @click="importOpen = true"><Plus :size="16" /></button></header>
-        <div class="chapter-list">
-          <div v-for="(chapter, index) in chapters" :key="chapter.id" v-motion="{ preset: 'row', index }" class="chapter-item-row" :class="{ active: selectedChapter?.id === chapter.id }">
-            <button class="chapter-item" :disabled="chapter.locked" :class="{ active: selectedChapter?.id === chapter.id }" type="button" @click="selectedChapterId = chapter.id"><span class="chapter-item__number tabular-nums">{{ String(chapter.order_index).padStart(2, '0') }}</span><span class="chapter-item__copy"><strong>{{ chapter.title }}</strong><small>{{ chapter.locked ? '完成前章剧本后解锁' : chapterStatusLabel[chapter.status] }}</small></span><ChevronRight :size="15" /></button>
-            <div class="chapter-item__actions">
-              <button type="button" title="重做章节" aria-label="重做章节" :disabled="chapterActionBusy || chapter.locked" @click.stop="requestChapterAction(chapter, 'redo')"><RotateCcw :size="14" /></button>
-              <button class="danger" type="button" title="删除章节" aria-label="删除章节" :disabled="chapterActionBusy || chapter.locked" @click.stop="requestChapterAction(chapter, 'delete')"><Trash2 :size="14" /></button>
+        <div ref="chapterList" class="chapter-list">
+          <div
+            class="chapter-list__virtual"
+            :class="{ 'is-horizontal': chapterListHorizontal }"
+            :style="chapterListHorizontal
+              ? { width: `${chapterVirtualSize}px` }
+              : { height: `${chapterVirtualSize}px` }"
+          >
+            <div
+              v-for="{ virtualRow, chapter } in virtualChapters"
+              :key="chapter.id"
+              :ref="measureChapterRow"
+              :data-index="virtualRow.index"
+              class="chapter-item-row"
+              :class="{ active: selectedChapter?.id === chapter.id, 'is-horizontal': chapterListHorizontal }"
+              :style="chapterListHorizontal
+                ? `position:absolute;top:0;left:0;height:100%;width:${virtualRow.size}px;transform:translateX(${virtualRow.start}px)`
+                : `position:absolute;top:0;left:0;width:100%;transform:translateY(${virtualRow.start}px)`"
+            >
+              <button class="chapter-item" :disabled="chapter.locked" :class="{ active: selectedChapter?.id === chapter.id }" type="button" @click="selectedChapterId = chapter.id"><span class="chapter-item__number tabular-nums">{{ String(chapter.order_index).padStart(2, '0') }}</span><span class="chapter-item__copy"><strong>{{ chapter.title }}</strong><small>{{ chapter.locked ? '完成前章剧本后解锁' : chapterStatusLabel[chapter.status] }}</small></span><ChevronRight :size="15" /></button>
+              <div class="chapter-item__actions">
+                <button type="button" title="重做章节" aria-label="重做章节" :disabled="chapterActionBusy || chapter.locked" @click.stop="requestChapterAction(chapter, 'redo')"><RotateCcw :size="14" /></button>
+                <button class="danger" type="button" title="删除章节" aria-label="删除章节" :disabled="chapterActionBusy || chapter.locked" @click.stop="requestChapterAction(chapter, 'delete')"><Trash2 :size="14" /></button>
+              </div>
             </div>
           </div>
         </div>
@@ -2192,6 +2366,7 @@ function fileSize(bytes: number): string {
           @queue-video-prompts="(shotIds) => queueVideoPrompts(true, shotIds)"
           @queue-batch-videos="queueBatchShotVideos"
           @queue-shot-video="queueShotVideo"
+          @request-shot-prompts="loadShotPrompts"
           @start-automation="startAutomaticWorkflow"
           @stop-automation="stopAutomaticWorkflow"
         />
@@ -2245,7 +2420,7 @@ function fileSize(bytes: number): string {
         <section v-if="activeWorkflow === 'source'" class="analysis-workbench stage-enter">
           <header class="analysis-workbench__header"><div><span class="stage-kicker">SOURCE INTELLIGENCE</span><h3>原文与章节分析</h3><p>让剧本 Agent 提取可核验事件、人物动机、核心冲突和改编策略。</p></div><div><button class="button button--secondary" type="button" @click="openAgent('analysis')"><MessageSquareText :size="16" />自由分析对话</button><button class="button button--primary" type="button" :disabled="Boolean(chapterAnalysisTask)" @click="queueChapterAnalysis"><LoaderCircle v-if="chapterAnalysisTask" class="spin" :size="16" /><RefreshCw v-else-if="analyses.length" :size="16" /><BrainCircuit v-else :size="16" />{{ chapterAnalysisTask ? (chapterAnalysisTask.status === 'running' ? 'AI 正在分析' : '等待执行') : analyses.length ? '生成新分析版本' : 'AI 深度分析' }}<small>{{ price('chapter_analysis_generation', 5) }} 积分</small></button></div></header>
           <div class="analysis-layout">
-            <article class="source-reader"><header><div><BookOpenText :size="18" /><span>章节原文</span></div><span class="source-reader__count tabular-nums">{{ selectedChapter.original_content.length.toLocaleString('zh-CN') }} 字</span></header><div>{{ selectedChapter.original_content }}</div></article>
+            <article class="source-reader"><header><div><BookOpenText :size="18" /><span>章节原文</span></div><span class="source-reader__count tabular-nums">{{ chapterContentLength(selectedChapter).toLocaleString('zh-CN') }} 字</span></header><div>{{ selectedChapter.original_content ?? '正在读取章节原文…' }}</div></article>
             <section class="analysis-panel">
               <nav v-if="analyses.length" class="analysis-version-tabs" aria-label="分析版本"><span><History :size="14" />分析版本</span><button v-for="item in analyses" :key="item.id" type="button" :class="{ active: selectedAnalysis?.id === item.id }" @click="selectedAnalysisId = item.id"><strong class="tabular-nums">v{{ item.version }}</strong><small>{{ new Date(item.created_at).toLocaleDateString('zh-CN') }}</small></button></nav>
               <div v-if="chapterAnalysisTask" class="analysis-processing"><span><BrainCircuit :size="25" /><i></i></span><strong>{{ chapterAnalysisTask.status === 'running' ? '正在建立章节情报图谱' : '任务已排队' }}</strong><p>AI 会读取原文与项目手册，完成后自动写入分析版本和项目文件。</p><div><i></i><i></i><i></i></div></div>
@@ -2367,7 +2542,7 @@ function fileSize(bytes: number): string {
                 <blockquote v-if="shot.dialogue"><MessageSquareText :size="14" />{{ shot.dialogue }}</blockquote>
                 <div v-if="shotAssets(shot).length" class="shot-assets"><span v-for="asset in shotAssets(shot)" :key="asset.id"><img v-image-preview="asset.media_url" v-if="asset.media_url" :src="asset.media_url" :alt="asset.name" /><component :is="assetTypeIcon[asset.asset_type]" v-else :size="12" />{{ asset.name }}</span></div>
               </div>
-              <footer><span v-if="activeClips.get(shot.id)?.is_active"><CircleCheckBig :size="14" />视频 v{{ activeClips.get(shot.id)?.version }} 已生效</span><span v-else><Film :size="14" />尚无生效视频</span><button class="button" :class="activeClips.get(shot.id)?.is_active ? 'button--secondary' : 'button--primary'" type="button" :disabled="!storyboardDetail.version.is_active || busyShotIds.has(shot.id) || !shot.video_prompt" @click="queueShotVideo(shot)"><LoaderCircle v-if="busyShotIds.has(shot.id)" class="spin" :size="15" /><RefreshCw v-else-if="activeClips.get(shot.id)?.is_active" :size="15" /><Play v-else :size="15" />{{ busyShotIds.has(shot.id) ? '处理中' : activeClips.get(shot.id)?.is_active ? '重新生成' : '生成视频' }}<small>{{ price('shot_video_generation', 60) }} 积分</small></button></footer>
+              <footer><span v-if="activeClips.get(shot.id)?.is_active"><CircleCheckBig :size="14" />视频 v{{ activeClips.get(shot.id)?.version }} 已生效</span><span v-else><Film :size="14" />尚无生效视频</span><button class="button" :class="activeClips.get(shot.id)?.is_active ? 'button--secondary' : 'button--primary'" type="button" :disabled="!storyboardDetail.version.is_active || busyShotIds.has(shot.id) || !shotHasVideoPrompt(shot)" @click="queueShotVideo(shot)"><LoaderCircle v-if="busyShotIds.has(shot.id)" class="spin" :size="15" /><RefreshCw v-else-if="activeClips.get(shot.id)?.is_active" :size="15" /><Play v-else :size="15" />{{ busyShotIds.has(shot.id) ? '处理中' : activeClips.get(shot.id)?.is_active ? '重新生成' : '生成视频' }}<small>{{ price('shot_video_generation', 60) }} 积分</small></button></footer>
             </article>
           </div>
           <section v-else-if="storyboardDetail?.shots.length && activeWorkflow === 'video'" class="video-production-console">
@@ -2412,7 +2587,7 @@ function fileSize(bytes: number): string {
               <article class="video-output-panel">
                 <header>
                   <div><span class="tabular-nums">#{{ selectedVideoShot?.order_index || 0 }}</span><strong>生成视频</strong></div>
-                  <button class="button button--primary" type="button" :disabled="!selectedVideoShot || !selectedVideoShot.video_prompt || busyShotIds.has(selectedVideoShot.id) || storyboardAction === 'video'" @click="selectedVideoShot && queueShotVideo(selectedVideoShot)">
+                  <button class="button button--primary" type="button" :disabled="!selectedVideoShot || !shotHasVideoPrompt(selectedVideoShot) || busyShotIds.has(selectedVideoShot.id) || storyboardAction === 'video'" @click="selectedVideoShot && queueShotVideo(selectedVideoShot)">
                     <LoaderCircle v-if="selectedVideoShot && busyShotIds.has(selectedVideoShot.id)" class="spin" :size="15" />
                     <Play v-else :size="15" />
                     生成视频
@@ -2466,7 +2641,7 @@ function fileSize(bytes: number): string {
                     <Camera v-else :size="20" />
                   </span>
                   <b class="tabular-nums">#{{ shot.order_index }}</b>
-                  <small>{{ busyShotIds.has(shot.id) ? '视频中' : busyVideoPromptShotIds.has(shot.id) ? '提示词中' : activeClips.get(shot.id)?.is_active ? '已完成' : shot.video_prompt ? '待生成' : '缺提示词' }}</small>
+                  <small>{{ busyShotIds.has(shot.id) ? '视频中' : busyVideoPromptShotIds.has(shot.id) ? '提示词中' : activeClips.get(shot.id)?.is_active ? '已完成' : shotHasVideoPrompt(shot) ? '待生成' : '缺提示词' }}</small>
                 </article>
               </div>
             </footer>
@@ -2528,7 +2703,7 @@ function fileSize(bytes: number): string {
     <section v-else-if="project.creation_mode !== 'ai'" class="director-empty-state"><div class="director-empty-state__visual"><img :src="project.cover_url || '/covers/login-studio.jpg'" :alt="project.name" /><span><Clapperboard :size="24" /></span></div><div><span class="eyebrow">START PRODUCTION</span><h2>导入第一份创作内容</h2><p>从小说或剧本中识别章节，建立可追踪的短剧生产流程。</p><div><button class="button button--primary" type="button" @click="importOpen = true"><Upload :size="17" />导入 TXT / EPUB</button><button class="button button--secondary" type="button" @click="inputMode = 'paste'; importOpen = true"><FileText :size="17" />粘贴文本</button></div></div></section>
 
     <BaseDialog :open="importOpen" title="导入创作内容" description="导入小说或剧本并自动识别章节" wide @update:open="importOpen = $event">
-      <div class="source-importer"><div class="mode-segment"><button :class="{ active: importMode === 'novel' }" type="button" @click="importMode = 'novel'"><BookOpenText :size="18" /><span><strong>小说</strong><small>按章节识别原文</small></span></button><button :class="{ active: importMode === 'script' }" type="button" @click="importMode = 'script'"><Clapperboard :size="18" /><span><strong>剧本</strong><small>按集识别内容</small></span></button></div><div class="input-mode-tabs"><button :class="{ active: inputMode === 'upload' }" type="button" @click="inputMode = 'upload'"><Upload :size="15" />上传文件</button><button :class="{ active: inputMode === 'paste' }" type="button" @click="inputMode = 'paste'"><FileText :size="15" />粘贴文本</button></div><button v-if="inputMode === 'upload'" class="source-dropzone" type="button" @click="fileInput?.click()"><input ref="fileInput" class="sr-only" type="file" accept=".txt,.epub,text/plain,application/epub+zip" @change="chooseUpload" /><span><Upload :size="23" /></span><strong>{{ uploadFile?.name || '选择 TXT 或 EPUB 文件' }}</strong><small>{{ uploadFile ? fileSize(uploadFile.size) : 'TXT 最大 10 MB，EPUB 最大 30 MB' }}</small></button><div v-else class="paste-editor"><label class="field"><span>来源名称</span><input v-model="sourceName" placeholder="例如：雾港来信原著" /></label><label class="field"><span>原始内容</span><textarea v-model="pastedText" rows="13" placeholder="在这里粘贴完整小说或剧本内容，系统将自动识别章节…"></textarea></label></div></div>
+      <div class="source-importer"><div class="mode-segment"><button :class="{ active: importMode === 'novel' }" type="button" @click="importMode = 'novel'"><BookOpenText :size="18" /><span><strong>小说</strong><small>按章节识别原文</small></span></button><button :class="{ active: importMode === 'script' }" type="button" @click="importMode = 'script'"><Clapperboard :size="18" /><span><strong>剧本</strong><small>按集识别内容</small></span></button></div><div class="input-mode-tabs"><button :class="{ active: inputMode === 'upload' }" type="button" @click="inputMode = 'upload'"><Upload :size="15" />上传文件</button><button :class="{ active: inputMode === 'paste' }" type="button" @click="inputMode = 'paste'"><FileText :size="15" />粘贴文本</button></div><button v-if="inputMode === 'upload'" class="source-dropzone" type="button" @click="fileInput?.click()"><input ref="fileInput" class="sr-only" type="file" accept=".txt,.epub,text/plain,application/epub+zip" @change="chooseUpload" /><span><Upload :size="23" /></span><strong>{{ uploadFile?.name || '选择 TXT 或 EPUB 文件' }}</strong><small>{{ uploadFile ? fileSize(uploadFile.size) : 'TXT 最大 100 MB，EPUB 最大 30 MB' }}</small></button><div v-else class="paste-editor"><label class="field"><span>来源名称</span><input v-model="sourceName" placeholder="例如：雾港来信原著" /></label><label class="field"><span>原始内容</span><textarea v-model="pastedText" rows="13" placeholder="在这里粘贴完整小说或剧本内容，系统将自动识别章节…"></textarea></label></div></div>
       <template #footer><button class="button button--ghost" type="button" @click="importOpen = false">取消</button><button class="button button--primary" type="button" :disabled="importing || (inputMode === 'upload' ? !uploadFile : !pastedText.trim())" @click="importSource"><LoaderCircle v-if="importing" class="spin" :size="17" /><WandSparkles v-else :size="17" />识别并创建章节</button></template>
     </BaseDialog>
 
@@ -2583,7 +2758,12 @@ function fileSize(bytes: number): string {
           </div>
         </div>
         <nav class="asset-type-filter" aria-label="资产类型"><button v-for="type in assetTypes" :key="type.value" :class="{ active: assetTypeFilter === type.value }" type="button" @click="assetTypeFilter = type.value"><component :is="type.icon" :size="15" />{{ type.label }}</button></nav>
-        <div class="asset-grid"><article v-for="(asset, index) in visibleAssets" :key="asset.id" v-motion="{ preset: 'card', index }" class="asset-card" :class="{ selected: selectedAssetIds.includes(asset.id), busy: isAssetBusy(asset.id), derivative: Boolean(asset.parent_asset_id) }"><div class="asset-card__visual"><img v-image-preview="asset.media_url || undefined" v-if="asset.media_url" :src="asset.media_url || undefined" :alt="asset.name" /><component :is="assetTypeIcon[asset.asset_type]" v-else :size="25" /><span>{{ assetTypeLabel[asset.asset_type] }}</span><button v-if="asset.scope === 'project'" class="asset-card__select" type="button" :aria-label="`选择${asset.name}`" :aria-pressed="selectedAssetIds.includes(asset.id)" @click="toggleAssetSelection(asset.id)"><Check :size="14" /></button><i v-if="isAssetBusy(asset.id)" class="asset-card__busy"><LoaderCircle class="spin" :size="17" />任务处理中</i></div><div class="asset-card__body"><header><strong>{{ asset.name }}</strong><span :data-status="asset.status">{{ isAssetBusy(asset.id) ? '任务处理中' : assetStatusLabel[asset.status] }}</span></header><p>{{ asset.description || '暂无资产说明' }}</p><small v-if="asset.parent_asset_id"><GitBranchPlus :size="12" />衍生自 {{ assetParent(asset)?.name || '基础资产' }}</small></div><footer><button type="button" @click="transferAsset(asset)"><ArrowUpFromLine v-if="asset.scope === 'project'" :size="14" /><ArrowDownToLine v-else :size="14" />{{ asset.scope === 'project' ? '导出全局' : '导入项目' }}</button><button class="icon-button icon-button--small" type="button" title="编辑资产" @click="openAssetEditor(asset)"><Pencil :size="14" /></button><button class="icon-button icon-button--small icon-button--danger" type="button" title="删除资产" @click="confirmAssetDelete(asset)"><Trash2 :size="14" /></button></footer></article><div v-if="!visibleAssets.length" class="asset-empty"><Boxes :size="28" /><strong>这里还没有资产</strong><span>{{ assetScope === 'project' ? '从剧本提取，或从全局资产库导入' : '创建可供租户内项目复用的资产' }}</span></div></div>
+        <VirtualGrid class="asset-grid" :items="visibleAssets" :min-column-width="200" :estimate-row-height="276">
+          <template #default="{ item: asset }">
+          <article class="asset-card" :class="{ selected: selectedAssetIds.includes(asset.id), busy: isAssetBusy(asset.id), derivative: Boolean(asset.parent_asset_id) }"><div class="asset-card__visual"><img v-image-preview="asset.media_url || undefined" v-if="asset.media_url" :src="asset.media_url || undefined" :alt="asset.name" /><component :is="assetTypeIcon[asset.asset_type]" v-else :size="25" /><span>{{ assetTypeLabel[asset.asset_type] }}</span><button v-if="asset.scope === 'project'" class="asset-card__select" type="button" :aria-label="`选择${asset.name}`" :aria-pressed="selectedAssetIds.includes(asset.id)" @click="toggleAssetSelection(asset.id)"><Check :size="14" /></button><i v-if="isAssetBusy(asset.id)" class="asset-card__busy"><LoaderCircle class="spin" :size="17" />任务处理中</i></div><div class="asset-card__body"><header><strong>{{ asset.name }}</strong><span :data-status="asset.status">{{ isAssetBusy(asset.id) ? '任务处理中' : assetStatusLabel[asset.status] }}</span></header><p>{{ asset.description || '暂无资产说明' }}</p><small v-if="asset.parent_asset_id"><GitBranchPlus :size="12" />衍生自 {{ assetParent(asset)?.name || '基础资产' }}</small></div><footer><button type="button" @click="transferAsset(asset)"><ArrowUpFromLine v-if="asset.scope === 'project'" :size="14" /><ArrowDownToLine v-else :size="14" />{{ asset.scope === 'project' ? '导出全局' : '导入项目' }}</button><button class="icon-button icon-button--small" type="button" title="编辑资产" @click="openAssetEditor(asset)"><Pencil :size="14" /></button><button class="icon-button icon-button--small icon-button--danger" type="button" title="删除资产" @click="confirmAssetDelete(asset)"><Trash2 :size="14" /></button></footer></article>
+          </template>
+        </VirtualGrid>
+        <div v-if="!visibleAssets.length" class="asset-empty"><Boxes :size="28" /><strong>这里还没有资产</strong><span>{{ assetScope === 'project' ? '从剧本提取，或从全局资产库导入' : '创建可供租户内项目复用的资产' }}</span></div>
       </div>
     </BaseDialog>
 

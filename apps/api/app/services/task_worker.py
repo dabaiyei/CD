@@ -13,14 +13,16 @@ import time
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from copy import deepcopy
+from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
 from pathlib import Path
-from typing import Literal, Protocol, TypeGuard
+from typing import Any, Literal, Protocol, TypeGuard
 
 import httpx
 from pydantic import BaseModel, Field, ValidationError, model_validator
 from sqlalchemy import and_, func, or_, select, update
+from sqlalchemy.exc import OperationalError
 from sqlalchemy.ext.asyncio import AsyncSession
 from starlette.concurrency import run_in_threadpool
 
@@ -30,6 +32,7 @@ from app.db.models import (
     AgentChatMessage,
     AgentChatSession,
     AgentChatSummary,
+    AgentKind,
     AgentMemory,
     AgentMessageRole,
     AgentProfile,
@@ -86,6 +89,8 @@ from app.services.agent_runtime import (
     AgentRuntimeProjectFileSnapshot,
     AgentRuntimeRequest,
     AgentRuntimeRequestError,
+    resolve_max_tokens,
+    resolve_reasoning_effort,
 )
 from app.services.asset_identity import asset_name_key, extraction_asset_catalog, reusable_asset
 from app.services.asset_revisions import snapshot_asset_revision
@@ -106,9 +111,11 @@ from app.services.media import (
 )
 from app.services.media_gateway import (
     ImageGenerationRequest,
+    ModelGatewayError,
     OpenAICompatibleMediaGateway,
     SpeechGenerationRequest,
     VideoGenerationRequest,
+    prompt_was_rejected,
 )
 from app.services.object_storage import (
     delete_media_file,
@@ -172,6 +179,10 @@ class CompositionRenderer(Protocol):
 
 RendererFactory = Callable[[], CompositionRenderer]
 logger = logging.getLogger(__name__)
+
+# SQLite reports contention through driver text rather than a dedicated error
+# code, so match the message to decide whether an error is retryable.
+_SQLITE_LOCK_MARKERS = re.compile(r"database is locked|database table is locked", re.IGNORECASE)
 WORKER_ID = os.environ.get("CINEFORGE_WORKER_ID") or f"{socket.gethostname()}:{os.getpid()}"
 RESTART_UNSAFE_IMAGE_TASKS = {"project_cover_generation", "asset_image_generation", "shot_first_frame_generation"}
 PROVIDER_JOB_TASKS = {"shot_video_generation", "dialogue_tts_generation"}
@@ -476,7 +487,7 @@ async def cleanup_media(storage_key: str, cached_path: Path) -> None:
         await delete_media_file(storage_key, cached_path)
 
 
-from app.services.combat_techniques import CombatTechnique
+from app.services.combat_techniques import CombatTechnique, TechniquePlan
 
 
 class ExtractedAssetPayload(BaseModel):
@@ -600,6 +611,7 @@ class GeneratedScriptPayload(BaseModel):
     content: str = Field(min_length=1, max_length=500_000)
     review_notes: str = Field(default="", max_length=50_000)
     continuity_summary: str = Field(default="", max_length=1500)
+    technique_plan: TechniquePlan = Field(default_factory=TechniquePlan)
 
     @model_validator(mode="after")
     def separate_internal_memory(self):
@@ -693,6 +705,52 @@ _MEDIA_PROMPT_REWRITE_REQUEST = re.compile(
 def should_reuse_historical_image(content: str) -> bool:
     text = content.strip()
     return bool(text and _MEDIA_REVISION_REQUEST.search(text) and not _FRESH_MEDIA_REQUEST.search(text))
+
+
+# Explicit requests to replace the person. These must suppress the identity lock,
+# because keeping the reference face would directly contradict the instruction.
+_REPLACE_IDENTITY_REQUEST = re.compile(
+    r"换(?:一)?(?:张|个)?脸|换头|换(?:成|做)别人|变成别人|改为别人|改成别人"
+    r"|(?:换|改|替换|变成|生成|做成).{0,6}(?:面孔|面容|长相|五官)"
+    r"|(?:换成|变成|改为|改成|替换成).{0,12}(?:另一个|别的|其他的|新的)人(?:物)?"
+    r"|(?:不(?:要|用)(?:再)?|别)(?:用|要|保留|沿用).{0,8}(?:这张|上张|原图|参考).{0,8}(?:脸|人)"
+    # "换个人" only when nothing follows it, so "换个人设风格的妆" is not matched.
+    r"|(?:换|改)(?:个|成)?人(?:物)?(?![设物])"
+    r"|(?:replace (?:the )?(?:face|person)|different person|another person"
+    r"|change (?:the )?(?:face|identity))"
+)
+
+
+def keeps_reference_identity(content: str) -> bool:
+    """Whether the reference face must survive this edit.
+
+    Default is to keep it: an uploaded photo is normally the person the user
+    wants to see styled differently, and losing their face is the failure they
+    notice. Only an explicit request to replace the person opts out.
+    """
+    text = (content or "").strip()
+    if not text:
+        return True
+    return not _REPLACE_IDENTITY_REQUEST.search(text)
+
+
+def image_identity_lock(*, character: bool, keep_identity: bool) -> str:
+    """The platform-level identity constraint for an image-to-image request.
+
+    Written as a hard prompt prefix rather than left to the model's own wording:
+    an image model otherwise treats a reference photo as loose style guidance and
+    redraws the face, which is exactly the drift this prevents. It also states
+    what may change, so styling and makeup edits are not blocked by it.
+    """
+    if not keep_identity:
+        return ""
+    if character:
+        return ("\n主图为同一主体的身份参考，保留主图性别、面容、体型和固有特征。"
+                "仅按本次衍生说明改变服装、姿态、状态或招式，不得生成另一个人物。")
+    return ("\n参考图是同一人物的身份基准，必须保持其面部特征一致：脸型、五官形状与比例、"
+            "眼型与眼距、鼻型、唇形、眉形、肤色与痣等辨识特征均不得重绘或替换；"
+            "允许按本次要求改变妆容、发型、服装、姿态、场景、光线与画风，"
+            "但改变后仍须能认出是同一个人，不得生成另一张脸或另一个人物。")
 
 
 def media_prompt_rewrite_allowed(
@@ -1355,6 +1413,63 @@ def _seconds_label(value: float) -> str:
     return f"{value:g}s"
 
 
+def chapter_duration_budget(project: Project | None) -> int | None:
+    """The chapter's target finished length, when the project set one.
+
+    Stored with the AI-creation preferences; a project without preferences has
+    no budget and the storyboard is free to use whatever the story needs.
+    """
+    state = getattr(project, "creation_state", None) or {}
+    preferences = state.get("preferences") if isinstance(state, dict) else None
+    if not isinstance(preferences, dict):
+        return None
+    value = preferences.get("chapter_duration_seconds")
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return int(value) if value > 0 else None
+
+
+def duration_budget_contract(budget: int | None) -> dict[str, object]:
+    """State the chapter budget as a hard constraint the storyboard must fit."""
+    if budget is None:
+        return {}
+    return {
+        "chapter_target_duration_seconds": budget,
+        "budget_rule": (
+            f"全章分镜总时长必须控制在 {budget} 秒左右，不得明显超出；"
+            "所有镜头 duration_seconds 之和即整章成片时长。"
+            "先按剧情重要性分配各段预算，再为每个镜头选择不超过该段预算的受支持时长；"
+            "内容装不下时合并、压缩或删减次要镜头，不得靠增加镜头把总时长撑到预算的倍数。"
+        ),
+    }
+
+
+def validate_duration_budget(shots, budget: int | None, *, band: float = 5.0) -> None:
+    """Reject a board whose total length overshoots the chapter budget.
+
+    A budget is a target, not an exact sum: clip lengths must come from the
+    model's legal durations, so reaching the target exactly is often impossible
+    (a 30-second chapter built from 8-second clips lands on 32). The slack is
+    therefore proportional with a floor of one shortest clip, which tolerates
+    that rounding without admitting the multiple-times overshoot this guards.
+
+    Callers skip this when the source text carries an explicit timeline: those
+    timestamps state the runtime the author asked for, and the budget must not
+    override them.
+    """
+    if not budget:
+        return
+    total = sum(float(shot.duration_seconds) for shot in shots)
+    allowed = budget + max(budget * 0.2, band)
+    if total <= allowed:
+        return
+    raise ValueError(
+        f"分镜总时长 {total:g} 秒超出本章 {budget} 秒预算（允许至约 {allowed:g} 秒）；"
+        f"请合并或删减镜头，把 {len(shots)} 个镜头的总时长压回 {budget} 秒左右，"
+        "不要通过缩短每镜到不合法时长来凑数。"
+    )
+
+
 def storyboard_duration_contract(video_model: AIModel | None) -> dict[str, object]:
     durations = supported_video_durations(video_model.capabilities if video_model else None)
     if not durations:
@@ -1757,24 +1872,32 @@ async def heartbeat_task(task_id: str, stop: asyncio.Event) -> None:
             return
         except TimeoutError:
             pass
-        async with SessionLocal() as session:
-            now = datetime.now(UTC)
-            heartbeat = await session.execute(
-                update(AITask)
-                .where(
-                    AITask.id == task_id,
-                    AITask.status == TaskStatus.RUNNING,
-                    AITask.worker_id == WORKER_ID,
-                )
-                .values(
-                    heartbeat_at=now,
-                    lease_expires_at=now + timedelta(seconds=get_settings().task_lease_timeout_seconds),
-                )
-            )
-            if heartbeat.rowcount != 1:
-                await session.rollback()
-                return
-            await session.commit()
+        # A missed beat can cost the task its lease and make another worker
+        # steal it mid-run, so contention here is retried rather than dropped.
+        for attempt in range(4):
+            try:
+                async with SessionLocal() as session:
+                    now = datetime.now(UTC)
+                    heartbeat = await session.execute(
+                        update(AITask)
+                        .where(
+                            AITask.id == task_id,
+                            AITask.status == TaskStatus.RUNNING,
+                            AITask.worker_id == WORKER_ID,
+                        )
+                        .values(
+                            heartbeat_at=now,
+                            lease_expires_at=now + timedelta(seconds=get_settings().task_lease_timeout_seconds),
+                        )
+                    )
+                    if heartbeat.rowcount != 1:
+                        await session.rollback()
+                        return
+                    await session.commit()
+                    break
+            except OperationalError:
+                logger.warning("Heartbeat for task %s lost the SQLite write lock (attempt %s)", task_id, attempt + 1)
+                await asyncio.sleep(0.2 * (attempt + 1))
 
 
 async def recover_stale_tasks() -> int:
@@ -1935,7 +2058,7 @@ async def execute_task(
 
         await execute_ai_creation_task(task_id, runtime_factory)
     elif task_type == "project_cover_generation":
-        await execute_cover_task(task_id, gateway_factory)
+        await execute_cover_task(task_id, gateway_factory, runtime_factory)
     elif task_type == "agent_chat_run":
         await execute_agent_chat_task(task_id, runtime_factory, gateway_factory)
     elif task_type == "agent_memory_maintenance":
@@ -1949,7 +2072,7 @@ async def execute_task(
     elif task_type == "asset_prompt_generation":
         await execute_asset_prompt_task(task_id, runtime_factory)
     elif task_type == "asset_image_generation":
-        await execute_asset_image_task(task_id, gateway_factory)
+        await execute_asset_image_task(task_id, gateway_factory, runtime_factory)
     elif task_type == "character_technique_design":
         from app.services.combat_techniques import execute
         await execute(task_id, runtime_factory)
@@ -1984,7 +2107,11 @@ async def execute_task(
         raise RuntimeError(f"unsupported task type: {task_type}")
 
 
-async def execute_cover_task(task_id: str, gateway_factory: GatewayFactory) -> None:
+async def execute_cover_task(
+    task_id: str,
+    gateway_factory: GatewayFactory,
+    runtime_factory: RuntimeFactory,
+) -> None:
     async with SessionLocal() as session:
         task = await owned_task_for_update(session, task_id)
         if not owns_running_task(task):
@@ -2019,7 +2146,9 @@ async def execute_cover_task(task_id: str, gateway_factory: GatewayFactory) -> N
         )
         gateway = gateway_factory(provider)
 
-    image_data = await gateway.generate_image(request)
+    image_data, _rewritten = await generate_image_repairing_rejected_prompt(
+        task_id, gateway, request, runtime_factory=runtime_factory
+    )
 
     async with SessionLocal() as session:
         task = await owned_task_for_update(session, task_id)
@@ -2070,7 +2199,66 @@ async def execute_cover_task(task_id: str, gateway_factory: GatewayFactory) -> N
         await publish_task_event(task, event)
 
 
-async def runtime_request(
+@dataclass(frozen=True)
+class TaskRuntimeContext:
+    """Everything in a runtime request that does not change between shots.
+
+    Assembling this costs a session, a row lock, an API-key decrypt and a full
+    re-read of the handbook files. A shot-by-shot task would otherwise pay that
+    once per shot, so the per-task caller builds it once and reuses it.
+    """
+
+    tenant_id: str
+    project_id: str
+    task_id: str
+    system_prompt_head: str
+    system_prompt_tail: str
+    skill_context: str
+    model_binding: dict[str, Any]
+    prompt_versions: dict[str, str]
+    skill_versions: dict[str, str]
+    skills: list[dict[str, Any]]
+    template_content: str
+    memory_enabled: bool
+    memory_user_id: str
+
+
+def assemble_runtime_request(
+    context: TaskRuntimeContext,
+    *,
+    prompt: str,
+    prompt_appendix: str = "",
+    memory_context: list[str] | None = None,
+    combat_guidance: str = "",
+) -> AgentRuntimeRequest:
+    """Build one shot's request from a shared task context. No I/O."""
+    full_prompt = "\n\n".join(
+        section
+        for section in (context.template_content, prompt_appendix, context.skill_context, prompt)
+        if section
+    )
+    return AgentRuntimeRequest(
+        tenant_id=context.tenant_id,
+        project_id=context.project_id,
+        task_id=context.task_id,
+        session_id=context.task_id,
+        prompt=full_prompt,
+        # combat_guidance depends on the prompt text, so it is inserted between
+        # the task-level halves to keep the original wording and order.
+        system_prompt=(
+            f"{context.system_prompt_head}{combat_guidance}{context.system_prompt_tail}"
+        ),
+        model_binding=dict(context.model_binding),
+        prompt_versions=dict(context.prompt_versions),
+        skill_versions=dict(context.skill_versions),
+        skills=[dict(skill) for skill in context.skills],
+        memory_context=list(memory_context or []),
+        state_mode="ephemeral",
+        tool_mode="none",
+    )
+
+
+async def build_task_runtime_context(
     task_id: str,
     *,
     prompt_code: str,
@@ -2078,8 +2266,9 @@ async def runtime_request(
     prompt_appendix: str = "",
     combat_design: bool = False,
     combat_query: str = "",
-) -> AgentRuntimeRequest:
-    from app.api.routes.agent_chat import memory_context, project_handbooks, skill_snapshots
+) -> TaskRuntimeContext:
+    """Resolve the task-level half of a runtime request: identity, model, skills, guidance."""
+    from app.api.routes.agent_chat import project_handbooks, skill_snapshots
     from app.services.ai_creation import project_creation_guidance
 
     async with SessionLocal() as session:
@@ -2089,12 +2278,35 @@ async def runtime_request(
         project = await session.get(Project, task.project_id)
         user = await session.get(User, task.user_id)
         agent_id = str(task.request_payload.get("agent_profile_id") or "")
-        agent = await session.get(AgentProfile, agent_id)
+        agent = await session.get(AgentProfile, agent_id) if agent_id else None
         model = await session.get(AIModel, task.model_id)
         if project is None or user is None or project.tenant_id != task.tenant_id:
             raise RuntimeError("任务项目或用户不可用")
-        if agent is None or agent.tenant_id != task.tenant_id or not agent.enabled:
+        if agent is not None and (agent.tenant_id != task.tenant_id or not agent.enabled):
             raise RuntimeError("任务所用 Agent 已停用")
+        if agent is None:
+            # Media tasks carry no agent because they never needed one; a
+            # rephrasing step does. Use the tenant's general agent instead of
+            # failing the generation for want of a profile it never had.
+            agent = await session.scalar(
+                select(AgentProfile).where(
+                    AgentProfile.tenant_id == task.tenant_id,
+                    AgentProfile.kind == AgentKind.GENERAL,
+                    AgentProfile.enabled.is_(True),
+                )
+            )
+            if agent is None:
+                raise RuntimeError("当前任务需要文本模型改写提示词，但未配置可用的通用 AI")
+        if (
+            model is None
+            or model.tenant_id != task.tenant_id
+            or model.model_type != ModelType.TEXT
+            or not model.enabled
+        ):
+            # A media task's model_id is an image or video model; the rewriting
+            # step still needs a text model, so fall back to the agent's own.
+            fallback_id = agent.text_model_id or project.text_model_id
+            model = await session.get(AIModel, fallback_id) if fallback_id else None
         if (
             model is None
             or model.tenant_id != task.tenant_id
@@ -2183,16 +2395,16 @@ async def runtime_request(
             creation_guidance += "\n\n" + CONTINUITY_RULES
             from app.services.motion_intent import MOTION_RULES
             creation_guidance += "\n" + MOTION_RULES
-        from app.services.creation_context import combat_stage_guidance
-
-        combat_guidance = "" if combat_design else combat_stage_guidance(prompt_code, prompt)
         if prompt_code in {"storyboard-generation", "storyboard-review", "storyboard-repair", "video-prompt-generation"}:
             from app.services.frame_composition import FRAME_RULES
             creation_guidance += "\n" + FRAME_RULES
             if prompt_code in {"storyboard-generation", "storyboard-repair"}:
                 creation_guidance += "\nframe_layout 结构：" + json.dumps(FrameLayout.model_json_schema(), ensure_ascii=False)
-        if combat_guidance:
-            creation_guidance += "\n" + combat_guidance
+        # combat_stage_guidance inspects the prompt text, which differs per shot,
+        # so it is spliced per request between these two halves at the position
+        # it originally occupied.
+        guidance_before_combat = creation_guidance
+        creation_guidance = ""
         if combat_design:
             creation_guidance += "\n" + DESIGN_RULES
         if prompt_code in {"storyboard-generation", "storyboard-repair"}:
@@ -2205,16 +2417,14 @@ async def runtime_request(
             current_chapter = await session.get(Chapter, task.request_payload["chapter_id"])
             if current_chapter and current_chapter.project_id == project.id:
                 continuity = await chapter_continuity_context(session, current_chapter)
-                creation_guidance += "\n\n前章连续性记忆（只读）：\n" + continuity
-        prompt_sections = [template_content, prompt_appendix, skill_context, prompt]
-        full_prompt = "\n\n".join(section for section in prompt_sections if section)
+                creation_guidance += "\n\n" + continuity
         logger.info(
             "Task %s context chars: template=%d skills=%d source=%d guidance=%d agent=%d files=%d",
             task_id,
             len(template_content),
             len(skill_context),
             len(prompt) + len(prompt_appendix),
-            len(creation_guidance),
+            len(guidance_before_combat) + len(creation_guidance),
             len(agent.system_prompt),
             len(selected_skill_snapshots),
         )
@@ -2228,18 +2438,20 @@ async def runtime_request(
         )
         if combat_design:
             handbook_instructions += "超长手册已按本镜检索原文片段；人物和招式以本镜资产与引用映射为准，不加载整章大纲或无关招式。"
-        return AgentRuntimeRequest(
+        return TaskRuntimeContext(
             tenant_id=task.tenant_id,
             project_id=project.id,
             task_id=task.id,
-            session_id=task.id,
-            prompt=full_prompt,
-            system_prompt=(
+            system_prompt_head=(
                 f"{agent.system_prompt}\n\n{handbook_instructions}"
-                f"\n\n{creation_guidance}\n\n"
+                f"\n\n{guidance_before_combat}"
+            ),
+            system_prompt_tail=(
+                f"{creation_guidance}\n\n"
                 "个人技能的本阶段规则已内联提供；无需也不能再次调用技能工具。\n\n"
                 "当前任务要求只返回符合指定结构的 JSON，不要返回 Markdown、解释或代码围栏。"
             ),
+            skill_context=skill_context,
             model_binding={
                 "provider": str(
                     capabilities.get("agentscope_provider")
@@ -2251,8 +2463,8 @@ async def runtime_request(
                 "api_key": api_key,
                 "extra_headers": provider.extra_headers or {},
                 "api_mode": str(capabilities.get("agent_api_mode") or "chat_completions"),
-                "reasoning_effort": config.get("reasoning_effort"),
-                "max_tokens": config.get("max_tokens"),
+                "reasoning_effort": resolve_reasoning_effort(config, capabilities),
+                "max_tokens": resolve_max_tokens(config, capabilities),
             },
             prompt_versions={
                 f"agent:{agent.id}": str(agent.version),
@@ -2260,14 +2472,55 @@ async def runtime_request(
             },
             skill_versions=skill_versions,
             skills=selected_skill_snapshots,
-            memory_context=(
-                await memory_context(session, user, project.id, query=full_prompt)
-                if agent.memory_enabled and include_story
-                else []
-            ),
-            state_mode="ephemeral",
-            tool_mode="none",
+            template_content=template_content,
+            memory_enabled=bool(agent.memory_enabled and include_story),
+            memory_user_id=user.id,
         )
+
+
+async def load_context_memories(context: TaskRuntimeContext, query: str) -> list[str]:
+    """Retrieve long-term memories for one request, when the agent has them enabled."""
+    if not context.memory_enabled:
+        return []
+    from app.api.routes.agent_chat import memory_context
+
+    async with SessionLocal() as session:
+        user = await session.get(User, context.memory_user_id)
+        if user is None:
+            return []
+        return await memory_context(session, user, context.project_id, query=query)
+
+
+async def runtime_request(
+    task_id: str,
+    *,
+    prompt_code: str,
+    prompt: str,
+    prompt_appendix: str = "",
+    combat_design: bool = False,
+    combat_query: str = "",
+) -> AgentRuntimeRequest:
+    """One-shot runtime request; shot loops should reuse build_task_runtime_context instead."""
+    from app.services.creation_context import combat_stage_guidance
+
+    context = await build_task_runtime_context(
+        task_id,
+        prompt_code=prompt_code,
+        prompt=prompt,
+        prompt_appendix=prompt_appendix,
+        combat_design=combat_design,
+        combat_query=combat_query,
+    )
+    combat_guidance = "" if combat_design else combat_stage_guidance(prompt_code, prompt)
+    if combat_guidance:
+        combat_guidance = "\n" + combat_guidance
+    request = assemble_runtime_request(
+        context, prompt=prompt, prompt_appendix=prompt_appendix, combat_guidance=combat_guidance
+    )
+    memories = await load_context_memories(context, request.prompt)
+    if not memories:
+        return request
+    return request.model_copy(update={"memory_context": memories})
 
 
 def current_agent_chat_prompt(current_message: AgentChatMessage) -> str:
@@ -3134,8 +3387,8 @@ async def agent_chat_runtime_request(
                 "api_key": api_key,
                 "extra_headers": provider.extra_headers or {},
                 "api_mode": str(capabilities.get("agent_api_mode") or "chat_completions"),
-                "reasoning_effort": config.get("reasoning_effort"),
-                "max_tokens": config.get("max_tokens"),
+                "reasoning_effort": resolve_reasoning_effort(config, capabilities),
+                "max_tokens": resolve_max_tokens(config, capabilities),
             },
             prompt_versions={f"agent:{agent.id}": str(agent.version)},
             skill_versions=skill_versions,
@@ -3272,7 +3525,9 @@ async def memory_maintenance_runtime_request(
         )
         config = agent.config if agent is not None else {}
         capabilities = model.capabilities or {}
-        configured_max = config.get("max_tokens")
+        # Memory maintenance returns one small JSON document; the ceiling keeps a
+        # generous agent setting from being spent on a summary.
+        maintenance_max_tokens = resolve_max_tokens(config, capabilities, ceiling=4_000) or 4_000
         previous_content = previous.content if previous else ""
         prompt = conversation_maintenance_prompt(
             previous_content,
@@ -3300,8 +3555,8 @@ async def memory_maintenance_runtime_request(
                 "api_key": api_key,
                 "extra_headers": provider.extra_headers or {},
                 "api_mode": str(capabilities.get("agent_api_mode") or "chat_completions"),
-                "reasoning_effort": config.get("reasoning_effort"),
-                "max_tokens": min(int(configured_max), 4_000) if configured_max else 4_000,
+                "reasoning_effort": resolve_reasoning_effort(config, capabilities),
+                "max_tokens": maintenance_max_tokens,
             },
             prompt_versions={"system:conversation-memory": "1"},
             skill_versions={},
@@ -3599,7 +3854,9 @@ async def generate_personal_agent_media(
     task_id: str,
     *,
     prompt: str,
+    user_request: str = "",
     gateway_factory: GatewayFactory,
+    runtime_factory: RuntimeFactory,
 ) -> dict[str, object]:
     async with SessionLocal() as session:
         task = await owned_task_for_update(session, task_id)
@@ -3671,6 +3928,7 @@ async def generate_personal_agent_media(
         await record_progress(task_id, 62, "最终提示词已就绪，正在调用图片模型")
         reference_image_urls: list[str] = []
         generation_mode = "text_to_image"
+        identity_suffix = ""
         if str(task_snapshot.request_payload.get("media_generation_mode") or "") == "image_to_image":
             reference_ids = [
                 str(item) for item in task_snapshot.request_payload.get("attachment_ids") or [] if str(item)
@@ -3687,7 +3945,16 @@ async def generate_personal_agent_media(
                     )
                 if reference_image_urls:
                     generation_mode = "image_to_image"
-        image_data = await gateway.generate_image(
+                    # An uploaded photo is the person to restyle, not loose style
+                    # guidance; without this the image model redraws the face.
+                    identity_suffix = image_identity_lock(
+                        character=False,
+                        keep_identity=keeps_reference_identity(user_request),
+                    )
+                    prompt += identity_suffix
+        image_data, _rewritten = await generate_image_repairing_rejected_prompt(
+            task_id,
+            gateway,
             ImageGenerationRequest(
                 model=model_identifier,
                 prompt=prompt,
@@ -3698,7 +3965,9 @@ async def generate_personal_agent_media(
                 reference_image_url=reference_image_urls[0] if reference_image_urls else None,
                 generation_mode=generation_mode,
                 reference_image_urls=reference_image_urls,
-            )
+            ),
+            runtime_factory=runtime_factory,
+            identity_suffix=identity_suffix,
         )
         await record_progress(task_id, 88, "图片已生成，正在写入个人会话")
         stored_path = await run_in_threadpool(
@@ -4191,7 +4460,9 @@ async def execute_agent_chat_task(
         generated_media = await generate_personal_agent_media(
             task_id,
             prompt=media_prompt.prompt,
+            user_request=current_prompt,
             gateway_factory=gateway_factory,
+            runtime_factory=runtime_factory,
         )
         if not generated_media:
             return
@@ -4509,19 +4780,35 @@ async def missing_storyboard_ready_asset_names(assets: list[Asset]) -> list[str]
 
 async def record_progress(task_id: str, progress: int, message: str) -> None:
     signal_task_activity(task_id)
-    async with SessionLocal() as session:
-        task = await owned_task_for_update(session, task_id)
-        if not owns_running_task(task):
-            return
-        event = record_task_event(
-            session,
-            task,
-            status=TaskStatus.RUNNING,
-            progress=progress,
-            message=message,
-        )
-        await session.commit()
-        await publish_task_event(task, event)
+    # Progress is cosmetic: it must never be able to fail the work it reports on.
+    # A concurrent writer can still briefly win the SQLite write lock even with
+    # WAL and busy_timeout, so retry a few times and finally drop the update
+    # instead of propagating OperationalError into the task's result.
+    for attempt in range(4):
+        try:
+            async with SessionLocal() as session:
+                task = await owned_task_for_update(session, task_id)
+                if not owns_running_task(task):
+                    return
+                event = record_task_event(
+                    session,
+                    task,
+                    status=TaskStatus.RUNNING,
+                    progress=progress,
+                    message=message,
+                )
+                await session.commit()
+                await publish_task_event(task, event)
+                return
+        except OperationalError as exc:
+            if attempt == 2 or not _SQLITE_LOCK_MARKERS.search(str(exc)):
+                logger.warning(
+                    "Dropped progress update for task %s: %s",
+                    task_id,
+                    str(exc).splitlines()[0][:200],
+                )
+                return
+            await asyncio.sleep(0.2 * (attempt + 1))
 
 
 async def execute_chapter_analysis_task(
@@ -4623,6 +4910,54 @@ async def execute_chapter_analysis_task(
         await publish_task_event(task, event)
 
 
+async def technique_plan_entries(session, chapter, script) -> list[dict[str, Any]]:
+    """This chapter's planned techniques joined with the assets that realise them.
+
+    The storyboard needs both the declared name and the bound asset so a shot can
+    reference the technique asset directly instead of describing the move in prose.
+    """
+    from app.services.combat_techniques import plan_from_payload, technique_plan_catalog
+
+    plan = plan_from_payload(getattr(script, "technique_plan", None))
+    if not plan.techniques:
+        return []
+    catalog = await technique_plan_catalog(session, chapter.project_id, script.user_id)
+    by_key = {}
+    for asset in catalog:
+        metadata = asset.asset_metadata or {}
+        technique = metadata.get("combat_technique") or {}
+        by_key[(str(metadata.get("technique_owner_name") or ""), str(technique.get("name") or ""))] = asset
+    entries = []
+    for item in plan.techniques:
+        asset = by_key.get((item.character, item.name))
+        entries.append({
+            "name": item.name,
+            "character": item.character,
+            "purpose": item.purpose,
+            "duration_seconds": item.duration_seconds,
+            "variant_of": item.variant_of or None,
+            "first_use": item.first_use or None,
+            "asset_name": asset.name if asset else None,
+            "asset_ready": bool(asset and asset.media_url),
+        })
+    return entries
+
+
+async def technique_plan_names(session, project_id: str, user_id: str) -> list[dict[str, str]]:
+    """Existing techniques as {character, name} so a chapter reuses, not reinvents."""
+    from app.services.combat_techniques import technique_plan_catalog
+
+    catalog = await technique_plan_catalog(session, project_id, user_id)
+    return [
+        {
+            "character": str((asset.asset_metadata or {}).get("technique_owner_name") or ""),
+            "name": str(((asset.asset_metadata or {}).get("combat_technique") or {}).get("name") or ""),
+        }
+        for asset in catalog
+        if (asset.asset_metadata or {}).get("combat_technique")
+    ]
+
+
 async def execute_script_generation_task(
     task_id: str,
     runtime_factory: RuntimeFactory,
@@ -4669,12 +5004,26 @@ async def execute_script_generation_task(
         )
         analysis_context = json.dumps(analysis.content, ensure_ascii=False) if analysis else "未提供"
         base_context = base_script.content if base_script else "未提供"
+        known_techniques = await technique_plan_names(session, chapter.project_id, task.user_id)
         prompt = (
             "将以下章节改编为可直接进入导演审核的短剧剧本。必须保留原文核心事实，"
             "同时强化开场钩子、冲突递进和结尾悬念。正文需要包含场次编号、内外景、地点、时间、"
             "出场人物、可拍摄动作和完整台词；不得输出创作解释。review_notes 只记录需人工审核的改编决策。\n"
             '返回结构：{"title":"剧本版本标题","content":"完整剧本正文",'
-            '"review_notes":"审核关注点","continuity_summary":"1500字以内的已发生事件、人物状态、未回收伏笔与结尾承接，不得编造后续剧情"}\n\n'
+            '"review_notes":"审核关注点","continuity_summary":"1500字以内的已发生事件、人物状态、未回收伏笔与结尾承接，不得编造后续剧情",'
+            '"technique_plan":{"techniques":[{"name":"招式短名","character":"所属人物名",'
+            '"purpose":"这一式解决什么战斗问题","duration_seconds":2.5,'
+            '"variant_of":"","first_use":"首次出现的场次与时机"}]}}\n\n'
+            "technique_plan 只登记本章战斗真正用到、且值得反复辨识的招式；"
+            "每章通常0到4个，没有战斗就返回空数组。同一人物的招式名在本章内必须唯一。"
+            "duration_seconds 是该招式从起手到收势实际占用的秒数，不分摊到后续镜头，"
+            "只用于让分镜与视频编排为该式留出足够时间；蓄力、显形与余波另算。"
+            "若本章使用已有招式，name 必须与下方已有招式完全一致，不要改名或另造近义名。"
+            "若某式是已有招式的变体（例如同一招式的加强版、逆向释放或借力变招），"
+            "name 用新短名并在 variant_of 填写所继承的已有招式短名；"
+            "不要为基础招式自身填写 variant_of。\n\n"
+            f"项目已有招式（同一人物按 name 复用，禁止重复设计）："
+            f"{json.dumps(known_techniques, ensure_ascii=False)}\n\n"
             f"章节：{chapter.title}\n来源模式：{chapter.source_mode.value}\n"
             f"章节分析：{analysis_context}\n参考剧本：\n{base_context}\n\n"
             f"用户本次导演要求：{task.request_payload.get('director_instruction') or '无额外要求'}\n\n"
@@ -4719,6 +5068,7 @@ async def execute_script_generation_task(
             content=parsed.content,
             status="reviewing",
             review_notes=parsed.review_notes,
+            technique_plan=parsed.technique_plan.model_dump(),
             is_active=False,
         )
         session.add(script)
@@ -4878,10 +5228,17 @@ async def execute_director_script_repair_task(
             "partial 模式仅修改被指出的位置并保持其余内容；full 模式重新组织完整剧本。"
             "结果仍需适合 AI 视频生成，包含可拍摄场次、动作和完整台词。\n"
             '返回结构：{"title":"新版本标题","content":"完整剧本正文","review_notes":"本次修复摘要",'
-            '"continuity_summary":"独立的连续性记忆，1500字以内，不得写入content"}\n\n'
+            '"continuity_summary":"独立的连续性记忆，1500字以内，不得写入content",'
+            '"technique_plan":{"techniques":[{"name":"招式短名","character":"所属人物名",'
+            '"purpose":"这一式解决什么战斗问题","duration_seconds":2.5,'
+            '"variant_of":"","first_use":"首次出现的场次与时机"}]}}\n\n'
+            "technique_plan 必须沿用原剧本已登记的招式名（同一人物内保持唯一），"
+            "命名与时长随你把招式写清楚而调整；修复若删掉了某个招式，就从计划中移除。\n\n"
             f"修复模式：{task.request_payload.get('repair_mode')}\n"
             f"用户意见：{task.request_payload.get('feedback') or '无补充'}\n"
-            f"审核结果：{review}\n\n原剧本：\n{script.content}\n\n章节原文：\n{chapter.original_content}"
+            f"审核结果：{review}\n\n"
+            f"原剧本已登记招式：{json.dumps(script.technique_plan or {}, ensure_ascii=False)}\n\n"
+            f"原剧本：\n{script.content}\n\n章节原文：\n{chapter.original_content}"
             f"\n\n目标视频模型完整执行契约：{json.dumps(model_contract, ensure_ascii=False)}"
         )
     request = await runtime_request(task_id, prompt_code="script-repair", prompt=prompt)
@@ -4911,6 +5268,7 @@ async def execute_director_script_repair_task(
             content=repaired.content,
             status="reviewing",
             review_notes=repaired.review_notes,
+            technique_plan=repaired.technique_plan.model_dump(),
             is_active=False,
         )
         session.add(script)
@@ -5106,6 +5464,10 @@ async def execute_director_storyboard_repair_task(
         duration_contract["supported_durations_seconds"])
     def validate_timed_board(text):
         board = StoryboardGenerationPayload.model_validate(parse_json_object(text))
+        # Explicit timestamps in the source define the runtime; the budget only
+        # governs chapters whose length is the platform's to decide.
+        if not timing_plan:
+            validate_duration_budget(board.shots, chapter_duration_budget(project))
         validate_shots(chapter.original_content, board.shots)
     result = await storyboard_assets.storyboard_response(
         task_id, "storyboard-repair", prompt, runtime_factory, validator=validate_timed_board,
@@ -5209,6 +5571,92 @@ async def execute_director_storyboard_repair_task(
         await publish_task_event(task, event)
 
 
+async def design_technique_plan(
+    *,
+    task,
+    chapter,
+    script,
+    missing,
+    root_descriptions,
+    existing_names,
+    runtime_factory: RuntimeFactory,
+) -> list:
+    """Design new techniques without holding a database transaction.
+
+    The model call can take minutes. It used to run inside the asset-extraction
+    write transaction and also opened a second connection to record progress,
+    which deadlocked SQLite against itself. Planning now happens outside the
+    transaction; callers persist the returned designs afterwards.
+    """
+    from app.services.combat_techniques import (
+        TECHNIQUE_RULES,
+        TechniqueDesignResult,
+    )
+
+    if not missing:
+        return []
+    existing_techniques = existing_names
+    prompt = TECHNIQUE_RULES + "\n" + json.dumps({
+        "chapter": {"title": chapter.title, "script_excerpt": script.content[:6000]},
+        "characters": [{"name": item["name"], "description": item["description"][:800]}
+                       for item in root_descriptions if item["asset_type"] == "character"],
+        "techniques_to_design": [item.model_dump() for item in missing],
+        "existing_techniques": existing_techniques,
+        "output_schema": TechniqueDesignResult.model_json_schema(),
+    }, ensure_ascii=False) + (
+        "\n只设计 techniques_to_design 中列出的招式，数量与顺序必须一致；"
+        "已存在的招式不要重复输出。每个招式绑定其 character 对应的人物。"
+        "variant_of 非空时，视觉身份必须与所继承招式同源，只改变本次声明的差异。"
+        "仅返回符合 output_schema 的 JSON。"
+    )
+    request = await runtime_request(task.id, prompt_code="character-technique-design", prompt=prompt)
+    result = await runtime_factory().run(request)
+    parsed = TechniqueDesignResult.model_validate(parse_json_object(result.final_response))
+    if len(parsed.techniques) != len(missing):
+        raise RuntimeError("AI 返回的招式数量与剧本计划不一致")
+    return list(zip(missing, parsed.techniques, strict=True))
+
+
+async def persist_technique_plan(
+    session, *, task, chapter, extraction, roots, catalog, designed,
+) -> list[Asset]:
+    """Persist already-designed techniques inside the caller's transaction."""
+    created: list[Asset] = []
+    for item, technique in designed:
+        owner = next((a for a in roots.values()
+                      if a.asset_type == AssetType.CHARACTER and a.name == item.character), None)
+        if owner is None:
+            raise RuntimeError(f"招式「{item.name}」所属人物「{item.character}」不存在")
+        name = f"{owner.name}·{technique.name}"[:160]
+        asset = Asset(
+            tenant_id=task.tenant_id, user_id=task.user_id, project_id=chapter.project_id,
+            scope=AssetScope.PROJECT, asset_type=AssetType.CHARACTER, parent_asset_id=owner.id,
+            name=name, description=technique.memory(), generation_prompt=technique.image_prompt,
+            status=AssetStatus.PROMPT_READY,
+            asset_metadata={
+                "source_task_id": task.id, "extraction_id": extraction.id,
+                "combat_technique": technique.model_dump(),
+                "technique_owner_name": owner.name,
+                # The script budgeted this much screen time for the move; the
+                # storyboard and choreography use it to reserve a window.
+                "planned_duration_seconds": float(item.duration_seconds),
+                "variant_of": item.variant_of,
+                "planned_purpose": item.purpose,
+            },
+        )
+        session.add(asset)
+        await session.flush()
+        await snapshot_asset_revision(
+            session,
+            asset,
+            change_type="technique_design",
+            source_task_id=task.id,
+        )
+        catalog.append(asset)
+        created.append(asset)
+    return created
+
+
 async def execute_asset_extraction_task(
     task_id: str,
     runtime_factory: RuntimeFactory,
@@ -5254,11 +5702,48 @@ async def execute_asset_extraction_task(
     if not parsed.assets:
         raise RuntimeError("剧本未提取到基础资产；衍生资产应在分镜完成后提取")
     await record_progress(task_id, 65, f"已识别 {len(parsed.assets)} 个资产，正在写入项目资产库")
-    for item in parsed.assets:
-        if item.technique:
-            if item.asset_type != "character" or not item.parent_name:
-                raise RuntimeError("招式必须绑定所属人物，不能作为无主资产")
-            item.description = item.technique.memory()
+
+    # Plan techniques outside the write transaction. The model call can take
+    # minutes; running it while SQLite held the write lock (and recording
+    # progress on a second connection) caused "database is locked".
+    from app.services.combat_techniques import plan_from_payload, plan_requirements
+
+    plan = plan_from_payload(script.technique_plan)
+    technique_catalog = [
+        asset for asset in catalog if (asset.asset_metadata or {}).get("combat_technique")
+    ]
+    # Characters that will own a technique are the base assets this extraction
+    # is about to create; the plan stage already filtered to parent_name=NULL.
+    known_characters = [
+        {"name": item.name, "asset_type": item.asset_type, "description": item.description}
+        for item in parsed.assets if item.asset_type == "character"
+    ]
+    known_character_names = {item["name"] for item in known_characters}
+    for asset in catalog:
+        if asset.asset_type == AssetType.CHARACTER and asset.name not in known_character_names:
+            known_character_names.add(asset.name)
+            known_characters.append({
+                "name": asset.name,
+                "asset_type": asset.asset_type.value,
+                "description": "已经存在于项目资产库的人物，沿用其已定稿身份。",
+            })
+    _, missing = plan_requirements(
+        plan, technique_catalog, known_character_names
+    ) if plan.techniques else ([], [])
+    technique_designs: list = []
+    if missing:
+        await record_progress(task_id, 88, f"正在设计本章 {len(missing)} 个新招式")
+        technique_designs = await design_technique_plan(
+            task=task, chapter=chapter, script=script, missing=missing,
+            root_descriptions=known_characters,
+            existing_names=[
+                {"owner": (asset.asset_metadata or {}).get("technique_owner_name", ""),
+                 "name": (asset.asset_metadata or {}).get("combat_technique", {}).get("name", "")}
+                for asset in technique_catalog
+                if (asset.asset_metadata or {}).get("combat_technique", {}).get("name")
+            ],
+            runtime_factory=runtime_factory,
+        )
 
     async with SessionLocal() as session:
         task = await owned_task_for_update(session, task_id)
@@ -5368,6 +5853,17 @@ async def execute_asset_extraction_task(
             catalog.append(asset)
             new_count += 1
         for asset in created:
+            session.add(AssetExtractionItem(extraction_id=extraction.id, asset_id=asset.id))
+        # Realise the techniques this chapter's script committed to, now that the
+        # owning characters exist. Without this the plan would stay a list of
+        # names and every later stage would invent its own version of the move.
+        technique_assets = await persist_technique_plan(
+            session, task=task, chapter=chapter, extraction=extraction,
+            roots=roots, catalog=catalog, designed=technique_designs,
+        )
+        created.extend(technique_assets)
+        new_count += len(technique_assets)
+        for asset in technique_assets:
             session.add(AssetExtractionItem(extraction_id=extraction.id, asset_id=asset.id))
         serialized = json.dumps(parsed.model_dump(mode="json"), ensure_ascii=False, indent=2)
         session.add(
@@ -5557,7 +6053,68 @@ async def execute_asset_prompt_task(
             await publish_task_event(image_task, image_event)
 
 
-async def execute_asset_image_task(task_id: str, gateway_factory: GatewayFactory) -> None:
+async def generate_image_repairing_rejected_prompt(
+    task_id: str,
+    gateway,
+    request: ImageGenerationRequest,
+    *,
+    runtime_factory: RuntimeFactory | None,
+    identity_suffix: str = "",
+) -> tuple[bytes, bool]:
+    """Generate an image, rewriting the prompt once if the platform refuses it.
+
+    Returns the image bytes and whether the prompt had to be rewritten, so the
+    caller can record that the stored prompt was not what produced this image.
+    A refused prompt is otherwise a dead end: the user sees an upstream policy
+    message and has no way to know which wording triggered it.
+
+    ``identity_suffix`` is the identity constraint the caller attached to the
+    prompt. A rewrite returns a whole new prompt, so the constraint is put back
+    before the retry; without it the second attempt is free to redraw the face.
+    """
+    try:
+        return await gateway.generate_image(request), False
+    except ModelGatewayError as error:
+        if runtime_factory is None or not prompt_was_rejected(error):
+            raise
+        rejection = error
+    from app.services.prompt_repair import (
+        REWRITE_CODE,
+        is_usable_rewrite,
+        parse_rewrite,
+        reattach_identity_lock,
+        rewrite_prompt_text,
+    )
+
+    original = request.prompt
+    try:
+        retry = await runtime_request(
+            task_id, prompt_code=REWRITE_CODE, prompt=rewrite_prompt_text(original)
+        )
+        await record_progress(task_id, 60, "提示词被图像平台判定为不合规，正在改写后重试")
+        result = await runtime_factory().run(retry)
+        rewritten = parse_rewrite(result.final_response)
+    except Exception:
+        # Rewriting is best effort. A failure setting it up (no text model, no
+        # agent, runtime unreachable) must not replace the upstream reason the
+        # generation actually failed — that message is the one the user needs.
+        logger.warning("Prompt rewrite for task %s could not run", task_id, exc_info=True)
+        raise rejection from None
+    if not is_usable_rewrite(original, rewritten):
+        raise ModelGatewayError(
+            f"图像平台以安全政策拒绝了提示词，改写后仍未通过：{rejection}",
+            status_code=rejection.status_code,
+            detail=rejection.detail,
+        ) from rejection
+    request.prompt = reattach_identity_lock(rewritten, identity_suffix)
+    return await gateway.generate_image(request), True
+
+
+async def execute_asset_image_task(
+    task_id: str,
+    gateway_factory: GatewayFactory,
+    runtime_factory: RuntimeFactory,
+) -> None:
     async with SessionLocal() as session:
         task = await owned_task_for_update(session, task_id)
         if not owns_running_task(task) or not task.project_id or not task.model_id:
@@ -5583,6 +6140,7 @@ async def execute_asset_image_task(task_id: str, gateway_factory: GatewayFactory
         if asset.version != int(task.request_payload.get("asset_version") or -1):
             raise RuntimeError("资产已被编辑，请用最新提示词重新生成图片")
         parent_snapshot = None
+        identity_suffix = ""
         if model is None or model.model_type != ModelType.IMAGE or not model.enabled:
             raise RuntimeError("资产生图模型不可用")
         provider = await session.get(Provider, model.provider_id)
@@ -5628,12 +6186,24 @@ async def execute_asset_image_task(task_id: str, gateway_factory: GatewayFactory
             request.reference_image_urls = [reference]
             request.generation_mode = "image_to_image"
             parent_snapshot = (parent.id, parent.version, parent.media_url)
-            request.prompt += ("\n主图为同一主体的身份参考，保留主图性别、面容、体型和固有特征。"
-                "仅按本次衍生说明改变服装、姿态、状态或招式，不得生成另一个人物。"
-                if asset.asset_type == AssetType.CHARACTER else
-                "\n主图为同一资产参考，保留结构、材质、配色和识别特征，仅改变本次衍生说明要求的部分。")
+            identity_suffix = (
+                image_identity_lock(character=True, keep_identity=True)
+                if asset.asset_type == AssetType.CHARACTER
+                else "\n主图为同一资产参考，保留结构、材质、配色和识别特征，仅改变本次衍生说明要求的部分。"
+            )
+            request.prompt += identity_suffix
         gateway = gateway_factory(provider)
-    image_data = await gateway.generate_image(request)
+    image_data, rewritten = await generate_image_repairing_rejected_prompt(
+        task_id,
+        gateway,
+        request,
+        runtime_factory=runtime_factory,
+        identity_suffix=identity_suffix,
+    )
+    if rewritten:
+        # The stored prompt belongs to the user; only this attempt used the
+        # rewrite, and saying so keeps the resulting image explainable.
+        await record_progress(task_id, 82, "已用改写后的提示词生成图片")
     await record_progress(task_id, 78, "图片已生成，正在校验并写入资产库")
 
     async with SessionLocal() as session:
@@ -5766,15 +6336,23 @@ async def execute_storyboard_task(task_id: str, runtime_factory: RuntimeFactory)
             aspect_ratio=str(project.aspect_ratio or "1:1") if project else "1:1",
         )
         schema_duration = float(duration_contract["schema_example_duration_seconds"])
+        budget = chapter_duration_budget(project)
+        budget_contract = duration_budget_contract(budget)
+        planned_techniques = await technique_plan_entries(session, chapter, script)
         prompt = (
             "将以下生效剧本拆解为可独立拍摄和生成视频的连续分镜。每个镜头必须包含镜头标题、"
             "景别、符合目标视频模型能力的时长、场景、动作、台词和完整首帧图片提示词。"
             "asset_names 只能填写资产清单中完全一致的名称，没有引用时返回空数组。"
             "换装、损坏等衍生状态以及招式需求写在场景、动作或战斗时间轴中，暂引用基础资产；"
-            "平台将在全部分镜生成后统一提取衍生资产，不必为了缺少衍生图而删除剧情。"
+            "平台已在本章剧本中登记招式并建立了对应资产，不要另行改名或发明新招式。"
             "duration_seconds 必须从目标视频模型支持时长中选择，并根据台词、动作、反应、停顿和运镜的"
             "真实负载选择短、中、长档；不得无理由让多数镜头使用最短档。"
-            "分镜需保持角色、场景、道具连续性，并给出明确运镜、主体动作和环境动态。\n"
+            + (
+                f"本章有明确时长预算 {budget} 秒：全部镜头 duration_seconds 之和必须接近该预算，"
+                "不得超出；镜头数量由预算决定，不要每个情节点都拆一个镜头。"
+                if budget else ""
+            )
+            + "分镜需保持角色、场景、道具连续性，并给出明确运镜、主体动作和环境动态。\n"
             '返回结构：{"shots":[{"title":"镜头标题","shot_type":"中景",'
             '"continuity_group":"scene-1",'
             f'"duration_seconds":{schema_duration:g},"scene_description":"场景",'
@@ -5786,9 +6364,17 @@ async def execute_storyboard_task(task_id: str, runtime_factory: RuntimeFactory)
             "结构示例中的时长只表示数字字段类型，不是默认时长。\n\n"
             "目标视频模型时长约束："
             f"{json.dumps(duration_contract, ensure_ascii=False)}\n"
-            f"目标视频模型完整执行契约：{json.dumps(model_contract, ensure_ascii=False)}\n"
+            + (f"本章时长预算约束：{json.dumps(budget_contract, ensure_ascii=False)}\n" if budget else "")
+            + f"目标视频模型完整执行契约：{json.dumps(model_contract, ensure_ascii=False)}\n"
             f"目标图片模型完整执行契约：{json.dumps(image_contract, ensure_ascii=False)}\n"
-            f"章节：{chapter.title}\n剧本：v{script.version}《{script.title}》\n"
+            + (
+                "本章已登记招式（asset_name 可用时必须把该名称写入对应镜头的 asset_names，"
+                "并把 duration_seconds 作为该式起手到收势的最小占用时间；"
+                "变体招式沿用所继承招式的视觉身份）："
+                f"{json.dumps(planned_techniques, ensure_ascii=False)}\n"
+                if planned_techniques else ""
+            )
+            + f"章节：{chapter.title}\n剧本：v{script.version}《{script.title}》\n"
             f"资产清单：{json.dumps(asset_context, ensure_ascii=False)}\n\n剧本正文：\n{script.content}"
         )
     from app.services import storyboard_assets
@@ -5802,10 +6388,15 @@ async def execute_storyboard_task(task_id: str, runtime_factory: RuntimeFactory)
         else "原文无完整时间轴，按模型合法时长生成分镜")
     def validate_timed_board(text):
         board = StoryboardGenerationPayload.model_validate(parse_json_object(text))
+        # Explicit timestamps in the source define the runtime; the budget only
+        # governs chapters whose length is the platform's to decide.
+        if not timing_plan:
+            validate_duration_budget(board.shots, budget)
         validate_shots(chapter.original_content, board.shots)
     result = await storyboard_assets.storyboard_response(
         task_id, "storyboard-generation", prompt, runtime_factory, validator=validate_timed_board,
-        timing_plan=timing_plan, durations=duration_contract["supported_durations_seconds"])
+        timing_plan=timing_plan, durations=duration_contract["supported_durations_seconds"],
+        script=script.content, budget=budget)
     try:
         parsed = StoryboardGenerationPayload.model_validate(parse_json_object(result.final_response))
     except ValidationError as exc:
@@ -5976,6 +6567,79 @@ async def execute_storyboard_task(task_id: str, runtime_factory: RuntimeFactory)
         )
         await session.commit()
         await publish_task_event(task, event)
+
+
+async def generate_shot_video_prompt(
+    context: TaskRuntimeContext,
+    base_prompt: str,
+    row: dict[str, Any],
+    *,
+    protocol_appendix: str,
+    runtime_factory: RuntimeFactory,
+    attempts: int = 3,
+) -> str:
+    """Generate one non-combat shot's prompt, retrying invalid model output.
+
+    The combat path retries its own validation three times. Without the same
+    tolerance here a single malformed reply failed the shot outright, which hits
+    the shots that make up most of a storyboard.
+    """
+    shot_id = str(row["shot_id"])
+    error = ""
+    for attempt in range(attempts):
+        request = await runtime_request_from_context(
+            context, base_prompt, row, protocol_appendix
+        )
+        request.session_id = f"{request.session_id}-shot-{shot_id}" + (
+            f"-retry-{attempt}" if attempt else ""
+        )
+        if error:
+            request.prompt += "\n上次返回未通过校验，请修正后重新输出完整 JSON：" + error
+        result = await runtime_factory().run(request)
+        try:
+            return parse_shot_video_prompt(result.final_response, row)
+        except (ValueError, ValidationError, RuntimeError) as exc:
+            error = str(exc)[:1200]
+    raise RuntimeError(f"镜头 {row.get('order_index', '')} 视频提示词连续 {attempts} 次未通过校验：{error}")
+
+
+async def runtime_request_from_context(
+    context: TaskRuntimeContext,
+    base_prompt: str,
+    row: dict[str, Any],
+    protocol_appendix: str,
+) -> AgentRuntimeRequest:
+    """Assemble one shot's request, including the memories it would retrieve."""
+    from app.services.creation_context import combat_stage_guidance
+
+    prompt = base_prompt + json.dumps([row], ensure_ascii=False)
+    guidance = combat_stage_guidance("video-prompt-generation", prompt)
+    request = assemble_runtime_request(
+        context,
+        prompt=prompt,
+        prompt_appendix=protocol_appendix,
+        combat_guidance=("\n" + guidance) if guidance else "",
+    )
+    memories = await load_context_memories(context, request.prompt)
+    return request.model_copy(update={"memory_context": memories}) if memories else request
+
+
+def parse_shot_video_prompt(raw: str, row: dict[str, Any]) -> str:
+    """Read the prompt out of either supported reply shape, keeping both ID checks."""
+    response = parse_json_object(raw)
+    try:
+        parsed = ShotVideoPromptGenerationPayload.model_validate(response)
+        if len(parsed.shots) != 1 or parsed.shots[0].shot_id != row["shot_id"]:
+            raise RuntimeError("返回的镜头 ID 不匹配")
+        text = parsed.shots[0].video_prompt.strip()
+    except ValidationError:
+        parsed = VideoPromptTemplateGenerationPayload.model_validate(response)
+        if len(parsed.prompts) != 1 or parsed.prompts[0].shot_order_index != row["order_index"]:
+            raise RuntimeError("返回的镜头序号不匹配")
+        text = parsed.prompts[0].prompt.strip()
+    if not text:
+        raise RuntimeError("返回的视频提示词为空")
+    return text
 
 
 async def execute_shot_video_prompt_task(task_id: str, runtime_factory: RuntimeFactory) -> None:
@@ -6215,6 +6879,12 @@ async def execute_shot_video_prompt_task(task_id: str, runtime_factory: RuntimeF
     async with SessionLocal() as session:
         current = await session.get(AITask, task_id)
         completed = dict((current.request_payload or {}).get("video_prompt_completed") or {})
+    # Identity, model binding, handbooks and guidance are identical for every
+    # shot in this task; resolving them once keeps the per-shot path to a model
+    # call plus the shot's own data.
+    runtime_context = await build_task_runtime_context(
+        task_id, prompt_code="video-prompt-generation", prompt=prompt,
+    )
     failures = {}
     changed_shot_ids = []
     for index, row in enumerate(shot_rows):
@@ -6235,24 +6905,11 @@ async def execute_shot_video_prompt_task(task_id: str, runtime_factory: RuntimeF
             if row.get("combat_plan") or contains_combat(row["action_description"]):
                 text, combat_record = await generate_combat(task_id, row, execution_contract, protocol, runtime_factory)
             else:
-                request = await runtime_request(
-                    task_id, prompt_code="video-prompt-generation",
-                    prompt=prompt + json.dumps([row], ensure_ascii=False),
-                    prompt_appendix=protocol_appendix + "\n" + MOTION_RULES + CLIP_RULES,
+                text = await generate_shot_video_prompt(
+                    runtime_context, prompt, row,
+                    protocol_appendix=protocol_appendix + "\n" + MOTION_RULES + CLIP_RULES,
+                    runtime_factory=runtime_factory,
                 )
-                request.session_id = f"{request.session_id}-shot-{shot_id}"
-                result = await runtime_factory().run(request)
-                response = parse_json_object(result.final_response)
-                try:
-                    parsed = ShotVideoPromptGenerationPayload.model_validate(response)
-                    if len(parsed.shots) != 1 or parsed.shots[0].shot_id != shot_id:
-                        raise RuntimeError("返回的镜头 ID 不匹配")
-                    text = parsed.shots[0].video_prompt.strip()
-                except ValidationError:
-                    parsed = VideoPromptTemplateGenerationPayload.model_validate(response)
-                    if len(parsed.prompts) != 1 or parsed.prompts[0].shot_order_index != row["order_index"]:
-                        raise RuntimeError("返回的镜头序号不匹配")
-                    text = parsed.prompts[0].prompt.strip()
             if not text:
                 raise RuntimeError("返回的视频提示词为空")
             text = enforce_video_audio_policy(
@@ -7363,6 +8020,13 @@ def read_skill_bundle(relative_path: str) -> str:
 def _safe_error_message(error: Exception) -> str:
     if isinstance(error, AgentRuntimeRequestError):
         return error.public_message
+    if isinstance(error, OperationalError):
+        # Raw driver text leaks SQL and parameter values into the task's failure
+        # message, which the UI shows verbatim. SQLite lock contention is
+        # transient, so say that instead of dumping the INSERT statement.
+        if _SQLITE_LOCK_MARKERS.search(str(error)):
+            return "数据库正忙，任务在写入时遇到并发冲突，请稍后重试；若连续出现请重启后端服务。"
+        return "数据库写入失败，请稍后重试；若连续出现请联系管理员。"
     if isinstance(error, httpx.HTTPStatusError):
         status_code = error.response.status_code
         if status_code in {401, 403}:

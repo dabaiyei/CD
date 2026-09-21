@@ -15,14 +15,29 @@ class Base(DeclarativeBase):
 
 
 settings = get_settings()
-engine = create_async_engine(settings.database_url, pool_pre_ping=True)
+
+# SQLite serialises writers: only one connection may hold the write lock, and a
+# second writer fails immediately with "database is locked" unless it is told
+# to wait. The worker runs several task slots concurrently, so WAL (readers no
+# longer block the writer) plus a busy timeout (writers queue instead of
+# failing) are both required for a multi-slot worker on the default database.
+SQLITE_BUSY_TIMEOUT_MS = 30_000
+
+engine_options: dict[str, Any] = {"pool_pre_ping": True}
+if settings.database_url.startswith("sqlite"):
+    engine_options["connect_args"] = {"timeout": SQLITE_BUSY_TIMEOUT_MS / 1000}
+engine = create_async_engine(settings.database_url, **engine_options)
 
 
 if settings.database_url.startswith("sqlite"):
     @event.listens_for(engine.sync_engine, "connect")
-    def enable_sqlite_foreign_keys(dbapi_connection: Any, _connection_record: Any) -> None:
+    def configure_sqlite_connection(dbapi_connection: Any, _connection_record: Any) -> None:
         cursor = dbapi_connection.cursor()
         cursor.execute("PRAGMA foreign_keys=ON")
+        # WAL persists in the database file, but busy_timeout is per connection.
+        cursor.execute("PRAGMA journal_mode=WAL")
+        cursor.execute("PRAGMA synchronous=NORMAL")
+        cursor.execute(f"PRAGMA busy_timeout={SQLITE_BUSY_TIMEOUT_MS}")
         cursor.close()
 
 

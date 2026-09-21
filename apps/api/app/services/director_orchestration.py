@@ -615,7 +615,9 @@ async def start_automatic_workflow_from_progress(
         await session.refresh(workflow)
         return workflow
 
-    missing_assets = await _missing_ready_asset_names(assets)
+    missing_assets = await _missing_ready_asset_names(
+        await _assets_awaiting_generation(session, workflow)
+    )
     if missing_assets:
         existing_board = await session.scalar(select(StoryboardVersion).where(
             StoryboardVersion.chapter_id == chapter.id,
@@ -936,7 +938,7 @@ async def _queue_storyboard(
     extraction = await session.get(AssetExtraction, workflow.asset_extraction_id)
     if script is None or extraction is None:
         raise RuntimeError("分镜所需剧本或资产提取版本不可用")
-    missing = await _missing_ready_asset_names(await _extraction_assets(session, workflow))
+    missing = await _missing_ready_asset_names(await _assets_awaiting_generation(session, workflow))
     if missing:
         raise RuntimeError(f"生成分镜前必须先完成资产图片：{'、'.join(missing[:8])}")
     workflow.stage = DirectorWorkflowStage.STORYBOARD_GENERATING
@@ -997,6 +999,28 @@ async def _missing_ready_asset_names(assets: list[Asset]) -> list[str]:
         except (FileNotFoundError, ValueError):
             missing.append(asset.name)
     return missing
+
+
+async def _assets_awaiting_generation(
+    session: AsyncSession,
+    workflow: DirectorWorkflowRun,
+) -> list[Asset]:
+    """The assets whose images this phase is responsible for producing.
+
+    Before a storyboard exists only base assets are prepared; derivative assets
+    (a technique atop a character, a damaged costume) are known once the
+    storyboard's shots reference them, and are generated in the review phase
+    that follows. Checking the wrong set here is what stalled chapters: the
+    preparation step skipped the derivatives, so a gate that demanded them could
+    never be satisfied and no task was ever queued to produce them.
+    """
+    assets = await _extraction_assets(session, workflow)
+    if (workflow.context_snapshot or {}).get("assets_for_storyboard_review"):
+        return [asset for asset in assets if asset.asset_type.value != "audio"]
+    return [
+        asset for asset in assets
+        if not asset.parent_asset_id and asset.asset_type.value != "audio"
+    ]
 
 
 async def start_storyboard_workflow(
@@ -1100,7 +1124,26 @@ async def start_storyboard_workflow_for_chapter(
         if existing.stage in {DirectorWorkflowStage.AWAITING_STORYBOARD_DECISION}:
             raise ValueError("当前分镜审核还在等待处理选择，请先处理审核意见")
         if existing.stage in BUSY_STORYBOARD_STAGES:
-            raise ValueError("当前章节已有进行中的导演流程")
+            # A step whose task row disappeared can never finish, so it must not
+            # keep blocking the chapter. Only a genuinely live task means busy.
+            children = list((await session.scalars(select(DirectorChildRun).where(
+                DirectorChildRun.workflow_id == existing.id,
+                DirectorChildRun.status.in_([DirectorChildStatus.QUEUED, DirectorChildStatus.RUNNING]),
+            ))).all())
+            busy = False
+            for child in children:
+                task = await session.get(AITask, child.task_id) if child.task_id else None
+                if task is not None and task.status in {TaskStatus.QUEUED, TaskStatus.RUNNING}:
+                    busy = True
+                    break
+            if busy:
+                raise ValueError("当前章节已有进行中的导演流程")
+            for child in children:
+                child.status = DirectorChildStatus.FAILED
+                child.summary = "步骤已中断，重新开始分镜生成"
+            existing.current_task_id = None
+            existing.last_message = "上一次导演流程已中断，本次重新开始分镜生成"
+            await session.flush()
         workflow = existing
         workflow.script_version_id = script.id
         workflow.asset_extraction_id = extraction.id
@@ -1655,38 +1698,94 @@ async def on_director_task_terminal(task_id: str) -> None:
         await _advance_director_task_terminal(task_id)
     except HTTPException as exc:
         if exc.status_code != 402:
+            await _fail_workflow_after_advance_error(task_id, str(exc.detail))
             raise
         # The failed enqueue transaction has rolled back, including any partial debit.
-        from app.db.session import SessionLocal
+        await _pause_workflow_for_missing_credits(task_id)
+        logger.warning("Director workflow paused for insufficient credits after task %s", task_id)
+    except Exception as exc:
+        # Advancing can fail for reasons the child task never sees, so without
+        # this the run stays "running" with no queued task and the chapter is
+        # wedged until the process restarts. Surface it instead of swallowing it.
+        await _fail_workflow_after_advance_error(task_id, _safe_advance_error(exc))
+        raise
 
-        async with SessionLocal() as session:
-            child = await session.scalar(select(DirectorChildRun).where(DirectorChildRun.task_id == task_id))
-            task = await session.get(AITask, task_id)
-            if child is None or task is None:
-                return
-            workflow = await session.get(DirectorWorkflowRun, child.workflow_id)
-            if workflow is None or workflow.status not in ACTIVE_WORKFLOW_STATUSES:
-                return
+
+def _safe_advance_error(exc: BaseException) -> str:
+    return (str(exc) or exc.__class__.__name__)[:800] or "自动流程推进失败"
+
+
+async def _fail_workflow_after_advance_error(task_id: str, message: str) -> None:
+    """Park the run when its next step could not be queued.
+
+    The step always has a reason -- a missing asset, an unavailable model, a
+    rejected enqueue -- and leaving the run active hides it from the user, who
+    then sees a workflow that is "running" with nothing running.
+    """
+    from app.db.session import SessionLocal
+
+    async with SessionLocal() as session:
+        child = await session.scalar(select(DirectorChildRun).where(DirectorChildRun.task_id == task_id))
+        task = await session.get(AITask, task_id)
+        workflow = await session.get(DirectorWorkflowRun, child.workflow_id) if child else None
+        if workflow is None or workflow.status not in ACTIVE_WORKFLOW_STATUSES:
+            return
+        # The child's own task usually finished; it was the next step that could
+        # not be queued. Record the child by what actually happened to it.
+        if child is not None and child.status in {DirectorChildStatus.QUEUED, DirectorChildStatus.RUNNING}:
             child.status = {
                 TaskStatus.SUCCEEDED: DirectorChildStatus.SUCCEEDED,
                 TaskStatus.FAILED: DirectorChildStatus.FAILED,
                 TaskStatus.CANCELLED: DirectorChildStatus.CANCELLED,
-            }[task.status]
-            child.output_refs = dict(task.result_payload or {})
-            child.summary = "本步骤已完成" if task.status == TaskStatus.SUCCEEDED else "本步骤未完成"
-            message = "积分不足，自动流程已暂停；已完成内容保留，补充积分后可从当前进度继续。"
-            workflow.status = DirectorWorkflowStatus.FAILED
-            workflow.stage = DirectorWorkflowStage.FAILED
-            workflow.current_task_id = None
-            workflow.last_error = message
-            workflow.last_message = message
-            session.add(Notification(
-                tenant_id=workflow.tenant_id, user_id=workflow.user_id,
-                project_id=workflow.project_id, task_id=task_id,
-                title="自动流程因积分不足暂停", message=message,
-            ))
-            await session.commit()
-        logger.warning("Director workflow paused for insufficient credits after task %s", task_id)
+            }.get(task.status if task else None, DirectorChildStatus.SUCCEEDED)
+            if task is not None and task.error_message:
+                child.details = {**(child.details or {}), "error": task.error_message}
+        detail = message or "自动流程推进失败"
+        workflow.status = DirectorWorkflowStatus.FAILED
+        workflow.stage = DirectorWorkflowStage.FAILED
+        workflow.current_task_id = None
+        workflow.last_error = detail
+        workflow.last_message = f"自动流程已暂停：{detail}"
+        session.add(Notification(
+            tenant_id=workflow.tenant_id, user_id=workflow.user_id,
+            project_id=workflow.project_id, task_id=task_id,
+            title="AI 全自动流程已暂停",
+            message=f"{workflow.last_message}；可补充或修复后重新继续。",
+        ))
+        await session.commit()
+
+
+async def _pause_workflow_for_missing_credits(task_id: str) -> None:
+    """Park the run after a rejected enqueue; the debit itself rolled back."""
+    from app.db.session import SessionLocal
+
+    async with SessionLocal() as session:
+        child = await session.scalar(select(DirectorChildRun).where(DirectorChildRun.task_id == task_id))
+        task = await session.get(AITask, task_id)
+        if child is None or task is None:
+            return
+        workflow = await session.get(DirectorWorkflowRun, child.workflow_id)
+        if workflow is None or workflow.status not in ACTIVE_WORKFLOW_STATUSES:
+            return
+        child.status = {
+            TaskStatus.SUCCEEDED: DirectorChildStatus.SUCCEEDED,
+            TaskStatus.FAILED: DirectorChildStatus.FAILED,
+            TaskStatus.CANCELLED: DirectorChildStatus.CANCELLED,
+        }[task.status]
+        child.output_refs = dict(task.result_payload or {})
+        child.summary = "本步骤已完成" if task.status == TaskStatus.SUCCEEDED else "本步骤未完成"
+        message = "积分不足，自动流程已暂停；已完成内容保留，补充积分后可从当前进度继续。"
+        workflow.status = DirectorWorkflowStatus.FAILED
+        workflow.stage = DirectorWorkflowStage.FAILED
+        workflow.current_task_id = None
+        workflow.last_error = message
+        workflow.last_message = message
+        session.add(Notification(
+            tenant_id=workflow.tenant_id, user_id=workflow.user_id,
+            project_id=workflow.project_id, task_id=task_id,
+            title="自动流程因积分不足暂停", message=message,
+        ))
+        await session.commit()
 
 
 async def _advance_director_task_terminal(task_id: str) -> None:
@@ -2032,6 +2131,20 @@ async def recover_automatic_workflows() -> int:
                 repaired_workflows += 1
             elif active_task_id and workflow.current_task_id != active_task_id:
                 workflow.current_task_id = active_task_id
+                repaired_workflows += 1
+            elif (
+                workflow.status == DirectorWorkflowStatus.RUNNING
+                and not pending_children
+                and not workflow.current_task_id
+            ):
+                # The step after a finished child failed to queue, so the run has
+                # nothing left in flight. Showing "running" indefinitely hides
+                # that from the user; park it so the reason is visible and
+                # "continue" can re-drive the chapter from its real progress.
+                workflow.stage = DirectorWorkflowStage.FAILED
+                workflow.status = DirectorWorkflowStatus.FAILED
+                workflow.last_error = "自动流程已中断：上一步完成后没有可继续的任务"
+                workflow.last_message = f"{workflow.last_error}；可点击继续从当前进度恢复"
                 repaired_workflows += 1
         await session.commit()
 

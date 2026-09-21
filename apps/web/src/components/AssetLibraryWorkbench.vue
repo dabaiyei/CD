@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { MAX_IMAGE_UPLOAD_BYTES, isSupportedImage } from '@/lib/imageUpload'
+import { IMAGE_ACCEPT_ATTRIBUTE, MAX_IMAGE_UPLOAD_BYTES, isSupportedImage } from '@/lib/imageUpload'
 import { computed, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import {
   ArrowDownToLine,
@@ -694,7 +694,7 @@ onBeforeUnmount(() => {
           <footer>
             <button type="button" :disabled="form.asset_type === 'audio' || action === 'upload'" @click="imageInput?.click()"><Upload :size="15" />上传图片</button>
             <button type="button" :disabled="!previewImage" @click="previewImage && downloadImage(previewImage, form.name || 'asset')"><Download :size="15" />下载</button>
-            <input ref="imageInput" class="sr-only" type="file" accept="image/jpeg,image/png,image/webp" @change="chooseImage" />
+            <input ref="imageInput" class="sr-only" type="file" :accept="IMAGE_ACCEPT_ATTRIBUTE" @change="chooseImage" />
           </footer>
         </section>
 

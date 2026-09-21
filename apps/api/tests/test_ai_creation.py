@@ -206,7 +206,16 @@ def test_creation_persists_choices_artifacts_and_sequential_unlock(
     final = client.get(base + "/ai-creation", headers=creator_headers).json()
     assert final["state"]["phase"] == "ready", final
     chapters = client.get(base + "/chapters", headers=creator_headers).json()
-    assert all("尚未创作" in row["original_content"] for row in chapters)
+    # The list carries metadata only; the body is fetched per chapter.
+    assert all(row["has_content"] for row in chapters)
+    # Only the unlocked chapter is readable: later chapters stay behind the
+    # sequential-unlock rule until the previous script exists.
+    first = client.get(
+        f"{base}/chapters/{chapters[0]['id']}/content", headers=creator_headers
+    )
+    assert first.status_code == 200, first.text
+    bodies = [first.json()]
+    assert all("尚未创作" in body["original_content"] for body in bodies)
     assert [row["locked"] for row in chapters] == [False] + [True] * 6
     assert (
         client.get(base + f"/chapters/{chapters[1]['id']}/scripts", headers=creator_headers).status_code

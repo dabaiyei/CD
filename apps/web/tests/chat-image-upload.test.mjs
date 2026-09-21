@@ -40,3 +40,23 @@ test('cancel terminates the worker immediately and next upload still succeeds', 
   worker.onmessage({ data: { error: true } })
   assert.equal(await next, source)
 })
+
+test('phone photo extensions and MIME variants are recognized as images', async () => {
+  const { isSupportedImage, IMAGE_ACCEPT_ATTRIBUTE } = await import('../src/lib/imageUpload.ts')
+  // Phones and Windows apps save JPEGs under several extensions; some browsers
+  // report an empty or unusual MIME type for them.
+  for (const name of ['PHOTO.JPG', 'a.jpeg', 'b.jpe', 'c.JFIF', 'IMG_0001.mpo', 'd.png', 'e.WEBP']) {
+    assert.ok(isSupportedImage(new File(['x'], name)), `${name} should be supported`)
+  }
+  for (const type of ['image/jpeg', 'image/jpg', 'image/pjpeg', 'image/png', 'image/webp']) {
+    assert.ok(isSupportedImage(new File(['x'], 'noext', { type })), `${type} should be supported`)
+  }
+  // Files with no usable type or extension still fail the fast pre-check.
+  assert.equal(isSupportedImage(new File(['x'], 'mystery', { type: '' })), false)
+  assert.equal(isSupportedImage(new File(['x'], 'photo.gif', { type: 'image/gif' })), false)
+  assert.equal(isSupportedImage(new File(['x'], 'doc.pdf', { type: 'application/pdf' })), false)
+  // Pickers must offer the same extensions the pre-check accepts.
+  for (const ext of ['.jpg', '.jpeg', '.jpe', '.jfif', '.mpo', '.png', '.webp']) {
+    assert.ok(IMAGE_ACCEPT_ATTRIBUTE.includes(ext), `${ext} missing from accept attribute`)
+  }
+})

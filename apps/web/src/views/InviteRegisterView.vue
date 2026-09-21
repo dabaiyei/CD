@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { MAX_IMAGE_UPLOAD_BYTES, isSupportedImage } from '@/lib/imageUpload'
+import { IMAGE_ACCEPT_ATTRIBUTE, MAX_IMAGE_UPLOAD_BYTES, isSupportedImage } from '@/lib/imageUpload'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
@@ -171,9 +171,9 @@ onBeforeUnmount(() => {
             <ImagePlus v-else :size="24" />
             <span><Camera :size="13" /></span>
           </button>
-          <div><strong>个人头像</strong><small>可选，支持 JPG、PNG、WebP</small></div>
+          <div><strong>个人头像</strong><small>可选，支持手机照片 JPG/JPEG、PNG、WebP</small></div>
           <button v-if="avatar" class="invite-avatar__remove" type="button" title="移除头像" @click="removeAvatar"><X :size="15" /></button>
-          <input ref="avatarInput" class="sr-only" type="file" accept="image/jpeg,image/png,image/webp" @change="chooseAvatar" />
+          <input ref="avatarInput" class="sr-only" type="file" :accept="IMAGE_ACCEPT_ATTRIBUTE" @change="chooseAvatar" />
         </div>
 
         <label class="invite-glass-field"><span>邮箱</span><div><Mail :size="18" /><input v-model.trim="email" required type="email" autocomplete="email" inputmode="email" maxlength="255" placeholder="name@example.com" /></div></label>

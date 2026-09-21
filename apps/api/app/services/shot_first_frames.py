@@ -12,11 +12,48 @@ from app.services.image_model_routing import resolve_image_model
 from app.services.task_submission import active_tasks, create_queued_task
 
 
+def _portrait_asset_id(url: str | None) -> str:
+    """Asset id embedded in an asset image key, or "" for a designed first frame.
+
+    Asset images are stored as `<tenant>/projects/<project>/assets/<asset-id>-<random>.webp`,
+    so the id survives asset regeneration while the file name does not. Ids are
+    UUID4 text, hence the fixed 36-character prefix.
+    """
+    if not url or "/assets/" not in url:
+        return ""
+    name = url.rsplit("/", 1)[-1]
+    if not name.endswith(".webp") or len(name) < 37 or name[36] != "-":
+        return ""
+    return name[:36]
+
+
+def _is_asset_portrait(url: str | None, assets) -> bool:
+    """Whether this reference is an asset's own image rather than a designed frame.
+
+    Two signals, because either can be the only one available:
+    - the id embedded in the key, which survives asset regeneration (the file
+      name changes, so comparing URLs alone would miss it);
+    - the exact media URL, for keys that do not follow the asset layout
+      (global assets, and records created before names were standardized).
+    """
+    if not url:
+        return False
+    if any(url == asset.media_url for asset in assets):
+        return True
+    return bool(_portrait_asset_id(url)) and any(
+        _portrait_asset_id(url) == asset.id for asset in assets
+    )
+
+
 def needs_combat_frame(shot, assets) -> bool:
     combat = contains_combat(" ".join([shot.title, shot.scene_description, shot.action_description]))
     combat = combat or any((a.asset_metadata or {}).get("combat_technique") for a in assets)
+    if not combat:
+        return False
     # Older releases used a character portrait as the shot's first frame.
-    return bool(combat and (not shot.reference_image_url or shot.reference_image_url in {a.media_url for a in assets}))
+    if not shot.reference_image_url:
+        return True
+    return _is_asset_portrait(shot.reference_image_url, assets)
 
 
 async def wake_ready_parents(session):
@@ -58,7 +95,7 @@ async def prepare(task_id: str) -> bool:
             needs_frame = needs_combat_frame(shot, assets)
             layout = next((row.get("frame_layout") for row in (board.content or [])
                 if row.get("order_index") == shot.order_index), None)
-            if layout and (not shot.reference_image_url or shot.reference_image_url in {a.media_url for a in assets}):
+            if layout and not _is_asset_portrait(shot.reference_image_url, assets):
                 needs_frame = True
             if shot.reference_image_url and not needs_frame:
                 generated = await session.scalar(select(AITask).where(

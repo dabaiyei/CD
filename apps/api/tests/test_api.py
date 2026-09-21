@@ -4058,6 +4058,11 @@ def test_chapter_redo_and_delete_clear_production_but_preserve_source(
     chapter = imported["chapters"][0]
     sibling = imported["chapters"][1]
     chapter_id = chapter["id"]
+    # The import response carries metadata only; fetch the body to compare it.
+    chapter["original_content"] = client.get(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/content",
+        headers=creator_headers,
+    ).json()["original_content"]
     script_path = f"/api/v1/projects/{project_id}/chapters/{chapter_id}/scripts"
     assert client.post(
         script_path,
@@ -4155,7 +4160,13 @@ def test_chapter_redo_and_delete_clear_production_but_preserve_source(
     assert redone.status_code == 200
     assert redone.json()["status"] == "uninitialized"
     assert redone.json()["title"] == chapter["title"]
-    assert redone.json()["original_content"] == chapter["original_content"]
+    # The original text is preserved by the redo; read it back explicitly.
+    assert redone.json()["has_content"] is True
+    redone_content = client.get(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/content",
+        headers=creator_headers,
+    ).json()
+    assert redone_content["original_content"] == chapter["original_content"]
     assert redone.json()["source_file_id"] == source_file_id
     assert client.get(script_path, headers=creator_headers).json() == []
     assert client.get(
@@ -4720,8 +4731,13 @@ def test_character_reference_audio_flows_into_video_prompt_and_generation_task(
             f"/api/v1/projects/{project_id}/chapters/{chapter_id}/storyboards/{storyboard_id}",
             headers=creator_headers,
         ).json()
-        assert "<Audio 1>" in detail["shots"][0]["video_prompt"]
-        assert "音频测试林遥" in detail["shots"][0]["video_prompt"]
+        prompts = client.get(
+            f"/api/v1/projects/{project_id}/chapters/{chapter_id}/storyboards/"
+            f"{storyboard_id}/shots/{detail['shots'][0]['id']}/prompts",
+            headers=creator_headers,
+        ).json()
+        assert "<Audio 1>" in prompts["video_prompt"]
+        assert "音频测试林遥" in prompts["video_prompt"]
 
         video_tasks = client.post(
             f"/api/v1/projects/{project_id}/chapters/{chapter_id}/storyboards/"
@@ -5591,6 +5607,97 @@ def test_director_storyboard_start_continues_ready_asset_workflow(
     assert resumed_detail["child_runs"][-1]["status"] == "queued"
 
 
+def test_a_storyboard_restart_is_not_blocked_by_a_workflow_whose_task_vanished(
+    client: TestClient,
+    creator_headers: dict[str, str],
+    admin_headers: dict[str, str],
+) -> None:
+    """A run left in a busy stage by a missing task row must not lock the chapter.
+
+    The failing chapter carried exactly this: an ASSET_PREPARING run whose
+    "asset_image" child pointed at a task row that no longer existed. The stage
+    gate then answered every retry with 409, so the two-shot board could never
+    be regenerated.
+    """
+    from app.db.models import AssetExtraction, DirectorWorkflowStage, DirectorWorkflowStatus
+
+    provider_id = client.get("/api/v1/admin/providers", headers=admin_headers).json()[0]["id"]
+    assert client.patch(
+        f"/api/v1/admin/providers/{provider_id}",
+        headers=admin_headers,
+        json={"api_key": "test-storyboard-restart-key"},
+    ).status_code == 200
+    project_id = client.get("/api/v1/projects", headers=creator_headers).json()[0]["id"]
+    imported = client.post(
+        f"/api/v1/projects/{project_id}/sources/import",
+        headers=creator_headers,
+        data={
+            "mode": "novel",
+            "source_name": "分镜重启测试",
+            "pasted_text": "第一章 疯狗\n苏郁走进拆迁区，一条疯狗扑了上来。",
+        },
+    ).json()
+    chapter_id = imported["chapters"][0]["id"]
+    script = client.post(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/scripts",
+        headers=creator_headers,
+        json={
+            "title": "第一集疯狗",
+            "content": "场1｜外景｜拆迁区小路｜夜\n△ 疯狗扑上来咬住他的左小腿。",
+            "status": "approved",
+            "activate": True,
+        },
+    )
+    assert script.status_code == 201
+    extraction = client.post(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/asset-extractions",
+        headers=creator_headers,
+        json={"assets": [{"asset_type": "character", "name": "苏郁", "description": "高中生"}]},
+    )
+    assert extraction.status_code == 201
+
+    async def leave_a_zombie_run() -> None:
+        async with SessionLocal() as session:
+            chapter = await session.get(Chapter, chapter_id)
+            record = await session.scalar(
+                select(AssetExtraction).where(AssetExtraction.chapter_id == chapter_id)
+            )
+            workflow = DirectorWorkflowRun(
+                tenant_id=chapter.tenant_id,
+                user_id=chapter.user_id,
+                project_id=chapter.project_id,
+                chapter_id=chapter.id,
+                stage=DirectorWorkflowStage.ASSET_PREPARING,
+                status=DirectorWorkflowStatus.RUNNING,
+                script_version_id=record.script_version_id,
+                asset_extraction_id=record.id,
+                last_message="资产图片生成已交给子智能体",
+            )
+            session.add(workflow)
+            await session.flush()
+            session.add(DirectorChildRun(
+                tenant_id=chapter.tenant_id,
+                user_id=chapter.user_id,
+                project_id=chapter.project_id,
+                workflow_id=workflow.id,
+                task_id=None,
+                kind="asset_image",
+                title="生成资产定稿图",
+                status=DirectorChildStatus.RUNNING,
+                summary="资产图片生成已交给子智能体",
+            ))
+            await session.commit()
+
+    asyncio.run(leave_a_zombie_run())
+    path = f"/api/v1/projects/{project_id}/chapters/{chapter_id}/storyboards/generate"
+    restarted = client.post(path, headers=creator_headers)
+    assert restarted.status_code == 202, restarted.text
+    assert client.get(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/director-workflow",
+        headers=creator_headers,
+    ).status_code == 200
+
+
 def test_chapter_analysis_and_ai_script_are_persistent_reviewable_tasks(
     client: TestClient,
     creator_headers: dict[str, str],
@@ -6077,7 +6184,7 @@ def test_storyboard_and_restart_safe_video_pipeline(
     detail = client.get(detail_path, headers=creator_headers).json()
     assert [shot["title"] for shot in detail["shots"]] == ["雨夜推门", "旧相机特写"]
     assert len(detail["shots"][0]["asset_ids"]) == 2
-    assert all(shot["video_prompt"] == "" for shot in detail["shots"])
+    assert all(shot["has_video_prompt"] is False for shot in detail["shots"])
 
     shot = detail["shots"][0]
     prompt_task = client.post(
@@ -6097,7 +6204,7 @@ def test_storyboard_and_restart_safe_video_pipeline(
     )
     detail = client.get(detail_path, headers=creator_headers).json()
     shot = next(item for item in detail["shots"] if item["id"] == shot["id"])
-    assert shot["video_prompt"]
+    assert shot["has_video_prompt"] is True
     video_path = f"{detail_path}/shots/{shot['id']}/videos/generate"
     video_task = client.post(video_path, headers=creator_headers)
     assert video_task.status_code == 202
@@ -6358,8 +6465,15 @@ def test_storyboard_batch_video_prompt_and_video_queue(
             f"/api/v1/projects/{project_id}/chapters/{chapter_id}/storyboards/{storyboard_id}",
             headers=creator_headers,
         ).json()
-        assert bool(detail["shots"][0]["video_prompt"])
-        assert not detail["shots"][1]["video_prompt"]
+        # The board sends flags, not prompt bodies; text is fetched per shot.
+        assert detail["shots"][0]["has_video_prompt"] is True
+        assert detail["shots"][1]["has_video_prompt"] is False
+        prompts = client.get(
+            f"/api/v1/projects/{project_id}/chapters/{chapter_id}/storyboards/"
+            f"{storyboard_id}/shots/{detail['shots'][0]['id']}/prompts",
+            headers=creator_headers,
+        ).json()
+        assert bool(prompts["video_prompt"])
         saved_version = detail["shots"][0]["version"]
         retry = client.post(f"/api/v1/tasks/{prompt_task.json()['id']}/retry", headers=creator_headers)
         assert retry.status_code == 202, retry.text
@@ -6380,7 +6494,7 @@ def test_storyboard_batch_video_prompt_and_video_queue(
         f"/api/v1/projects/{project_id}/chapters/{chapter_id}/storyboards/{storyboard_id}",
         headers=creator_headers,
     ).json()
-    assert all(shot["video_prompt"] for shot in prompted_storyboard["shots"])
+    assert all(shot["has_video_prompt"] for shot in prompted_storyboard["shots"])
 
     video_tasks = client.post(
         f"/api/v1/projects/{project_id}/chapters/{chapter_id}/storyboards/{storyboard_id}/videos/generate",
@@ -7574,7 +7688,7 @@ def test_director_agent_publishes_formal_storyboard_version_for_bound_chapter(
     ).json()
     assert detail["shots"][0]["title"] == "雨夜推门"
     assert len(detail["shots"][0]["asset_ids"]) == 2
-    assert detail["shots"][0]["video_prompt"] == ""
+    assert detail["shots"][0]["has_video_prompt"] is False
 
     chat_detail = client.get(
         f"/api/v1/projects/{project_id}/agent/sessions/{session_id}",
@@ -8829,7 +8943,10 @@ def test_personal_chat_additive_image_edit_reuses_reference_and_does_not_save_sk
     ) is True
 
     assert [item.id for item in runtime.requests[0].attachments] == [attachment["id"]]
-    assert gateway.requests[0].prompt == media_prompt
+    # The model's prompt is preserved and the platform appends its own identity
+    # lock: an uploaded photo is the person to restyle, so the face must survive.
+    assert gateway.requests[0].prompt.startswith(media_prompt)
+    assert "不得生成另一张脸" in gateway.requests[0].prompt
     assert gateway.requests[0].generation_mode == "image_to_image"
     assert gateway.requests[0].reference_image_url
     detail = client.get(

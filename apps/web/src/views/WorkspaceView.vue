@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { MAX_IMAGE_UPLOAD_BYTES, isSupportedImage } from '@/lib/imageUpload'
+import { IMAGE_ACCEPT_ATTRIBUTE, MAX_IMAGE_UPLOAD_BYTES, isSupportedImage } from '@/lib/imageUpload'
 import { computed, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { AlignLeft, Check, CircleAlert, Clapperboard, Film, Image as ImageIcon, ImagePlus, LoaderCircle, MonitorUp, Palette, Plus, Ratio, Search, Sparkles, Trash2, Type } from 'lucide-vue-next'
@@ -472,7 +472,7 @@ async function generateCover(): Promise<void> {
             ref="coverInput"
             class="hidden-file-input"
             type="file"
-            accept="image/jpeg,image/png,image/webp"
+            :accept="IMAGE_ACCEPT_ATTRIBUTE"
             @change="selectCover"
           />
           <div class="cover-panel__actions">

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { MAX_IMAGE_UPLOAD_BYTES, isSupportedImage, prepareChatImage } from '@/lib/imageUpload'
+import { IMAGE_ACCEPT_ATTRIBUTE, MAX_IMAGE_UPLOAD_BYTES, isSupportedImage, prepareChatImage } from '@/lib/imageUpload'
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { DropdownMenuRoot, DropdownMenuTrigger, DropdownMenuPortal, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from 'reka-ui'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
@@ -2099,7 +2099,7 @@ async function sendMessage(): Promise<void> {
           ></textarea>
 
           <div class="agent-composer__actions">
-            <input ref="fileInput" class="sr-only" type="file" accept="image/jpeg,image/png,image/webp" multiple :disabled="disabled" @change="uploadAttachments" />
+            <input ref="fileInput" class="sr-only" type="file" :accept="IMAGE_ACCEPT_ATTRIBUTE" multiple :disabled="disabled" @change="uploadAttachments" />
             <button
               class="agent-attach-button"
               type="button"

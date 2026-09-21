@@ -11,7 +11,11 @@ SOURCE_REVISION = "65c7c1dd35fcf4a01bfc1372ab506b60e2d0d26d"
 METHOD_SOURCE_REVISION = "f0626a01d32a476c4e827b3fa1aba6dcdf571ead"
 MAX_SKILL_CHARS = 4800
 MAX_HANDBOOK_CHARS = 9000
-MAX_REQUEST_CHARS = 32000
+# The runtime's context window is 128k tokens; this is a character budget for
+# one request, sized to keep the prompt well inside it while leaving room for
+# the reply. A lower ceiling rejected legitimately detailed shots outright,
+# because the schema, handbooks and per-shot asset data alone can exceed 50k.
+MAX_REQUEST_CHARS = 96000
 
 # The catalog contains descriptions only. File bodies are opened after routing.
 CATALOG = {

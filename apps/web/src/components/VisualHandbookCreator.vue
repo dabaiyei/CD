@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { MAX_IMAGE_UPLOAD_BYTES, isSupportedImage } from '@/lib/imageUpload'
+import { IMAGE_ACCEPT_ATTRIBUTE, MAX_IMAGE_UPLOAD_BYTES, isSupportedImage } from '@/lib/imageUpload'
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { Sparkles, Images, X, LoaderCircle, RotateCcw, BookOpen } from 'lucide-vue-next'
 import BaseDialog from '@/components/BaseDialog.vue'
@@ -64,7 +64,7 @@ onBeforeUnmount(() => { disposed = true; if (timer) clearTimeout(timer); images.
   <BaseDialog :open="open" title="从参考图创建画风手册" description="上传图片，AI 逐图分析并生成完整画风技能包。" wide @update:open="open = $event">
     <div class="style-creator">
       <p>上传 1–4 张同风格图片。AI 将拆解线条、色彩、五官妆容、材质、光影与构图，生成 12 份可编辑的手册文件。首图作为封面；多图风格不同时以首图为主。</p>
-      <input ref="input" type="file" accept="image/jpeg,image/png,image/webp" multiple hidden @change="select" />
+      <input ref="input" type="file" :accept="IMAGE_ACCEPT_ATTRIBUTE" multiple hidden @change="select" />
       <div class="style-references">
         <figure v-for="(item, index) in images" :key="item.url"><img :src="item.url" :alt="`参考图 ${index + 1}`" /><figcaption>{{ index === 0 ? '主参考 · 封面' : `参考图 ${index + 1}` }}</figcaption><button type="button" :disabled="uploading" :aria-label="`移除参考图 ${index + 1}`" @click="remove(index)"><X :size="16" /></button></figure>
         <button v-if="images.length < 4" class="style-add" :disabled="uploading" @click="input?.click()"><Images :size="26" /><span>添加参考图</span><small>单图 ≤ 100MB</small></button>

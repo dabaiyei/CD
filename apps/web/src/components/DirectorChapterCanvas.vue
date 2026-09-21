@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, nextTick, ref, watch } from 'vue'
+import { computed, ref, watch } from 'vue'
 import {
   BookOpenText,
   Boxes,
@@ -22,8 +22,11 @@ import {
 
 import BaseDialog from '@/components/BaseDialog.vue'
 import VideoConcatButton from '@/components/VideoConcatButton.vue'
+import VirtualGrid from '@/components/VirtualGrid.vue'
 import { apiBlob } from '@/lib/api'
 import { mediaPreview } from '@/lib/mediaPreview'
+import { chapterContentLength } from '@/lib/chapterContent'
+import { shotHasVideoPrompt } from '@/lib/storyboardShot'
 import { useToastStore } from '@/stores/toast'
 import type { AssetItem, Chapter, DirectorWorkflowDetail, ScriptVersion, StoryboardShot, StoryboardVersionDetail, VideoClip } from '@/types'
 
@@ -49,17 +52,13 @@ const emit = defineEmits<{
   queueShotVideo: [shot: StoryboardShot]
   startAutomation: []
   stopAutomation: []
+  /** The board carries only prompt flags; the bodies load when a shot opens. */
+  requestShotPrompts: [shotIds: string[]]
 }>()
 const tab = ref<'source' | 'script' | 'assets' | 'storyboard' | 'video'>('source')
 const selectedVideoShotId = ref('')
 const selectedVideoShotIds = ref<string[]>([])
 const playingVideoUrl = ref('')
-const videoPage = ref(0)
-const videoPageSize = 12
-const videoShotGrid = ref<HTMLElement | null>(null)
-watch(videoPage, async () => { await nextTick(); videoShotGrid.value?.scrollTo({ left: 0 }) })
-const videoPageCount = computed(() => Math.max(1, Math.ceil(storyboardShots.value.length / videoPageSize)))
-const visibleVideoShots = computed(() => storyboardShots.value.slice(videoPage.value * videoPageSize, (videoPage.value + 1) * videoPageSize))
 const downloadingVideos = ref(false)
 const automationConfirmOpen = ref(false)
 const toast = useToastStore()
@@ -145,7 +144,7 @@ const activeClips = computed(() => {
   return rows
 })
 const readyVideoCount = computed(() => [...activeClips.value.values()].filter((clip) => clip.is_active && clip.status === 'ready').length)
-const shotsWithPromptCount = computed(() => storyboardShots.value.filter((shot) => Boolean(shot.video_prompt.trim())).length)
+const shotsWithPromptCount = computed(() => storyboardShots.value.filter((shot) => shotHasVideoPrompt(shot)).length)
 const selectedVideoShot = computed(() => (
   storyboardShots.value.find((shot) => shot.id === selectedVideoShotId.value)
   ?? storyboardShots.value[0]
@@ -167,12 +166,10 @@ const videoPromptEligibleShots = computed(() => selectedVideoShots.value.filter(
 ))
 const selectedVideoUrl = computed(() => activeClips.value.get(selectedVideoShot.value?.id || '')?.media_url || '')
 watch([selectedVideoUrl, tab], () => { playingVideoUrl.value = '' })
-watch(() => props.storyboard?.version.id, () => { videoPage.value = 0 })
-watch(videoPageCount, (count) => { videoPage.value = Math.min(videoPage.value, count - 1) })
 const videoEligibleShots = computed(() => selectedVideoShots.value.filter(
   (shot) => !busyShotIdSet.value.has(shot.id)
     && !busyVideoPromptShotIdSet.value.has(shot.id)
-    && Boolean(shot.video_prompt.trim())
+    && shotHasVideoPrompt(shot)
     && !(activeClips.value.get(shot.id)?.is_active && activeClips.value.get(shot.id)?.status === 'ready'),
 ))
 const downloadableVideoClips = computed(() => storyboardShots.value
@@ -268,11 +265,12 @@ function shotVideoStatus(shot: StoryboardShot): string {
   if (busyVideoPromptShotIdSet.value.has(shot.id)) return '提示词中'
   const clip = activeClips.value.get(shot.id)
   if (clip) return clipStatusText(clip)
-  return shot.video_prompt ? '待生成' : '缺提示词'
+  return shotHasVideoPrompt(shot) ? '待生成' : '缺提示词'
 }
 
 function selectVideoShot(shot: StoryboardShot): void {
   selectedVideoShotId.value = shot.id
+  emit('requestShotPrompts', [shot.id])
 }
 
 function toggleVideoShotSelection(shotId: string): void {
@@ -419,8 +417,8 @@ watch(
     </nav>
 
     <section v-if="tab === 'source'" class="director-source-document">
-      <header><BookOpenText :size="16" /><strong>章节原文</strong><span class="tabular-nums">{{ chapter.original_content.length.toLocaleString('zh-CN') }} 字</span></header>
-      <article><p>{{ chapter.original_content }}</p></article>
+      <header><BookOpenText :size="16" /><strong>章节原文</strong><span class="tabular-nums">{{ chapterContentLength(chapter).toLocaleString('zh-CN') }} 字</span></header>
+      <article><p>{{ chapter.original_content ?? '正在读取章节原文…' }}</p></article>
     </section>
 
     <section v-else-if="tab === 'script' && activeScript" class="director-script-document">
@@ -434,23 +432,27 @@ watch(
 
     <section v-else-if="tab === 'assets' && assets.length" class="director-asset-board">
       <header><div><strong>本章塑造资产</strong><span>{{ readyAssets.length }} / {{ assets.length }} 已定稿</span></div><button type="button" :disabled="automationLocked" @click="emit('openAssets')"><LockKeyhole v-if="automationLocked" :size="15" /><Boxes v-else :size="15" />{{ automationLocked ? '全自动运行中' : '管理资产' }}</button></header>
-      <div>
-        <article v-for="asset in assets" :key="asset.id">
+      <VirtualGrid :items="assets" :min-column-width="150" :estimate-row-height="196">
+        <template #default="{ item: asset }">
+        <article>
           <div><img v-image-preview="asset.media_url" v-if="asset.media_url" :src="asset.media_url" :alt="asset.name" /><span v-else><Image :size="22" /></span><i :data-ready="Boolean(asset.media_url)">{{ asset.media_url ? '已定稿' : asset.generation_prompt ? '待生图' : '待提示词' }}</i></div>
           <strong>{{ asset.name }}</strong><small>{{ asset.asset_type === 'character' ? '人物' : asset.asset_type === 'scene' ? '场景' : asset.asset_type === 'prop' ? '道具' : '素材' }}</small>
         </article>
-      </div>
+        </template>
+      </VirtualGrid>
     </section>
 
     <section v-else-if="tab === 'storyboard' && storyboard" class="director-storyboard-board">
       <header><div><strong>导演分镜 v{{ storyboard.version.version }}</strong><span>{{ storyboardShots.length }} 个镜头</span></div><span><Sparkles :size="14" />已通过资产校验</span></header>
-      <div>
-        <article v-for="shot in storyboardShots" :key="shot.id">
+      <VirtualGrid :items="storyboardShots" :min-column-width="150" :estimate-row-height="230">
+        <template #default="{ item: shot }">
+        <article>
           <div><img v-image-preview="shot.reference_image_url" v-if="shot.reference_image_url" :src="shot.reference_image_url" :alt="shot.title" /><span v-else><Camera :size="24" /></span><b class="tabular-nums">{{ String(shot.order_index).padStart(2, '0') }}</b></div>
           <header><strong>{{ shot.title }}</strong><small>{{ shot.shot_type }} · {{ shot.duration_seconds }}s</small></header>
           <p>{{ shot.action_description || shot.scene_description }}</p>
         </article>
-      </div>
+        </template>
+      </VirtualGrid>
     </section>
 
     <section v-else-if="tab === 'video' && storyboardShots.length" class="director-video-board">
@@ -493,9 +495,9 @@ watch(
               <button type="button" class="button button--secondary" :disabled="automationLocked || busyVideoPromptShotIdSet.has(selectedVideoShot.id) || busyShotIdSet.has(selectedVideoShot.id) || videoAction === 'videoPrompt' || videoPromptTaskActive" @click="queueSelectedVideoPrompt">
                 <LoaderCircle v-if="busyVideoPromptShotIdSet.has(selectedVideoShot.id) || videoAction === 'videoPrompt'" class="spin" :size="15" />
                 <WandSparkles v-else :size="15" />
-                {{ selectedVideoShot.video_prompt ? '重写提示词' : '生成提示词' }}
+                {{ shotHasVideoPrompt(selectedVideoShot) ? '重写提示词' : '生成提示词' }}
               </button>
-              <button type="button" class="button button--primary" :disabled="automationLocked || !selectedVideoShot.video_prompt || busyShotIdSet.has(selectedVideoShot.id) || busyVideoPromptShotIdSet.has(selectedVideoShot.id) || videoAction === 'video'" @click="emit('queueShotVideo', selectedVideoShot)">
+              <button type="button" class="button button--primary" :disabled="automationLocked || !shotHasVideoPrompt(selectedVideoShot) || busyShotIdSet.has(selectedVideoShot.id) || busyVideoPromptShotIdSet.has(selectedVideoShot.id) || videoAction === 'video'" @click="emit('queueShotVideo', selectedVideoShot)">
                 <LoaderCircle v-if="busyShotIdSet.has(selectedVideoShot.id)" class="spin" :size="15" />
                 <Play v-else :size="15" />
                 {{ activeClips.get(selectedVideoShot.id)?.is_active ? '重新生成' : '生成本镜头' }}
@@ -530,7 +532,7 @@ watch(
           <section class="director-video-final-prompt">
             <header>
               <small>最终视频提示词</small>
-              <span>{{ selectedVideoShot.video_prompt ? '已写入镜头，可直接生成视频' : '尚未生成' }}</span>
+              <span>{{ shotHasVideoPrompt(selectedVideoShot) ? '已写入镜头，可直接生成视频' : '尚未生成' }}</span>
             </header>
             <p>{{ selectedVideoShot.video_prompt || '点击“生成提示词”后，系统会调用管理员配置的视频提示词生成 skill，读取当前镜头内容、首帧、资产图片参考、项目视觉/导演手册和目标视频模型能力，生成最终可执行提示词。' }}</p>
           </section>
@@ -542,31 +544,26 @@ watch(
         </div>
       </section>
 
-      <div ref="videoShotGrid" class="director-video-shot-grid">
-        <article
-          v-for="shot in visibleVideoShots"
-          :key="shot.id"
-          v-memo="[shot.version, shotFallbackImage(shot), shot.video_prompt, selectedVideoShot?.id === shot.id, selectedVideoShotIds.includes(shot.id), busyShotIdSet.has(shot.id), busyVideoPromptShotIdSet.has(shot.id), activeClips.get(shot.id)?.id, activeClips.get(shot.id)?.status]"
-          :class="{ active: selectedVideoShot?.id === shot.id, selected: selectedVideoShotIds.includes(shot.id) }"
-          @click="selectVideoShot(shot)"
-        >
-          <button type="button" :aria-pressed="selectedVideoShotIds.includes(shot.id)" :title="selectedVideoShotIds.includes(shot.id) ? '取消选择' : '选择镜头'" @click.stop="toggleVideoShotSelection(shot.id)"><Check :size="13" /></button>
-          <div>
-            <img v-image-preview="shotFallbackImage(shot)" v-if="shotFallbackImage(shot)" :src="mediaPreview(shotFallbackImage(shot))" :alt="shot.title" loading="lazy" decoding="async" />
-            <span v-else><Camera :size="20" /></span>
-            <i :data-status="activeClips.get(shot.id)?.status || 'idle'">{{ shotVideoStatus(shot) }}</i>
-          </div>
-          <header><strong>{{ shot.title }}</strong><small class="tabular-nums">#{{ shot.order_index }} · {{ shot.duration_seconds }}s</small></header>
-          <p>{{ shot.video_prompt ? '视频提示词已准备' : '缺少视频提示词' }}</p>
-        </article>
-      </div>
+      <VirtualGrid class="director-video-shot-grid" :items="storyboardShots" :min-column-width="150" :estimate-row-height="236">
+        <template #default="{ item: shot }">
+          <article
+            v-memo="[shot.version, shotFallbackImage(shot), shot.has_video_prompt, selectedVideoShot?.id === shot.id, selectedVideoShotIds.includes(shot.id), busyShotIdSet.has(shot.id), busyVideoPromptShotIdSet.has(shot.id), activeClips.get(shot.id)?.id, activeClips.get(shot.id)?.status]"
+            :class="{ active: selectedVideoShot?.id === shot.id, selected: selectedVideoShotIds.includes(shot.id) }"
+            @click="selectVideoShot(shot)"
+          >
+            <button type="button" :aria-pressed="selectedVideoShotIds.includes(shot.id)" :title="selectedVideoShotIds.includes(shot.id) ? '取消选择' : '选择镜头'" @click.stop="toggleVideoShotSelection(shot.id)"><Check :size="13" /></button>
+            <div>
+              <img v-image-preview="shotFallbackImage(shot)" v-if="shotFallbackImage(shot)" :src="mediaPreview(shotFallbackImage(shot))" :alt="shot.title" loading="lazy" decoding="async" />
+              <span v-else><Camera :size="20" /></span>
+              <i :data-status="activeClips.get(shot.id)?.status || 'idle'">{{ shotVideoStatus(shot) }}</i>
+            </div>
+            <header><strong>{{ shot.title }}</strong><small class="tabular-nums">#{{ shot.order_index }} · {{ shot.duration_seconds }}s</small></header>
+            <p>{{ shotHasVideoPrompt(shot) ? '视频提示词已准备' : '缺少视频提示词' }}</p>
+          </article>
+        </template>
+      </VirtualGrid>
 
       <footer class="director-video-board__footer">
-        <nav v-if="videoPageCount > 1" class="director-video-pagination" aria-label="镜头分页">
-          <button type="button" class="button button--secondary" :disabled="videoPage === 0" @click="videoPage--">上一页</button>
-          <span>{{ videoPage + 1 }} / {{ videoPageCount }}</span>
-          <button type="button" class="button button--secondary" :disabled="videoPage + 1 >= videoPageCount" @click="videoPage++">下一页</button>
-        </nav>
         <button type="button" class="video-check" :aria-pressed="allVideoShotsSelected" @click="toggleAllVideoShots"><Check :size="13" />{{ allVideoShotsSelected ? '取消全选' : '全选镜头' }}</button>
         <span>未手动选择时默认处理全部镜头；进入队列后可在通知中心查看排队、进行中、完成和失败。</span>
       </footer>
@@ -617,7 +614,6 @@ watch(
 
 <style scoped>
 .director-video-play-trigger { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 8px; border: 0; color: white; background: rgb(0 0 0 / 20%); cursor: pointer; font: inherit; }
-.director-video-pagination { display: flex; align-items: center; gap: 10px; font-variant-numeric: tabular-nums; }
 @media (hover: none) {
   .director-video-shot-grid article > button { backdrop-filter: none; -webkit-backdrop-filter: none; }
   .director-video-shot-grid article:hover { transform: none; }

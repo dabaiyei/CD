@@ -4,7 +4,7 @@ from __future__ import annotations
 import json
 from typing import Literal
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, ValidationError, model_validator
 from sqlalchemy import select
 
 from app.db.models import Asset, AssetScope, AssetStatus, AssetType
@@ -14,6 +14,101 @@ from app.services.asset_revisions import snapshot_asset_revision
 class TechniqueDesignRequest(BaseModel):
     brief: str = Field(min_length=1, max_length=4000)
     count: int = Field(default=3, ge=1, le=6)
+
+
+class TechniquePlanItem(BaseModel):
+    """A technique the script commits to, before its full design exists.
+
+    The script stage knows *what* the fight needs and roughly how long each
+    technique occupies; the visual identity is designed later, once the owning
+    character exists. Keeping the two stages separate lets the same technique be
+    named once here and then reused, instead of being reinvented per shot.
+    """
+
+    model_config = ConfigDict(str_strip_whitespace=True)
+    name: str = Field(min_length=1, max_length=60)
+    character: str = Field(min_length=1, max_length=160)
+    purpose: str = Field(min_length=1, max_length=600)
+    duration_seconds: float = Field(gt=0, le=600)
+    variant_of: str = Field(default="", max_length=60)
+    first_use: str = Field(default="", max_length=300)
+
+
+class TechniquePlan(BaseModel):
+    model_config = ConfigDict(str_strip_whitespace=True)
+    techniques: list[TechniquePlanItem] = Field(default_factory=list, max_length=24)
+
+    @model_validator(mode="after")
+    def unique_per_character(self):
+        seen = set()
+        for item in self.techniques:
+            key = (item.character, item.name)
+            if key in seen:
+                raise ValueError(f"{item.character} 的招式 {item.name} 重复声明，请合并或改名")
+            seen.add(key)
+        return self
+
+
+def plan_from_payload(value) -> TechniquePlan:
+    """Read a stored plan, tolerating rows written before plans existed."""
+    if not value:
+        return TechniquePlan()
+    try:
+        return TechniquePlan.model_validate(value)
+    except ValidationError:
+        # A malformed historical row must not block the chapter's later stages.
+        return TechniquePlan()
+
+
+async def technique_plan_catalog(session, project_id: str, user_id: str) -> list[Asset]:
+    """Existing technique assets with their owning character's name attached."""
+    catalog = await technique_catalog(session, project_id, user_id)
+    if not catalog:
+        return []
+    owners = {
+        asset.id: asset.name
+        for asset in (
+            await session.scalars(
+                select(Asset).where(Asset.id.in_({a.parent_asset_id for a in catalog if a.parent_asset_id}))
+            )
+        ).all()
+    }
+    resolved = []
+    for asset in catalog:
+        metadata = dict(asset.asset_metadata or {})
+        metadata["technique_owner_name"] = owners.get(asset.parent_asset_id, "")
+        asset.asset_metadata = metadata
+        resolved.append(asset)
+    return resolved
+
+
+def plan_requirements(plan: TechniquePlan, catalog: list[Asset], known_names) -> tuple[list, list]:
+    """Split a plan into techniques that already exist and ones still to design.
+
+    Matching is by the technique's own short name within its owning character, so
+    a later chapter planning the same technique reuses the existing asset; only
+    genuinely new techniques (or declared variants) create new ones.
+    """
+    by_character: dict[str, set[str]] = {}
+    for asset in catalog:
+        metadata = asset.asset_metadata or {}
+        technique = metadata.get("combat_technique") or {}
+        short = str(technique.get("name") or "").strip()
+        owner = str(metadata.get("technique_owner_name") or "").strip()
+        if short and owner:
+            by_character.setdefault(owner, set()).add(short)
+    resolved, missing = [], []
+    for item in plan.techniques:
+        if item.character not in known_names:
+            continue  # A character the asset stage did not extract cannot own one.
+        existing = by_character.get(item.character, set())
+        if item.variant_of and item.variant_of not in existing:
+            raise ValueError(
+                f"{item.character} 的变体招式「{item.name}」声明继承「{item.variant_of}」，"
+                "但该基础招式不存在；请先设计基础招式，或去掉 variant_of。"
+            )
+        (resolved if item.name in existing else missing).append(item)
+    return resolved, missing
 
 
 async def queue_design(session, user, owner, payload):
@@ -93,6 +188,10 @@ TECHNIQUE_RULES = """
 image_prompt 为单张无人招式视觉设定参考图：只展示特效、武器、能量形态或召唤物，不画施术者和对手。
 该图约束招式身份，不冒充视频的0秒首帧，不另外生成独立打斗首帧；同场接续由前镜真实尾帧完成。
 已有招式是长期记忆：不改名、不变色、不换武器、不改变龙/法相身份；仅显式要求才修改。
+visual_identity按主光形、粒子、烟尘流体、冲击碎片分层定义，写清释放点、配色、尺度、轨迹与消散；
+光带贴武器轨迹，冲击波是传播波前，空气扭曲是折射，体积烟雾不是发光小点。按招式选层，不强制堆满。
+image_prompt只呈现一个清楚的特效设定时刻，不把动态生命周期拼成多格；渲染词遵循画风手册，
+手绘2D不强加UE5/PBR，不混用多个渲染器。已有主光形与纹样为身份，粒子密度变化不能改变技能形态。
 不擅加技能喊话或外语。技能名称不是必须显示或朗读的字幕。
 """ + TECHNIQUE_IMAGE_RULES
 
