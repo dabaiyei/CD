@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "cineforge-agentscope-runtime"
-version = "0.4.0"
+version = "0.5.0"
 description = "Versioned AgentScope runtime for CineForge"
 requires-python = ">=3.11"
 dependencies = [
@@ -13,6 +13,11 @@ dependencies = [
   "fastapi>=0.116,<1",
   "pydantic-settings>=2.10,<3",
   "uvicorn[standard]>=0.35,<1",
+  "ripgrep==15.1.0",
+  "ast-grep-py==0.45.3",
+  "markitdown[docx,pdf,pptx,xlsx]==0.1.8",
+  "pdfplumber==0.11.9",
+  "Pillow>=11.3,<12",
 ]
 
 [project.optional-dependencies]

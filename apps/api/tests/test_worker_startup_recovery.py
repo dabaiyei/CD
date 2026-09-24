@@ -24,3 +24,22 @@ def test_broken_recovery_does_not_skip_other_recovery_steps(monkeypatch):
     monkeypatch.setattr(director_orchestration, "recover_orphaned_agent_script_reviews", reviews)
     asyncio.run(worker.recover_pending_workflows())
     assert calls == ["stale", "automatic", "reviews"]
+
+
+def test_periodic_recovery_reconciles_workflows_after_late_lease_expiry(monkeypatch):
+    calls = []
+
+    async def stale():
+        calls.append("stale")
+
+    async def automatic():
+        calls.append("automatic")
+
+    async def reviews():
+        raise AssertionError("periodic reconciliation must not rescan orphan chat reviews")
+
+    monkeypatch.setattr(worker, "recover_stale_tasks", stale)
+    monkeypatch.setattr(director_orchestration, "recover_automatic_workflows", automatic)
+    monkeypatch.setattr(director_orchestration, "recover_orphaned_agent_script_reviews", reviews)
+    asyncio.run(worker.recover_pending_workflows(include_orphan_reviews=False))
+    assert calls == ["stale", "automatic"]

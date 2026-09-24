@@ -515,6 +515,7 @@ class HandbookPublic(ApiModel):
 
 
 class ProjectCreate(BaseModel):
+    first_frame_mode: bool = False
     creation_mode: Literal["import", "ai"] = "import"
     cinematic: bool = False
     text_model_id: str | None = Field(default=None, max_length=36)
@@ -537,6 +538,7 @@ class ProjectCreate(BaseModel):
 
 
 class ProjectUpdate(BaseModel):
+    first_frame_mode: bool = False
     text_model_id: str | None = None
     creation_mode: Literal["import", "ai"] | None = None
     cinematic: bool | None = None
@@ -553,6 +555,7 @@ class ProjectUpdate(BaseModel):
 
 
 class ProjectPublic(ApiModel):
+    first_frame_mode: bool
     creation_mode: str
     cinematic: bool
     text_model_id: str | None
@@ -878,11 +881,13 @@ class AssetExtractionResult(BaseModel):
 from app.services.frame_composition import FrameLayout
 from app.services.clip_timeline import InternalShot
 from app.services.combat_choreography import CombatPlan
+from app.services.expression_choreography import EmotionPlan
 
 
 class StoryboardShotCreate(BaseModel):
     internal_shots: list[InternalShot] = Field(default_factory=list, max_length=500)
     combat_plan: CombatPlan | None = None
+    emotion_plan: EmotionPlan | None = None
     frame_layout: FrameLayout | None = None
     continuity_group: str = Field(default="", max_length=120)
     title: str = Field(min_length=1, max_length=255)
@@ -902,6 +907,8 @@ class StoryboardShotCreate(BaseModel):
             raise ValueError("内部镜头时间超过视频片段时长")
         if self.combat_plan:
             self.combat_plan.validate_duration(float(self.duration_seconds))
+        if self.emotion_plan:
+            self.emotion_plan.validate_duration(float(self.duration_seconds))
         return self
 
     @field_validator("asset_ids")
@@ -911,7 +918,10 @@ class StoryboardShotCreate(BaseModel):
 
 
 class StoryboardShotUpdate(BaseModel):
+    internal_shots: list[InternalShot] = Field(default_factory=list, max_length=500)
+    frame_layout: FrameLayout | None = None
     combat_plan: CombatPlan | None = None
+    emotion_plan: EmotionPlan | None = None
     continuity_group: str | None = Field(default=None, max_length=120)
     title: str | None = Field(default=None, min_length=1, max_length=255)
     shot_type: str | None = Field(default=None, min_length=1, max_length=80)

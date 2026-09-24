@@ -12,7 +12,9 @@ This private service is CineForge's only AgentScope integration boundary. The Sa
 
 ## Isolation
 
-Each persistent chat session rebuilds a stable tenant/project/session workspace from immutable snapshots. One-off workflow and memory-maintenance calls remain task-isolated. AgentScope receives only `Read`, `Write`, `Edit`, `Glob` and `Grep`; shell tools are never registered. A path-guard middleware restricts reads to the workspace and writes to platform-authorized editable files or `project-files/new`.
+Each persistent chat session rebuilds a stable tenant/project/session workspace from immutable snapshots. One-off workflow and memory-maintenance calls remain task-isolated. Workspace mode provides `Read`, `Write`, `Edit`, `Glob`, `Grep`, `Ripgrep`, `AstGrep`, `MarkItDown` and applicable Skills; shell tools are never registered. Automatic `retrieval` mode excludes `Write` and `Edit`. Paths are restricted to the task workspace, and writes to platform-authorized editable files or `project-files/new`.
+
+Ripgrep runs as a bounded subprocess without a shell or caller-provided flags. AstGrep uses the native ast-grep Python engine. MarkItDown converts local documents with plugins and external models disabled, caches Markdown, and returns a bounded page and searchable path. Structured `documents` snapshots are checksum-verified and never inserted as model message bodies or image references. Dependencies are pinned in `pyproject.toml`; see [integration details](../../../docs/agent-retrieval.md).
 
 The Runtime converts CineForge handbook snapshots into standard AgentScope packages with generated `SKILL.md` files. Original handbook files remain read-only resources. Returned changes are structured diffs that the core revalidates before PostgreSQL is updated.
 

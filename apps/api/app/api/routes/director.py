@@ -138,6 +138,7 @@ async def project_file_for_user(
         or project_file.project_id != project_id
         or project_file.tenant_id != user.tenant_id
         or project_file.user_id != user.id
+        or (project_file.file_metadata or {}).get("superseded_by")
     ):
         raise HTTPException(status_code=404, detail="项目文件不存在")
     return project_file
@@ -214,6 +215,9 @@ async def list_project_files(
     session: AsyncSession = Depends(get_session),
 ) -> list[ProjectFile]:
     await project_for_user(session, project_id, user)
+    from app.services.chapter_prompt_files import ensure_project_prompt_files, visible_prompt_files
+    await ensure_project_prompt_files(session, project_id=project_id, user=user)
+    await session.commit()
     return list(
         (
             await session.scalars(
@@ -222,6 +226,7 @@ async def list_project_files(
                     ProjectFile.project_id == project_id,
                     ProjectFile.tenant_id == user.tenant_id,
                     ProjectFile.user_id == user.id,
+                    visible_prompt_files(),
                 )
                 .order_by(ProjectFile.updated_at.desc())
             )
@@ -282,9 +287,15 @@ async def update_project_file(
     if not project_file.editable:
         raise HTTPException(status_code=409, detail="原始上传文件不可编辑")
     values = payload.model_dump(exclude_unset=True)
+    from app.services.chapter_prompt_files import apply_prompt_file_edit, is_prompt_file
+    if is_prompt_file(project_file):
+        if payload.content is not None:
+            await apply_prompt_file_edit(session, project_file, payload.content, user)
+        # The canonical name/kind identifies the one editable chapter document.
+        values = {}
     for field, value in values.items():
         setattr(project_file, field, value)
-    if payload.content is not None:
+    if payload.content is not None and not is_prompt_file(project_file):
         project_file.size_bytes = len(payload.content.encode("utf-8"))
     await session.commit()
     await session.refresh(project_file)

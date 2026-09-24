@@ -1,7 +1,6 @@
 """Persisted, owner-scoped video continuation without holding a provider slot."""
 from __future__ import annotations
 
-import re
 import json
 import math
 import tempfile
@@ -10,11 +9,14 @@ from pathlib import Path
 from PIL import Image, ImageStat, ImageChops
 from sqlalchemy import select
 
-from app.db.models import AITask, Asset, AssetType, StoryboardShot, StoryboardVersion, TaskStatus, VideoClip, VideoClipStatus
+from app.db.models import AITask, Project, StoryboardShot, StoryboardVersion, TaskStatus, VideoClip, VideoClipStatus
 from app.services.video_concat import run_media_command
 
 
 async def predecessor(session, shot):
+    project = await session.get(Project, shot.project_id)
+    if not project or not project.first_frame_mode:
+        return None
     previous = await session.scalar(select(StoryboardShot).where(
         StoryboardShot.storyboard_version_id == shot.storyboard_version_id,
         StoryboardShot.user_id == shot.user_id, StoryboardShot.project_id == shot.project_id,
@@ -23,19 +25,10 @@ async def predecessor(session, shot):
     if previous is None:
         return None
     board = await session.get(StoryboardVersion, shot.storyboard_version_id)
-    groups = {item.get("order_index"): item.get("continuity_group", "") for item in (board.content or [])}
+    groups = {item.get("order_index"): item.get("continuity_group", "") for item in (board.content or [])} if board else {}
     current_group, prior_group = groups.get(shot.order_index), groups.get(previous.order_index)
-    if current_group or prior_group:
-        return previous if current_group and current_group == prior_group else None
-    # Legacy boards: only explicit same scene evidence; never infer from character identity alone.
-    if re.search(r"次日|翌日|多年后|数日后|时间跳跃|切至另一|转场至|闪回", shot.scene_description + shot.action_description):
-        return None
-    scene_ids = set(await session.scalars(select(Asset.id).where(
-        Asset.id.in_(set(previous.asset_ids) & set(shot.asset_ids)), Asset.asset_type == AssetType.SCENE,
-        Asset.project_id == shot.project_id, Asset.user_id == shot.user_id,
-    )))
-    same_description = bool(shot.scene_description.strip() and shot.scene_description.strip() == previous.scene_description.strip())
-    return previous if scene_ids or same_description else None
+    # Identity/scene similarity is not permission to serialize generation.
+    return previous if current_group and current_group == prior_group else None
 
 
 async def wake_continuations(session):
@@ -44,6 +37,11 @@ async def wake_continuations(session):
         AITask.request_payload["video_continuity_waiting"].as_boolean().is_(True),
     ).with_for_update(skip_locked=True))).all()
     for task in waiting:
+        project = await session.get(Project, task.project_id)
+        if project and not project.first_frame_mode and not task.provider_job_id:
+            task.request_payload = {k: v for k, v in task.request_payload.items()
+                                    if k not in {"video_continuity", "video_continuity_waiting", "video_continuity_task_id"}}
+            continue
         dependency = await session.get(AITask, task.request_payload.get("video_continuity_task_id"))
         if not dependency or dependency.status not in {TaskStatus.QUEUED, TaskStatus.RUNNING}:
             task.request_payload = {**task.request_payload, "video_continuity_waiting": False}
@@ -131,11 +129,24 @@ async def prepare(task_id: str) -> bool:
         task = await w.owned_task_for_update(session, task_id)
         if not w.owns_running_task(task):
             return False
-        if task.request_payload.get("video_continuity"):
-            await validate_source(session, task)
-            return True
         # An already submitted legacy job must be polled with its original request.
         if task.provider_job_id:
+            await validate_source(session, task)
+            return True
+        project = await session.get(Project, task.project_id)
+        if not project or project.owner_id != task.user_id:
+            raise RuntimeError("接续项目不可用")
+        if not project.first_frame_mode:
+            task.request_payload = {k: v for k, v in task.request_payload.items()
+                                    if k not in {"video_continuity", "video_continuity_waiting", "video_continuity_task_id"}}
+            await session.commit()
+            return True
+        from app.services.first_frame_policy import supports_first_frame
+        model = await session.get(w.AIModel, task.model_id)
+        if not model or not supports_first_frame(model.capabilities):
+            raise RuntimeError("当前视频模型已不支持首帧模式，请更换模型或关闭项目首帧模式")
+        if task.request_payload.get("video_continuity"):
+            await validate_source(session, task)
             return True
         shot = await session.get(StoryboardShot, task.request_payload.get("shot_id"))
         if not shot or shot.user_id != task.user_id or shot.project_id != task.project_id:
@@ -172,31 +183,23 @@ async def prepare(task_id: str) -> bool:
         model = await session.get(w.AIModel, task.model_id)
         caps = model.capabilities if model else {}
         limits = caps.get("reference_limits", {})
-        images, videos = limits.get("image", {}), limits.get("video", {})
+        images = limits.get("image", {})
         if not images.get("enabled") or int(images.get("max_count") or 0) < 1:
             raise RuntimeError("当前模型不支持首帧参考，不能执行连续场景接力；请选择支持图生视频的模型")
-        use_video = bool("full_reference" in caps.get("generation_modes", []) and videos.get("enabled")
-            and int(videos.get("max_count") or 0) > 0
-            and (not videos.get("accepted_mime_types") or "video/mp4" in videos["accepted_mime_types"]))
-        provider = await session.get(w.Provider, model.provider_id) if model else None
-        adapter = w.ProviderAdapterConfig.model_validate(provider.adapter_config) if provider and provider.adapter_config else None
-        use_video = bool(use_video and adapter and adapter.video and
-            any(mapping.media_type == "video" for mapping in adapter.video.references))
-        if not use_video and not set(caps.get("generation_modes", [])).intersection({"first_frame", "multi_shot"}):
-            raise RuntimeError("当前模型没有可执行的首帧接续模式")
+        # This option promises a first-frame request, not an implicit switch to
+        # video-to-video/full-reference with different provider requirements.
+        use_video = False
         binding = {"clip_id": clip.id, "shot_id": previous.id, "shot_version": previous.version,
             "media_url": clip.media_url, "previous_action": previous.action_description[-1800:],
-            "current_action": shot.action_description, "generation_mode": "full_reference" if use_video else "first_frame"}
+            "current_action": shot.action_description, "generation_mode": "first_frame"}
         accepted_images = images.get("accepted_mime_types") or ["image/png"]
         binding["first_frame_mime"] = next((mime for mime in ["image/png", "image/jpeg", "image/webp"] if mime in accepted_images), "")
         if not binding["first_frame_mime"]:
             raise RuntimeError("当前视频模型不支持可用的尾帧图片格式")
-        if not use_video and "first_frame" not in caps.get("generation_modes", []):
-            binding["generation_mode"] = "multi_shot"
         source_key = w.object_key_from_media_url(clip.media_url)
         if not source_key:
             raise RuntimeError("上一镜视频不是可读取的项目文件")
-    await w.record_progress(task_id, 12, "提取上一镜尾帧与运动参考，准备连续动作接力")
+    await w.record_progress(task_id, 12, "提取上一镜真实尾帧，准备首帧接续")
     source = await w.materialize_media_file(source_key)
     stored_keys = []
     try:
@@ -222,6 +225,15 @@ async def prepare(task_id: str) -> bool:
             task = await w.owned_task_for_update(session, task_id)
             if not w.owns_running_task(task):
                 raise RuntimeError("接续任务已停止")
+            project = await session.get(Project, task.project_id)
+            if not project or not project.first_frame_mode:
+                # The user switched off chaining while ffmpeg was decoding.
+                for key, path in stored_keys:
+                    await w.cleanup_media(key, path)
+                task.request_payload = {k: v for k, v in task.request_payload.items()
+                                        if k not in {"video_continuity", "video_continuity_waiting", "video_continuity_task_id"}}
+                await session.commit()
+                return True
             task.request_payload = {**task.request_payload, "video_continuity": binding}
             await validate_source(session, task)
             await session.commit()

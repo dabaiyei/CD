@@ -16,6 +16,7 @@ import "@/transitions.css";
 import "@/product-surface.css";
 import "@/workspace-liquid-glass.css";
 import "@/system-liquid-glass.css";
+import "@/project-workspace.css";
 
 initializeTheme();
 initializePwaInstall();

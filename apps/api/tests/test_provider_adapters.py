@@ -398,7 +398,9 @@ def test_video_generation_request_must_match_configured_capabilities() -> None:
 
 
 def test_declarative_video_adapter_creates_polls_and_extracts_result(monkeypatch) -> None:
-    async def allow_test_urls(_url: str, *, media_name: str = "图片") -> None:
+    async def allow_test_urls(
+        _url: str, *, media_name: str = "图片", allow_private: bool = False
+    ) -> None:
         assert media_name
 
     FakeAdapterClient.requests.clear()
@@ -439,7 +441,9 @@ def test_declarative_video_adapter_creates_polls_and_extracts_result(monkeypatch
 
 
 def test_declarative_video_adapter_retries_rate_limit_and_poll_network_error(monkeypatch) -> None:
-    async def allow_test_urls(_url: str, *, media_name: str = "图片") -> None:
+    async def allow_test_urls(
+        _url: str, *, media_name: str = "图片", allow_private: bool = False
+    ) -> None:
         assert media_name
 
     async def no_sleep(_delay: float) -> None:
@@ -588,7 +592,9 @@ class FakeAgnesClient:
 
 
 def test_agnes_preset_contract_supports_multimodal_video_references(monkeypatch) -> None:
-    async def allow_test_urls(_url: str, *, media_name: str = "图片") -> None:
+    async def allow_test_urls(
+        _url: str, *, media_name: str = "图片", allow_private: bool = False
+    ) -> None:
         assert media_name
 
     FakeAgnesClient.requests.clear()
@@ -739,7 +745,9 @@ def test_image_generation_retries_transient_gateway_status(monkeypatch) -> None:
 
 
 def test_image_generation_falls_back_to_url_when_b64_json_is_empty(monkeypatch) -> None:
-    async def allow_test_urls(_url: str, *, media_name: str = "图片") -> None:
+    async def allow_test_urls(
+        _url: str, *, media_name: str = "图片", allow_private: bool = False
+    ) -> None:
         assert media_name == "图片"
 
     monkeypatch.setattr(media_gateway.httpx, "AsyncClient", FakeAgnesImageUrlClient)
@@ -768,7 +776,9 @@ def test_image_generation_falls_back_to_url_when_b64_json_is_empty(monkeypatch) 
 
 
 def test_agnes_image_references_use_nested_image_array(monkeypatch) -> None:
-    async def allow_test_urls(_url: str, *, media_name: str = "图片") -> None:
+    async def allow_test_urls(
+        _url: str, *, media_name: str = "图片", allow_private: bool = False
+    ) -> None:
         assert media_name == "图片"
 
     monkeypatch.setattr(media_gateway.httpx, "AsyncClient", FakeAgnesImageUrlClient)
@@ -824,7 +834,9 @@ def test_agnes_image_references_use_nested_image_array(monkeypatch) -> None:
 
 
 def test_autodl_minimax_h3_preset_renders_indexed_data_uri_references(monkeypatch) -> None:
-    async def allow_test_urls(_url: str, *, media_name: str = "图片") -> None:
+    async def allow_test_urls(
+        _url: str, *, media_name: str = "图片", allow_private: bool = False
+    ) -> None:
         assert media_name
 
     FakeAdapterClient.requests.clear()
@@ -1043,3 +1055,99 @@ def test_image_reference_falls_back_to_multipart_edits(monkeypatch) -> None:
     assert kwargs["files"][0][0] == "image"
     assert kwargs["files"][0][1][1] == b"fake-png-bytes"
     assert "image" not in kwargs["data"]
+
+class FakeLanRelayClient(FakeAdapterClient):
+    """A self-hosted relay that stores its outputs on the LAN."""
+
+    result_url = "http://192.168.88.110:8787/files/result.mp4"
+
+    async def request(self, method: str, url: str, **kwargs) -> FakeResponse:
+        self.requests.append((method, url, kwargs.get("json")))
+        return FakeResponse(
+            {
+                "code": "Success",
+                "data": {
+                    "task_id": "video-job-lan",
+                    "status": "SUCCESS",
+                    "results": [{"type": "video", "url": self.result_url}],
+                },
+            }
+        )
+
+    async def get(self, url: str, **_kwargs) -> FakeResponse:
+        assert url == self.result_url
+        return FakeResponse(content=b"\x00\x00\x00\x18ftypmp42video", content_type="video/mp4")
+
+
+def test_private_provider_endpoint_is_not_treated_as_ssrf(monkeypatch) -> None:
+    """A LAN relay is a supported deployment, not an attack.
+
+    The provider address comes from an admin, so a private base_url must not be
+    rejected the way an untrusted upstream download URL is.
+    """
+    FakeLanRelayClient.requests.clear()
+    monkeypatch.setattr(media_gateway.httpx, "AsyncClient", FakeLanRelayClient)
+    gateway = OpenAICompatibleMediaGateway(
+        base_url="http://192.168.88.110:8787/v1",
+        api_key=None,
+        extra_headers={},
+        adapter_config=adapter_config(),
+        credentials={"token": "secret-token"},
+    )
+
+    result = asyncio.run(
+        gateway.submit_video(
+            VideoGenerationRequest(
+                model="agnes-video-2.5-flash",
+                prompt="a calm wide shot",
+                resolution="720p",
+                aspect_ratio="16:9",
+                duration_seconds=5.0,
+                reference_image_url=None,
+                capabilities={},
+                idempotency_key="lan-relay-task",
+            )
+        )
+    )
+
+    assert result.status == "succeeded"
+    assert result.video_data
+    assert FakeLanRelayClient.requests[-1][1].startswith("http://192.168.88.110:8787/")
+
+
+def test_public_provider_still_rejects_private_media_download() -> None:
+    """SSRF protection survives for providers reached over the public internet."""
+    with pytest.raises(media_gateway.ModelGatewayError) as excinfo:
+        asyncio.run(
+            media_gateway._validate_download_url(
+                "http://127.0.0.1:8787/files/result.mp4", media_name="视频"
+            )
+        )
+    assert "非公网网络" in str(excinfo.value)
+
+
+def test_allow_private_media_skips_address_class_check() -> None:
+    asyncio.run(
+        media_gateway._validate_download_url(
+            "http://192.168.88.110:8787/files/result.mp4",
+            media_name="视频",
+            allow_private=True,
+        )
+    )
+
+
+def test_download_url_format_is_still_enforced() -> None:
+    with pytest.raises(media_gateway.ModelGatewayError) as excinfo:
+        asyncio.run(media_gateway._validate_download_url("file:///etc/passwd"))
+    assert "无效" in str(excinfo.value)
+
+
+def test_provider_endpoint_accepts_lan_but_refuses_metadata_address() -> None:
+    """The admin's own endpoint may be private, but never a metadata service."""
+    media_gateway._validate_provider_endpoint("http://192.168.88.110:8787/v1")
+    media_gateway._validate_provider_endpoint("http://127.0.0.1:8199")
+    with pytest.raises(media_gateway.ModelGatewayError) as excinfo:
+        media_gateway._validate_provider_endpoint("http://169.254.169.254/latest/meta-data")
+    assert "云元数据" in str(excinfo.value)
+    with pytest.raises(media_gateway.ModelGatewayError):
+        media_gateway._validate_provider_endpoint("ftp://192.168.88.110/v1")

@@ -1,12 +1,13 @@
 from __future__ import annotations
 
 import hashlib
+import copy
 import logging
 from decimal import Decimal
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import select, update
+from sqlalchemy import and_, or_, select, update
 from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.db.models import (
@@ -73,6 +74,50 @@ REVIEW_OPTIONS = [
 ACTIVE_WORKFLOW_STATUSES = {
     DirectorWorkflowStatus.RUNNING,
     DirectorWorkflowStatus.WAITING_USER,
+}
+
+# A storyboard that cannot be repaired is rebuilt from the approved script. The
+# bound stops a chapter that keeps producing unusable boards from looping and
+# spending credits forever.
+STORYBOARD_CHECKPOINT_TASKS = {
+    "chapter_storyboard_generation", "director_storyboard_repair", "director_storyboard_review",
+}
+
+
+async def _resume_storyboard_checkpoint(session, workflow, task_type, model_id, payload):
+    """Carry durable work across an explicit continue, scoped to the same input."""
+    if task_type not in STORYBOARD_CHECKPOINT_TASKS:
+        return payload
+    identity_keys = ("chapter_id", "script_version_id", "asset_extraction_id",
+                     "storyboard_version_id", "repair_mode", "feedback", "review")
+    # Only the most recent task for this exact operation can be resumed. Do not
+    # resurrect older failed work after a newer successful or cancelled task.
+    statement = select(AITask).where(
+        AITask.tenant_id == workflow.tenant_id, AITask.user_id == workflow.user_id,
+        AITask.project_id == workflow.project_id, AITask.task_type == task_type,
+        AITask.model_id == model_id,
+    )
+    for key in identity_keys[:4]:
+        if payload.get(key):
+            statement = statement.where(AITask.request_payload[key].as_string() == payload[key])
+    previous = await session.scalar(statement.order_by(AITask.created_at.desc()).limit(1))
+    if previous is None or previous.status != TaskStatus.FAILED:
+        return payload
+    old = previous.request_payload or {}
+    if any(old.get(key) != payload.get(key) for key in identity_keys):
+        return payload
+    checkpoints = {key: copy.deepcopy(old[key]) for key in (
+        "storyboard_generation", "storyboard_draft", "storyboard_review_cache",
+        "storyboard_asset_batches", "storyboard_draft_repairs",
+    ) if key in old}
+    return {**payload, **checkpoints}
+
+# Stages that consume an approved board. A run sitting in one of them is not by
+# itself proof the review passed.
+VIDEO_STAGES = {
+    DirectorWorkflowStage.VIDEO_PROMPT_GENERATING,
+    DirectorWorkflowStage.VIDEO_GENERATING,
+    DirectorWorkflowStage.READY_FOR_VIDEO,
 }
 
 BUSY_STORYBOARD_STAGES = {
@@ -333,6 +378,7 @@ async def _queue_child(
     }
     if agent is not None:
         payload["agent_profile_id"] = agent.id
+    payload = await _resume_storyboard_checkpoint(session, workflow, task_type, model_id, payload)
     task, event = await create_queued_task(
         session,
         user=user,
@@ -354,7 +400,7 @@ async def _queue_child(
         title=CHILD_TITLES[kind],
         status=DirectorChildStatus.QUEUED,
         attempt=attempt,
-        max_attempts=5 if workflow.automation_mode else 3,
+        max_attempts=2 if task_type in STORYBOARD_CHECKPOINT_TASKS else (5 if workflow.automation_mode else 3),
         input_refs={key: value for key, value in request_payload.items() if key.endswith("_id")},
     )
     session.add(child)
@@ -446,6 +492,107 @@ async def start_script_workflow(
     return workflow
 
 
+def _storyboard_review_cleared(review: dict[str, Any], workflow: DirectorWorkflowRun) -> bool:
+    """Whether video work may proceed on this board.
+
+    Approval is the normal route. A run whose repair budget ran out with only
+    advisory findings left also proceeds, and the waiver is recorded on that
+    board's review so resumes honour it. The waiver is deliberately bound to the
+    review rather than the run: a later board must be judged on its own merits.
+    """
+    if review.get("approved"):
+        return True
+    return bool(review.get("waived"))
+
+
+def _waive_storyboard_review(child: DirectorChildRun, workflow: DirectorWorkflowRun) -> None:
+    """Record that advisory findings were accepted so video work may start.
+
+    The repair budget can run out with only non-blocking findings left; that is
+    the project's deliberate escape hatch. Persisting the waiver keeps a later
+    resume from reading the still-unapproved verdict as a blocker and pulling
+    the run back to storyboard repair over and over. It lives on the review of
+    this one board, so a later storyboard version is still reviewed normally.
+    """
+    refs = dict(child.output_refs or {})
+    review = dict(refs.get("review") or {})
+    review["waived"] = True
+    refs["review"] = review
+    refs["waived"] = True
+    child.output_refs = refs
+
+
+async def _demote_unapproved_video_stage(
+    session: AsyncSession,
+    workflow: DirectorWorkflowRun,
+    children: list[DirectorChildRun],
+) -> bool:
+    """Send a run back to storyboard repair when its board was never approved.
+
+    A run can reach the video stage on a board whose review was rejected -- for
+    example when a resume jumped over the review. Continuing it keeps paying for
+    the wrong stage, so the in-flight children are cancelled and refunded and
+    the run is re-driven from the board. Returns True when it was demoted.
+    """
+    if workflow.stage not in VIDEO_STAGES or not workflow.storyboard_version_id:
+        return False
+    _, review = await _latest_storyboard_review(
+        session, workflow, storyboard_version_id=workflow.storyboard_version_id
+    )
+    if _storyboard_review_cleared(review, workflow):
+        return False
+    for stale_child in children:
+        stale_task = (
+            await session.get(AITask, stale_child.task_id) if stale_child.task_id else None
+        )
+        if stale_task is None or stale_task.status not in {TaskStatus.QUEUED, TaskStatus.RUNNING}:
+            continue
+        stale_task.status = TaskStatus.CANCELLED
+        stale_task.error_message = "分镜未通过审核，已退回分镜修复并退还本步积分"
+        stale_child.status = DirectorChildStatus.CANCELLED
+        stale_child.summary = stale_task.error_message
+        await refund_task_cost(session, stale_task, reason="分镜未过审退回视频阶段任务")
+    workflow.stage = DirectorWorkflowStage.STORYBOARD_REPAIRING
+    workflow.current_task_id = None
+    workflow.last_message = "分镜审核未通过，已退回分镜修复，不再继续视频阶段"
+    await session.flush()
+    return True
+
+
+async def _latest_storyboard_review(
+    session: AsyncSession,
+    workflow: DirectorWorkflowRun,
+    *,
+    storyboard_version_id: str,
+) -> tuple[DirectorChildRun | None, dict[str, Any]]:
+    """The newest review of one board, across the chapter's whole history.
+
+    A review is a fact about the board, not about the run that ordered it, so a
+    newly created resume workflow must still see the verdict the previous run
+    produced. Without it, any stored shots look like finished storyboarding and
+    a rejected board is resumed from the video-prompt stage instead of review.
+    """
+    children = list((await session.scalars(
+        select(DirectorChildRun)
+        .join(DirectorWorkflowRun, DirectorWorkflowRun.id == DirectorChildRun.workflow_id)
+        .where(
+            DirectorWorkflowRun.chapter_id == workflow.chapter_id,
+            DirectorWorkflowRun.tenant_id == workflow.tenant_id,
+            DirectorChildRun.kind == "storyboard_review",
+            DirectorChildRun.status == DirectorChildStatus.SUCCEEDED,
+        )
+        .order_by(DirectorChildRun.created_at.desc())
+        .limit(50)
+    )).all())
+    for child in children:
+        if str((child.input_refs or {}).get("storyboard_version_id") or "") != storyboard_version_id:
+            continue
+        refs = dict(child.output_refs or {})
+        review = refs.get("review")
+        return child, dict(review) if isinstance(review, dict) else refs
+    return None, {}
+
+
 async def start_automatic_workflow_from_progress(
     session: AsyncSession,
     *,
@@ -483,6 +630,11 @@ async def start_automatic_workflow_from_progress(
             DirectorChildRun.workflow_id == existing.id,
             DirectorChildRun.status.in_([DirectorChildStatus.QUEUED, DirectorChildStatus.RUNNING]),
         ).order_by(DirectorChildRun.created_at))).all())
+        # A run that is already spending on video prompts or video clips may
+        # still be sitting on a board whose review was rejected -- that is how a
+        # chapter ends up deep in the video stage with an unapproved storyboard.
+        if await _demote_unapproved_video_stage(session, existing, children):
+            children = []
         terminal_ids = []
         live_ids = []
         for child in children:
@@ -664,21 +816,6 @@ async def start_automatic_workflow_from_progress(
         return workflow
 
     workflow.storyboard_version_id = storyboard.id
-    missing_prompt_shots = [shot for shot in shots if not shot.video_prompt.strip()]
-    if missing_prompt_shots:
-        chapter.status = ChapterStatus.VIDEO
-        queued.append(
-            await _queue_video_prompts(
-                session,
-                workflow,
-                None,
-                shots=missing_prompt_shots,
-            )
-        )
-        await _commit_and_dispatch(session, queued)
-        await session.refresh(workflow)
-        return workflow
-
     ready_video_shot_ids = set(
         (
             await session.scalars(
@@ -699,6 +836,56 @@ async def start_automatic_workflow_from_progress(
         workflow.last_error = None
         workflow.last_message = f"检测到 {len(shots)} 个镜头视频均已完成，无需重复生成"
         await session.commit()
+        await session.refresh(workflow)
+        return workflow
+
+    # Stored shots are not the same thing as an approved board. A run that died
+    # during storyboard repair leaves a full-length board behind whose review
+    # was never passed; treating it as done is what sent resume straight to
+    # video prompts and skipped the repair the review asked for.
+    review_child, review = await _latest_storyboard_review(
+        session, workflow, storyboard_version_id=storyboard.id
+    )
+    if not _storyboard_review_cleared(review, workflow):
+        chapter.status = ChapterStatus.STORYBOARD
+        if review_child is None:
+            workflow.stage = DirectorWorkflowStage.STORYBOARD_REVIEWING
+            workflow.last_message = "分镜尚未审核，先补做审核再继续后续阶段"
+            queued.append(await _queue_review(session, workflow, target="storyboard", parent=None))
+        else:
+            workflow.context_snapshot = {
+                **(workflow.context_snapshot or {}),
+                "assets_for_storyboard_review": True,
+            }
+            workflow.last_message = "分镜审核未通过，按审核意见继续修复，不再跳到视频阶段"
+            repair = await _queue_automatic_repair(
+                session, workflow, review_child, target="storyboard", result=review
+            )
+            if repair is not None:
+                queued.append(repair)
+            else:
+                # The repair budget is spent and only advisory findings remain:
+                # the project's deliberate escape hatch. Record the waiver on the
+                # review so a later resume keeps honouring it instead of fighting
+                # this decision by pulling the run back to storyboard repair.
+                _waive_storyboard_review(review_child, workflow)
+                queued.append(await _queue_video_prompts(session, workflow, None))
+        await _commit_and_dispatch(session, queued)
+        await session.refresh(workflow)
+        return workflow
+
+    missing_prompt_shots = [shot for shot in shots if not shot.video_prompt.strip()]
+    if missing_prompt_shots:
+        chapter.status = ChapterStatus.VIDEO
+        queued.append(
+            await _queue_video_prompts(
+                session,
+                workflow,
+                None,
+                shots=missing_prompt_shots,
+            )
+        )
+        await _commit_and_dispatch(session, queued)
         await session.refresh(workflow)
         return workflow
 
@@ -1435,6 +1622,19 @@ def _increment_workflow_counter(workflow: DirectorWorkflowRun, key: str) -> int:
     return value
 
 
+def storyboard_review_stalled(snapshot, result):
+    """Persist bounded review history independently of deletable task events."""
+    source = result.get("review") or result
+    issues = [item for item in source.get("findings", []) if isinstance(item, dict)
+              and item.get("severity") in {"blocking", "major"}]
+    score = [sum(item.get("severity") == "blocking" for item in issues), len(issues)]
+    history = list(snapshot.get("storyboard_review_progress") or [])
+    history.append(score)
+    snapshot["storyboard_review_progress"] = history[-6:]
+    return bool(issues) and (len(history) >= 6 or (
+        len(history) >= 3 and not score < min(history[-3:-1])))
+
+
 async def _queue_automatic_repair(
     session: AsyncSession,
     workflow: DirectorWorkflowRun,
@@ -1446,6 +1646,21 @@ async def _queue_automatic_repair(
     counter_key = "script_version_count" if target == "script" else "storyboard_version_count"
     version_count = int((workflow.context_snapshot or {}).get(counter_key) or 1)
     blocking = _review_has_blocking_findings(result)
+    if target == "storyboard":
+        snapshot = dict(workflow.context_snapshot or {})
+        stalled = storyboard_review_stalled(snapshot, result)
+        workflow.context_snapshot = snapshot
+        if stalled or (version_count >= 5 and blocking):
+            workflow.stage = DirectorWorkflowStage.AWAITING_STORYBOARD_DECISION
+            workflow.status = DirectorWorkflowStatus.WAITING_USER
+            workflow.current_task_id = None
+            workflow.last_message = "分镜审核修复未持续收敛，已保留全部成果并暂停自动重试，请查看剩余问题后选择处理方式"
+            session.add(DirectorDecisionRequest(
+                tenant_id=workflow.tenant_id, user_id=workflow.user_id,
+                project_id=workflow.project_id, workflow_id=workflow.id,
+                child_run_id=child.id, decision_type="storyboard_review",
+                prompt=workflow.last_message, options=REVIEW_OPTIONS))
+            return None
     if version_count >= 5 and not blocking:
         target_label = "剧本" if target == "script" else "分镜"
         workflow.last_message = f"{target_label}已达到 5 个版本，记录普通问题后继续自动流程"
@@ -1463,7 +1678,7 @@ async def _queue_automatic_repair(
         task_type="director_script_repair" if is_script else "director_storyboard_repair",
         request_payload={
             "chapter_id": workflow.chapter_id,
-            "repair_mode": "full" if blocking else "partial",
+            "repair_mode": "full" if blocking and is_script else "partial",
             "feedback": str(result.get("summary") or "请修复审核发现的问题"),
             "script_version_id": workflow.script_version_id,
             "storyboard_version_id": workflow.storyboard_version_id,
@@ -1840,6 +2055,16 @@ async def _advance_director_task_terminal(task_id: str) -> None:
             child.details = {**child.details, "error": task.error_message or ""}
             if task.status == TaskStatus.FAILED and child.attempt < child.max_attempts:
                 queued.append(await _retry_child(session, workflow, child, task))
+            elif task.status == TaskStatus.FAILED and child.kind in {
+                "storyboard_generation",
+                "storyboard_repair",
+                "storyboard_review",
+            } and workflow.automation_mode:
+                workflow.stage = DirectorWorkflowStage.FAILED
+                workflow.status = DirectorWorkflowStatus.FAILED
+                workflow.current_task_id = None
+                workflow.last_error = child.summary
+                workflow.last_message = f"{child.title}未完成，已保留成功批次；继续时接续未完成部分"
             else:
                 workflow.stage = DirectorWorkflowStage.FAILED
                 workflow.status = DirectorWorkflowStatus.FAILED
@@ -1998,7 +2223,9 @@ async def _advance_director_task_terminal(task_id: str) -> None:
                 if repair is not None:
                     queued.append(repair)
                 else:
-                    queued.append(await _queue_video_prompts(session, workflow, child))
+                    if workflow.status != DirectorWorkflowStatus.WAITING_USER:
+                        _waive_storyboard_review(child, workflow)
+                        queued.append(await _queue_video_prompts(session, workflow, child))
             else:
                 workflow.stage = DirectorWorkflowStage.AWAITING_STORYBOARD_DECISION
                 workflow.status = DirectorWorkflowStatus.WAITING_USER
@@ -2070,11 +2297,88 @@ async def _advance_director_task_terminal(task_id: str) -> None:
         await _commit_and_dispatch(session, queued)
 
 
+RESTART_GAP_ERRORS = {
+    "Worker 恢复时未找到对应任务",
+    "自动流程已中断：上一步完成后没有可继续的任务",
+}
+
+
+async def _resume_restart_gap(workflow_id: str) -> bool:
+    """Re-drive an interrupted automatic run, without taking over a user pause."""
+    from app.db.session import SessionLocal
+
+    async with SessionLocal() as session:
+        candidate = await session.get(DirectorWorkflowRun, workflow_id)
+        if candidate is None:
+            return False
+        # Same chapter lock as the manual Continue endpoint, including SQLite.
+        await session.execute(update(Chapter).where(Chapter.id == candidate.chapter_id)
+                              .values(status=Chapter.status))
+        workflow = await session.scalar(select(DirectorWorkflowRun).where(
+            DirectorWorkflowRun.id == workflow_id,
+        ).execution_options(populate_existing=True).with_for_update())
+        if (not workflow.automation_mode or workflow.stop_requested
+                or not (workflow.status == DirectorWorkflowStatus.RUNNING
+                        or (workflow.status == DirectorWorkflowStatus.FAILED
+                            and workflow.last_error in RESTART_GAP_ERRORS))):
+            return False
+        latest = await session.scalar(select(DirectorWorkflowRun.id).where(
+            DirectorWorkflowRun.chapter_id == workflow.chapter_id,
+            DirectorWorkflowRun.tenant_id == workflow.tenant_id,
+            DirectorWorkflowRun.user_id == workflow.user_id,
+        ).order_by(DirectorWorkflowRun.created_at.desc()).limit(1))
+        if latest != workflow.id:
+            return False
+        decision = await session.scalar(select(DirectorDecisionRequest.id).where(
+            DirectorDecisionRequest.workflow_id == workflow.id,
+            DirectorDecisionRequest.resolved.is_(False),
+        ).limit(1))
+        if decision:
+            return False
+        pending = await session.scalar(select(DirectorChildRun.id).join(
+            AITask, AITask.id == DirectorChildRun.task_id,
+        ).where(DirectorChildRun.workflow_id == workflow.id,
+                DirectorChildRun.status.in_([DirectorChildStatus.QUEUED, DirectorChildStatus.RUNNING]),
+                AITask.status.in_([TaskStatus.RUNNING, TaskStatus.QUEUED])).limit(1))
+        if pending:
+            return False
+        chapter = await session.get(Chapter, workflow.chapter_id)
+        user = await session.get(User, workflow.user_id)
+        if chapter is None or user is None or chapter.user_id != user.id or chapter.tenant_id != user.tenant_id:
+            return False
+        try:
+            resumed = await start_automatic_workflow_from_progress(
+                session, chapter=chapter, user=user,
+                instruction=str((workflow.context_snapshot or {}).get("instruction") or "全自动完成本章 AI 视频制作"),
+                chat_session_id=workflow.chat_session_id,
+            )
+            resumed.context_snapshot = {**(resumed.context_snapshot or {}), "restart_resumed_from": workflow_id}
+            resumed.last_message = "服务恢复后已自动接续章节进度；" + (resumed.last_message or "")
+            await session.commit()
+            return True
+        except Exception as error:
+            await session.rollback()
+            # Billing/configuration failures are not restart interruptions. Do
+            # not create a paid retry loop every recovery interval.
+            original = await session.get(DirectorWorkflowRun, workflow_id)
+            if (original and not original.stop_requested
+                    and (original.status == DirectorWorkflowStatus.RUNNING
+                         or (original.status == DirectorWorkflowStatus.FAILED
+                             and original.last_error in RESTART_GAP_ERRORS))):
+                original.status = DirectorWorkflowStatus.FAILED
+                original.current_task_id = None
+                original.last_error = "自动恢复暂停：" + str(getattr(error, "detail", error))[:450]
+                original.last_message = original.last_error
+                await session.commit()
+            raise
+
+
 async def recover_automatic_workflows() -> int:
     """Reconcile active automatic workflows after a Worker restart."""
     from app.db.session import SessionLocal
 
     terminal_task_ids: list[str] = []
+    gap_workflow_ids: list[str] = []
     repaired_workflows = 0
     async with SessionLocal() as session:
         workflows = list(
@@ -2082,12 +2386,18 @@ async def recover_automatic_workflows() -> int:
                 await session.scalars(
                     select(DirectorWorkflowRun).where(
                         DirectorWorkflowRun.automation_mode.is_(True),
-                        DirectorWorkflowRun.status.in_(ACTIVE_WORKFLOW_STATUSES),
+                        DirectorWorkflowRun.stop_requested.is_(False),
+                        or_(DirectorWorkflowRun.status == DirectorWorkflowStatus.RUNNING,
+                            and_(DirectorWorkflowRun.status == DirectorWorkflowStatus.FAILED,
+                                 DirectorWorkflowRun.last_error.in_(RESTART_GAP_ERRORS))),
                     )
                 )
             ).all()
         )
         for workflow in workflows:
+            if workflow.status == DirectorWorkflowStatus.FAILED:
+                gap_workflow_ids.append(workflow.id)
+                continue
             children = list(
                 (
                     await session.scalars(
@@ -2102,6 +2412,21 @@ async def recover_automatic_workflows() -> int:
                 for child in children
                 if child.status in {DirectorChildStatus.QUEUED, DirectorChildStatus.RUNNING}
             ]
+            # A restart must not resume video work on a board whose review was
+            # rejected. The in-flight children are cancelled and refunded, and
+            # the run is parked with a clear reason; "continue" then re-drives it
+            # from the board instead of from the video stage.
+            if await _demote_unapproved_video_stage(session, workflow, pending_children):
+                workflow.stage = DirectorWorkflowStage.FAILED
+                workflow.status = DirectorWorkflowStatus.FAILED
+                workflow.current_task_id = None
+                workflow.last_error = "分镜审核未通过，已退回分镜修复"
+                workflow.last_message = (
+                    "分镜审核未通过，已停止视频阶段任务并退还积分；"
+                    "可点击继续从分镜修复恢复"
+                )
+                repaired_workflows += 1
+                continue
             task_ids = [child.task_id for child in pending_children if child.task_id]
             tasks = list(
                 (
@@ -2123,11 +2448,10 @@ async def recover_automatic_workflows() -> int:
             if invalid_child is not None:
                 invalid_child.status = DirectorChildStatus.FAILED
                 invalid_child.summary = "Worker 恢复时未找到对应任务"
-                workflow.stage = DirectorWorkflowStage.FAILED
-                workflow.status = DirectorWorkflowStatus.FAILED
                 workflow.current_task_id = None
                 workflow.last_error = invalid_child.summary
-                workflow.last_message = invalid_child.summary
+                workflow.last_message = "服务恢复后正在从章节进度接续缺失的任务"
+                gap_workflow_ids.append(workflow.id)
                 repaired_workflows += 1
             elif active_task_id and workflow.current_task_id != active_task_id:
                 workflow.current_task_id = active_task_id
@@ -2135,17 +2459,17 @@ async def recover_automatic_workflows() -> int:
             elif (
                 workflow.status == DirectorWorkflowStatus.RUNNING
                 and not pending_children
-                and not workflow.current_task_id
             ):
                 # The step after a finished child failed to queue, so the run has
-                # nothing left in flight. Showing "running" indefinitely hides
-                # that from the user; park it so the reason is visible and
-                # "continue" can re-drive the chapter from its real progress.
-                workflow.stage = DirectorWorkflowStage.FAILED
-                workflow.status = DirectorWorkflowStatus.FAILED
-                workflow.last_error = "自动流程已中断：上一步完成后没有可继续的任务"
-                workflow.last_message = f"{workflow.last_error}；可点击继续从当前进度恢复"
-                repaired_workflows += 1
+                # nothing left in flight. Re-drive persisted chapter progress,
+                # but never reinterpret a real failure/cancellation as a gap.
+                if children and children[-1].status in {DirectorChildStatus.FAILED, DirectorChildStatus.CANCELLED}:
+                    workflow.status = DirectorWorkflowStatus.FAILED
+                    workflow.last_error = children[-1].summary or "任务未完成，等待处理"
+                    workflow.current_task_id = None
+                    repaired_workflows += 1
+                else:
+                    gap_workflow_ids.append(workflow.id)
         await session.commit()
 
     for task_id in dict.fromkeys(terminal_task_ids):
@@ -2153,4 +2477,9 @@ async def recover_automatic_workflows() -> int:
             await on_director_task_terminal(task_id)
         except Exception:
             logger.exception("Director recovery failed for task %s; continuing other workflows", task_id)
+    for workflow_id in dict.fromkeys(gap_workflow_ids):
+        try:
+            repaired_workflows += int(await _resume_restart_gap(workflow_id))
+        except Exception:
+            logger.exception("Automatic restart recovery failed for workflow %s", workflow_id)
     return repaired_workflows + len(set(terminal_task_ids))

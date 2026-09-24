@@ -370,6 +370,7 @@
    the chat flex height and dropdown anchor offsets. */
 :root .app-shell.app-shell--glass-system {
   --topbar-height: 80px;
+  --shell-edge-gap: 14px;
 }
 
 :root[data-theme='light'] .app-shell.app-shell--glass-system {
@@ -430,11 +431,11 @@
 
 :root .app-shell.app-shell--glass-system .topbar.topbar--scene {
   box-sizing: border-box;
-  width: calc(100% - 28px);
+  width: calc(100% - var(--shell-edge-gap) - var(--shell-edge-gap));
   height: calc(var(--topbar-height) - 20px);
   min-height: calc(var(--topbar-height) - 20px);
   flex: 0 0 calc(var(--topbar-height) - 20px);
-  margin: 10px 14px;
+  margin: 10px var(--shell-edge-gap);
   border: 1px solid var(--glass-edge);
   border-radius: 22px;
   background: var(--glass-sheen), var(--glass-panel) !important;
@@ -589,10 +590,8 @@
 }
 
 @media (max-width: 760px) {
-  :root .app-shell.app-shell--glass-system { --topbar-height: 70px; }
+  :root .app-shell.app-shell--glass-system { --topbar-height: 70px; --shell-edge-gap: 8px; }
   :root .app-shell.app-shell--glass-system .topbar.topbar--scene {
-    width: calc(100% - 16px);
-    margin: 10px 8px;
     border-radius: 18px;
   }
   :root .app-shell.app-shell--glass-workspace .workspace-agent-stage--home .agent-empty-guide__surface {

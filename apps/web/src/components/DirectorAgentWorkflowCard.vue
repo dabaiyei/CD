@@ -26,6 +26,12 @@ defineEmits<{
 
 const feedback = ref('')
 
+const feedbackPlaceholder = computed(() => (
+  props.detail.pending_decision?.decision_type === 'storyboard_review'
+    ? '可选：写清镜号与要改的字段，例如「镜头 7 的台词太长」，平台只修这一镜'
+    : '可选：补充希望保留或调整的内容'
+))
+
 const activeChild = computed(() => [...props.detail.child_runs].reverse().find((child) => (
   child.status === 'queued' || child.status === 'running'
 )))
@@ -76,7 +82,7 @@ function findings(child: DirectorChildRun): Array<Record<string, string>> {
 
     <div v-if="detail.pending_decision" class="director-subtask-card__decision">
       <div><MessageSquareWarning :size="15" /><span>{{ detail.pending_decision.prompt }}</span></div>
-      <textarea v-model="feedback" rows="2" placeholder="可选：补充希望保留或调整的内容"></textarea>
+      <textarea v-model="feedback" rows="2" :placeholder="feedbackPlaceholder"></textarea>
       <div class="director-subtask-card__options">
         <button
           v-for="option in detail.pending_decision.options"

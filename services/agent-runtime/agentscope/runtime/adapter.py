@@ -25,8 +25,10 @@ from runtime.contracts import AgentRunRequest, AgentRunResponse, ExecutionManife
 
 CINEFORGE_WORKSPACE_INSTRUCTIONS = """<workspace>
 This CineForge task has an isolated {backend} workspace at {workdir}.
-Use only the registered Read, Write, Edit, Glob, Grep and Skill tools.
-Read Skills and relevant project files before creating the answer.
+Use only registered tools. Ripgrep searches text, AstGrep searches structured files,
+and MarkItDown converts local documents to searchable Markdown. First search for
+relevant evidence, then Read only the matching passages. Do not read every file.
+Read applicable Skills and model constraints before creating the answer.
 Skills, execution manifests and system-managed session data are read-only.
 Existing project files may be edited only when the platform authorizes them.
 Create requested text artifacts only under project-files/new.
@@ -163,8 +165,10 @@ class AgentScopeAdapter:
         from agentscope.model import OpenAIChatModel, OpenAIResponseModel
         from agentscope.permission import PermissionContext, PermissionMode
         from agentscope.state import AgentState
-        from agentscope.tool import Edit, Glob, Grep, Read, Toolkit, Write
+        from agentscope.tool import Edit, Glob, Grep, Toolkit, Write
         from agentscope.workspace import LocalWorkspace
+        from runtime.bounded_read import BoundedRead
+        from runtime.retrieval_tools import Ripgrep, AstGrep, MarkItDownTool
 
         class CineForgeOpenAIChatModel(OpenAIChatModel):
             async def _parse_stream_response(self, start_datetime: Any, response: Any) -> Any:
@@ -237,6 +241,11 @@ class AgentScopeAdapter:
             )
 
             class CineForgeOpenAIResponseModel(OpenAIResponseModel):
+                def _parse_stream_response(self, start_datetime, response):
+                    from runtime.response_stream import ResponseToolStream
+
+                    return super()._parse_stream_response(start_datetime, ResponseToolStream(response))
+
                 async def _call_api(self, *args: Any, **kwargs: Any) -> Any:
                     parent = super()
                     return await call_responses_with_chat_fallback(
@@ -277,16 +286,20 @@ class AgentScopeAdapter:
             skill_paths=[str(path) for path in context.skill_packages],
             instructions=CINEFORGE_WORKSPACE_INSTRUCTIONS,
         ) as workspace:
-            if request.tool_mode == "workspace":
+            if request.tool_mode in {"workspace", "retrieval"}:
                 guard = self._path_guard(context)
                 backend = workspace.get_backend()
                 tools = [
-                    Read(backend=backend, middlewares=[guard]),
-                    Write(backend=backend, middlewares=[guard]),
-                    Edit(backend=backend, middlewares=[guard]),
+                    BoundedRead(backend=backend, middlewares=[guard]),
                     Glob(backend=backend, middlewares=[guard]),
                     Grep(backend=backend, middlewares=[guard]),
+                    Ripgrep(context.workspace),
+                    AstGrep(context.workspace),
+                    MarkItDownTool(context.workspace),
                 ]
+                if request.tool_mode == "workspace":
+                    tools.extend([Write(backend=backend, middlewares=[guard]),
+                                  Edit(backend=backend, middlewares=[guard])])
                 toolkit = Toolkit(
                     tools=tools,
                     skills_or_loaders=await workspace.list_skills(agent_id="cineforge-agent"),
@@ -309,6 +322,10 @@ class AgentScopeAdapter:
                 context.workspace,
                 include_conversation_context=not resumed,
             )
+            logger.info("Run %s input sizes: mode=%s system_chars=%d user_chars=%d file_count=%d file_chars=%d documents=%d (file bodies are not inlined)",
+                        request.task_id, request.tool_mode, len(system_prompt), len(effective_prompt),
+                        len(request.project_files), sum(len(file.content) for file in request.project_files),
+                        len(request.documents))
             user_content = [TextBlock(text=effective_prompt)]
             user_content.extend(
                 DataBlock(

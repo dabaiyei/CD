@@ -185,6 +185,24 @@ async def validate_shot_assets(
         raise HTTPException(status_code=422, detail="镜头引用了不可用的项目资产")
 
 
+async def first_asset_image_url(
+    session: AsyncSession,
+    *,
+    asset_ids: list[str],
+) -> str | None:
+    """First bound asset image, in binding order, that a shot can be drawn from."""
+    if not asset_ids:
+        return None
+    rows = dict(
+        (
+            await session.execute(
+                select(Asset.id, Asset.media_url).where(Asset.id.in_(asset_ids))
+            )
+        ).all()
+    )
+    return next((rows[asset_id] for asset_id in asset_ids if rows.get(asset_id)), None)
+
+
 async def project_video_model(
     session: AsyncSession,
     *,
@@ -240,6 +258,9 @@ async def create_storyboard(
     script: ScriptVersion,
     shots: list[StoryboardShotCreate],
 ) -> tuple[StoryboardVersion, list[StoryboardShot]]:
+    project = await project_for_user(session, chapter.project_id, user)
+    if not project.first_frame_mode:
+        shots = [item.model_copy(update={"continuity_group": ""}) for item in shots]
     shots = await normalize_shot_durations_for_project(
         session,
         project_id=chapter.project_id,
@@ -288,6 +309,16 @@ async def create_storyboard(
             tenant_id=user.tenant_id,
             user_id=user.id,
         )
+        values = payload.model_dump(
+            exclude={"continuity_group", "frame_layout", "combat_plan", "emotion_plan", "internal_shots"}
+        )
+        if not values.get("reference_image_url"):
+            # The bound assets decide what the shot is drawn from; leaving this
+            # empty made later steps fall back to a stale or absent reference.
+            values["reference_image_url"] = await first_asset_image_url(
+                session,
+                asset_ids=payload.asset_ids,
+            )
         shot = StoryboardShot(
             tenant_id=user.tenant_id,
             user_id=user.id,
@@ -295,12 +326,14 @@ async def create_storyboard(
             chapter_id=chapter.id,
             storyboard_version_id=version.id,
             order_index=index,
-            **payload.model_dump(exclude={"continuity_group", "frame_layout", "combat_plan", "internal_shots"}),
+            **values,
         )
         session.add(shot)
         records.append(shot)
     chapter.status = ChapterStatus.STORYBOARD
     await session.flush()
+    from app.services.chapter_prompt_files import sync_chapter_prompt_files
+    await sync_chapter_prompt_files(session, version)
     return version, records
 
 
@@ -416,6 +449,9 @@ async def queue_shot_video_task(
     shot: StoryboardShot,
     model: AIModel,
 ) -> tuple[AITask, object]:
+    from app.services.first_frame_policy import supports_first_frame
+    if project.first_frame_mode and not supports_first_frame(model.capabilities):
+        raise HTTPException(422, "当前视频模型不支持首帧模式，请更换模型或关闭项目首帧模式")
     if not shot.video_prompt.strip():
         raise HTTPException(status_code=409, detail=f"镜头 {shot.order_index:02d} 缺少视频提示词")
     for pending in await active_tasks(
@@ -904,6 +940,19 @@ async def activate_storyboard(
     storyboard.is_active = True
     storyboard.invalidated_reason = None
     chapter.status = ChapterStatus.STORYBOARD
+    # A board created before an asset changed still holds the old image; re-read
+    # the current look so the newly active board and its videos agree with it.
+    from app.services.asset_propagation import refresh_active_board_references
+
+    refreshed = await refresh_active_board_references(session, chapter.id)
+    if refreshed:
+        await session.execute(
+            update(VideoClip)
+            .where(VideoClip.chapter_id == chapter.id, VideoClip.is_active.is_(True))
+            .values(is_active=False, invalidated_reason="启用该分镜版本后资产图片已刷新")
+        )
+    from app.services.chapter_prompt_files import sync_chapter_prompt_files
+    await sync_chapter_prompt_files(session, storyboard)
     await session.commit()
     await session.refresh(storyboard)
     return storyboard
@@ -953,6 +1002,26 @@ async def update_storyboard_shot(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> StoryboardShot:
+    shot = await apply_storyboard_shot_update(
+        project_id, chapter_id, storyboard_id, shot_id, payload, user, session,
+    )
+    from app.services.chapter_prompt_files import sync_chapter_prompt_files
+    board = await session.get(StoryboardVersion, storyboard_id)
+    await sync_chapter_prompt_files(session, board)
+    await session.commit()
+    await session.refresh(shot)
+    return shot
+
+
+async def apply_storyboard_shot_update(
+    project_id: str,
+    chapter_id: str,
+    storyboard_id: str,
+    shot_id: str,
+    payload: StoryboardShotUpdate,
+    user: User,
+    session: AsyncSession,
+) -> StoryboardShot:
     chapter, storyboard = await storyboard_for_user(
         session,
         project_id=project_id,
@@ -981,6 +1050,33 @@ async def update_storyboard_shot(
         if shot.id in (pending.request_payload.get("shot_ids") or []):
             raise HTTPException(status_code=409, detail="该镜头正在生成视频提示词，完成后才能编辑")
     values = payload.model_dump(exclude_unset=True)
+    if "internal_shots" in values:
+        duration = float(values.get("duration_seconds") or shot.duration_seconds)
+        if any(part.end_seconds > duration for part in payload.internal_shots):
+            raise HTTPException(422, "内部镜头时间超过视频片段时长")
+    for key in ("internal_shots", "frame_layout"):
+        if key in values:
+            value = values.pop(key)
+            storyboard.content = [
+                {**item, key: value} if item.get("order_index") == shot.order_index else item
+                for item in (storyboard.content or [])
+            ]
+    supplied_emotion_plan = "emotion_plan" in values
+    if supplied_emotion_plan:
+        plan = values.pop("emotion_plan")
+        if not any(item.get("order_index") == shot.order_index for item in (storyboard.content or [])):
+            storyboard.content = [*(storyboard.content or []), {"order_index": shot.order_index}]
+        if payload.emotion_plan:
+            try:
+                payload.emotion_plan.validate_duration(
+                    float(values.get("duration_seconds") or shot.duration_seconds)
+                )
+            except ValueError as exc:
+                raise HTTPException(422, str(exc)) from exc
+        storyboard.content = [
+            {**item, "emotion_plan": plan} if item.get("order_index") == shot.order_index else item
+            for item in storyboard.content
+        ]
     if "combat_plan" in values:
         plan = values.pop("combat_plan")
         if not any(item.get("order_index") == shot.order_index for item in (storyboard.content or [])):
@@ -995,11 +1091,16 @@ async def update_storyboard_shot(
             for item in storyboard.content
         ]
     elif {"action_description", "duration_seconds", "asset_ids"}.intersection(values):
+        # Editing the action/duration/assets invalidates the old plans. A plan
+        # supplied in this same request is the new one, so it must survive the
+        # reset instead of being cleared right after it was written.
         storyboard.content = [
-            {**item, "combat_plan": None, "combat_design": None} if item.get("order_index") == shot.order_index else item
+            {**item, "combat_plan": None, "combat_design": None,
+             **({} if supplied_emotion_plan else {"emotion_plan": None})}
+            if item.get("order_index") == shot.order_index else item
             for item in storyboard.content
         ]
-    if {"image_prompt", "scene_description", "shot_type", "asset_ids"}.intersection(values):
+    if "frame_layout" not in payload.model_fields_set and {"image_prompt", "scene_description", "shot_type", "asset_ids"}.intersection(values):
         # A manual composition edit must not be overridden by an older generated layout.
         storyboard.content = [
             {**item, "frame_layout": None} if item.get("order_index") == shot.order_index else item
@@ -1007,6 +1108,9 @@ async def update_storyboard_shot(
         ]
     if "continuity_group" in values:
         group = values.pop("continuity_group") or ""
+        project = await project_for_user(session, project_id, user)
+        if not project.first_frame_mode:
+            group = ""
         storyboard.content = [
             {**item, "continuity_group": group} if item.get("order_index") == shot.order_index else item
             for item in storyboard.content
@@ -1068,7 +1172,7 @@ async def update_storyboard_shot(
         .values(is_active=False, invalidated_reason=dialogue_reason)
     )
     chapter.status = ChapterStatus.STORYBOARD
-    await session.commit()
+    await session.flush()
     await session.refresh(shot)
     return shot
 
@@ -1154,6 +1258,9 @@ async def generate_storyboard_video_prompts(
             "shot_ids": [shot.id for shot in shots],
             "shot_versions": {shot.id: shot.version for shot in shots},
             "overwrite": payload.overwrite,
+            # Stable per-shot price: a partial refund and a retry both need the
+            # unit cost after the batch cost has already been reduced.
+            "shot_unit_cost": str(pricing.unit_cost),
             "agent_profile_id": agent.id,
             "video_resolution": resolved_resolution,
             "requested_video_resolution": project.video_resolution,

@@ -40,6 +40,13 @@ class AgentRuntimeAttachment(BaseModel):
     data: str
 
 
+class AgentRuntimeDocument(BaseModel):
+    id: str
+    name: str
+    data: str
+    sha256: str
+
+
 class AgentRuntimeRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -61,6 +68,7 @@ class AgentRuntimeRequest(BaseModel):
     recent_messages: list[dict[str, str]] = Field(default_factory=list)
     project_files: list[AgentRuntimeProjectFileSnapshot] = Field(default_factory=list)
     attachments: list[AgentRuntimeAttachment] = Field(default_factory=list)
+    documents: list[AgentRuntimeDocument] = Field(default_factory=list)
 
 
 class AgentRuntimeResponse(BaseModel):

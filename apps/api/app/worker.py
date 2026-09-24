@@ -28,20 +28,23 @@ async def recover_stale_tasks_periodically() -> None:
     while True:
         await asyncio.sleep(interval)
         try:
-            async with activity() as allowed:
-                if allowed:
-                    await recover_stale_tasks()
+            # Leases commonly expire after startup reconciliation has already
+            # run. Reconcile the parent workflows again after recovering tasks.
+            await recover_pending_workflows(include_orphan_reviews=False)
         except Exception:
             logger.exception("Periodic stale task recovery failed")
 
 
-async def recover_pending_workflows() -> None:
+async def recover_pending_workflows(*, include_orphan_reviews: bool = True) -> None:
     from app.services.director_orchestration import (
         recover_automatic_workflows,
         recover_orphaned_agent_script_reviews,
     )
 
-    for recover in (recover_stale_tasks, recover_automatic_workflows, recover_orphaned_agent_script_reviews):
+    recoveries = [recover_stale_tasks, recover_automatic_workflows]
+    if include_orphan_reviews:
+        recoveries.append(recover_orphaned_agent_script_reviews)
+    for recover in recoveries:
         try:
             async with activity() as allowed:
                 if allowed:

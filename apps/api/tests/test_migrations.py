@@ -181,7 +181,7 @@ def test_initial_migration_round_trip_and_revision_guard(tmp_path: Path) -> None
     assert "ix_image_resolution_routes_tenant_model" in image_route_indexes
     assert {"automation_mode", "stop_requested"} <= workflow_columns
     assert "technique_plan" in script_columns
-    assert revision == ("b7c41e9a52f8",)
+    assert revision == ("c83a52d901ef",)
 
     checked = run_alembic(database, "check")
     assert "No new upgrade operations detected" in checked.stdout + checked.stderr

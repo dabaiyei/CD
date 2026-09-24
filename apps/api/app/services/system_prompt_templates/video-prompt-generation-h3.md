@@ -74,6 +74,15 @@ non_diegetic_music:
 
 ## 台词与连续性
 
+- 人物表演按 `emotion_plan` 的时间轴写进 `integrated_multimodal_description` / `detailed_description`：
+  眼神、眉毛、嘴部、身体反应与剧情状态齐全，写清情绪在这一拍如何变化，不能只给一个情绪词。
+  一条镜头只给一个主情绪，`slight` 只给细微变化，`extreme` 才允许爆发。
+  Library-first: prefer one of the sixty fixed expressions; when none of them fits, decompose the
+  declared emotion with the universal five-element formula instead of substituting a different
+  library emotion or falling back to a bare emotion label.
+  音频关闭时 lips remain completely closed，情绪只走眼神、呼吸、眉眼、肩颈与手部；
+  不得出现张开说话、喊叫或呐喊的口型，也不得借表演新增任何声音或台词。
+
 - 将分镜跟拍落实为 subject-tracking camera，锁定交锋中心构图与焦点不等于 locked-off camera；保留追拍方向、距离、高度和速度变化。明确固定机位则不追拍。只执行已设计的弧线换角度或动作匹配切点，不能擅自加镜头。
 - 主光 world-space light direction 与色温、光源位置连续；相机换角度不让光源随之旋转。招式局部光随动作照亮人物和环境，阴影与曝光连续，避免随机频闪和过曝遮挡。
 

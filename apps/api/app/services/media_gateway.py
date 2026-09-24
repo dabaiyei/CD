@@ -219,11 +219,29 @@ class OpenAICompatibleMediaGateway:
     ) -> None:
         self.base_url = base_url.rstrip("/")
         self.provider_code = (provider_code or "").strip().lower()
+        # A provider the admin reached over a LAN address is self-hosted, so the
+        # media it returns may legitimately live on that same private network.
+        # Resolved lazily: the check needs DNS, and construction is synchronous.
+        self._provider_media_is_private: bool | None = None
         self.headers = dict(extra_headers)
         if api_key:
             self.headers["Authorization"] = f"Bearer {api_key}"
         self.adapter = ProviderAdapterConfig.model_validate(adapter_config) if adapter_config else None
         self.credentials = credentials or {}
+
+    async def _allows_private_media(self) -> bool:
+        """Whether media returned by this provider may live on a private network.
+
+        A provider reached over a LAN address is self-hosted, so its generated
+        assets stay on that LAN. Cached because it costs a DNS lookup.
+        """
+        if self._provider_media_is_private is None:
+            parsed = urlparse(self.base_url)
+            default_port = 443 if parsed.scheme == "https" else 80
+            self._provider_media_is_private = bool(
+                parsed.hostname
+            ) and await _host_is_private(parsed.hostname or "", parsed.port or default_port)
+        return self._provider_media_is_private
 
     async def generate_image(self, request: ImageGenerationRequest) -> bytes:
         endpoint = str(request.capabilities.get("endpoint") or "images/generations").lstrip("/")
@@ -290,7 +308,9 @@ class OpenAICompatibleMediaGateway:
                         raise ModelGatewayError("图片平台返回了无效的 Base64 数据") from exc
                 image_url = item.get("url")
                 if isinstance(image_url, str):
-                    await _validate_download_url(image_url)
+                    await _validate_download_url(
+                        image_url, allow_private=await self._allows_private_media()
+                    )
                     downloaded = await client.get(image_url)
                     downloaded.raise_for_status()
                     downloaded_content_type = downloaded.headers.get("content-type", "").split(";", 1)[0]
@@ -852,8 +872,10 @@ class OpenAICompatibleMediaGateway:
     ) -> tuple[dict[str, Any], httpx.AsyncClient]:
         path = str(render_template(template.path, context)).lstrip("/")
         url = f"{self.base_url}/{path}"
-        if self.provider_code != DOLA_PROVIDER_CODE:
-            await _validate_download_url(url, media_name="供应商接口")
+        # The provider endpoint is chosen by an admin, not supplied by an
+        # untrusted caller, so SSRF rules do not apply: a self-hosted relay on a
+        # LAN is a legitimate deployment. Only the shape of the URL is checked.
+        _validate_provider_endpoint(url)
         headers = {**self.headers, **render_template(template.headers, context)}
         headers.setdefault("Idempotency-Key", str(context.get("idempotency_key") or ""))
         query = render_template(template.query, context)
@@ -976,7 +998,11 @@ class OpenAICompatibleMediaGateway:
                 if result_url not in (None, ""):
                     break
         if isinstance(result_url, str) and result_url:
-            await _validate_download_url(result_url, media_name="视频")
+            await _validate_download_url(
+                result_url,
+                media_name="视频",
+                allow_private=await self._allows_private_media(),
+            )
             downloaded = await client.get(result_url)
             downloaded.raise_for_status()
             content_type = downloaded.headers.get("content-type", "").split(";", 1)[0]
@@ -1017,7 +1043,9 @@ class OpenAICompatibleMediaGateway:
                 body = response.json()
                 if not isinstance(body, dict):
                     raise ModelGatewayError("视频平台返回了无法识别的数据结构")
-                return await _parse_video_response(client, body)
+                return await _parse_video_response(
+                    client, body, allow_private_media=await self._allows_private_media()
+                )
         except httpx.HTTPStatusError as exc:
             raise ModelGatewayError(
                 _http_error_message(exc.response, prefix="视频平台返回")
@@ -1092,7 +1120,9 @@ class OpenAICompatibleMediaGateway:
                 body = response.json()
                 if not isinstance(body, dict):
                     raise ModelGatewayError("TTS 平台返回了无法识别的数据结构")
-                return await _parse_speech_response(client, body)
+                return await _parse_speech_response(
+                    client, body, allow_private_media=await self._allows_private_media()
+                )
         except httpx.HTTPStatusError as exc:
             raise ModelGatewayError(f"TTS 平台返回 HTTP {exc.response.status_code}") from exc
         except httpx.HTTPError as exc:
@@ -1136,6 +1166,8 @@ def _bounded_audio(data: bytes) -> bytes:
 async def _parse_video_response(
     client: httpx.AsyncClient,
     body: dict[str, object],
+    *,
+    allow_private_media: bool = False,
 ) -> VideoGenerationResult:
     raw_data = body.get("data")
     item = raw_data[0] if isinstance(raw_data, list) and raw_data else raw_data
@@ -1164,7 +1196,9 @@ async def _parse_video_response(
 
     video_url = _first_string(source, body, keys=("url", "video_url", "output_url"))
     if video_url:
-        await _validate_download_url(video_url, media_name="视频")
+        await _validate_download_url(
+            video_url, media_name="视频", allow_private=allow_private_media
+        )
         downloaded = await client.get(video_url, follow_redirects=True)
         downloaded.raise_for_status()
         content_type = downloaded.headers.get("content-type", "").split(";", 1)[0]
@@ -1186,6 +1220,8 @@ async def _parse_video_response(
 async def _parse_speech_response(
     client: httpx.AsyncClient,
     body: dict[str, object],
+    *,
+    allow_private_media: bool = False,
 ) -> SpeechGenerationResult:
     raw_data = body.get("data")
     item = raw_data[0] if isinstance(raw_data, list) and raw_data else raw_data
@@ -1215,7 +1251,9 @@ async def _parse_speech_response(
             raise ModelGatewayError("TTS 平台返回了无效的 Base64 数据") from exc
     audio_url = _first_string(source, body, keys=("url", "audio_url", "output_url"))
     if audio_url:
-        await _validate_download_url(audio_url, media_name="音频")
+        await _validate_download_url(
+            audio_url, media_name="音频", allow_private=allow_private_media
+        )
         downloaded = await client.get(audio_url, follow_redirects=True)
         downloaded.raise_for_status()
         content_type = downloaded.headers.get("content-type", "").split(";", 1)[0]
@@ -1252,10 +1290,25 @@ def _upstream_error_detail(response: httpx.Response) -> str:
         payload = None
     if isinstance(payload, dict):
         error = payload.get("error")
+        # `error` is not always a dict/str: upstreams return it as null, a list
+        # of validation issues, or omit it entirely. Without this default the
+        # fallback below raised UnboundLocalError, which hid the real upstream
+        # failure (a 400/429 detail) behind an opaque "local variable" error.
+        detail: object = None
         if isinstance(error, dict):
             detail = error.get("message") or error.get("detail") or error.get("code")
         elif isinstance(error, str):
             detail = error
+        elif isinstance(error, list):
+            # Pydantic-style validation arrays; keep the readable message.
+            detail = next(
+                (
+                    item.get("msg") or item.get("message")
+                    for item in error
+                    if isinstance(item, dict) and (item.get("msg") or item.get("message"))
+                ),
+                None,
+            )
         detail = detail or payload.get("detail") or payload.get("message")
         if detail:
             return str(detail).strip()
@@ -1293,15 +1346,73 @@ def _inject_reference_payloads(
                 body[f"{mapping.field}{offset}"] = value
 
 
-async def _validate_download_url(url: str, *, media_name: str = "图片") -> None:
+def _validate_url_format(url: str, *, media_name: str = "图片") -> None:
+    """Reject URLs that are not plain http(s) with a host.
+
+    This is the only check that applies to an admin-configured provider
+    endpoint. Reachability and address class are explicitly out of scope: a
+    LAN relay is a supported deployment, and the admin is trusted.
+    """
     parsed = urlparse(url)
     if parsed.scheme not in {"http", "https"} or not parsed.hostname:
         raise ModelGatewayError(f"{media_name}下载地址无效")
+
+
+async def _resolve_ip_addresses(hostname: str, port: int) -> list[str] | None:
+    """Resolve a host to IP strings, or None when the name does not resolve."""
+    try:
+        addresses = await run_in_threadpool(socket.getaddrinfo, hostname, port)
+    except socket.gaierror:
+        return None
+    return [address[4][0] for address in addresses]
+
+
+async def _host_is_private(hostname: str, port: int) -> bool:
+    addresses = await _resolve_ip_addresses(hostname, port)
+    if not addresses:
+        return False
+    return any(not ipaddress.ip_address(item).is_global for item in addresses)
+
+
+def _validate_provider_endpoint(url: str, *, media_name: str = "供应商接口") -> None:
+    """Validate an admin-configured provider endpoint.
+
+    SSRF rules do not apply to this address: it is typed into the admin console,
+    and self-hosted relays on loopback or a LAN are supported deployments, which
+    is exactly what an address-class check used to forbid by accident. A literal
+    link-local address is still refused, since that range holds cloud
+    instance-metadata services. Only the URL literal is inspected, so this costs
+    no DNS lookup on the polling hot path and cannot be defeated by slow lookups.
+    """
+    _validate_url_format(url, media_name=media_name)
+    hostname = urlparse(url).hostname or ""
+    try:
+        address = ipaddress.ip_address(hostname)
+    except ValueError:
+        return
+    if address.is_link_local:
+        raise ModelGatewayError(f"{media_name}指向云元数据地址，已拒绝")
+
+
+async def _validate_download_url(
+    url: str,
+    *,
+    media_name: str = "图片",
+    allow_private: bool = False,
+) -> None:
+    """Guard a download URL that came back from an upstream provider.
+
+    Unlike a provider endpoint, this value is chosen by a third party, so it is
+    the real SSRF surface. ``allow_private`` is set when the provider itself was
+    reached over a LAN address: such a self-hosted relay stores its outputs on
+    the same private network, and blocking them would break the deployment.
+    """
+    _validate_url_format(url, media_name=media_name)
+    if allow_private:
+        return
     if get_settings().allow_private_media_urls:
         return
+    parsed = urlparse(url)
     default_port = 443 if parsed.scheme == "https" else 80
-    addresses = await run_in_threadpool(socket.getaddrinfo, parsed.hostname, parsed.port or default_port)
-    for address in addresses:
-        ip = ipaddress.ip_address(address[4][0])
-        if not ip.is_global:
-            raise ModelGatewayError(f"{media_name}下载地址指向非公网网络")
+    if await _host_is_private(parsed.hostname or "", parsed.port or default_port):
+        raise ModelGatewayError(f"{media_name}下载地址指向非公网网络")

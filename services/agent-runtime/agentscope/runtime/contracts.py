@@ -113,6 +113,23 @@ class ConversationMessage(ContractModel):
     content: str = Field(max_length=100_000)
 
 
+class DocumentSnapshot(ContractModel):
+    id: str = Field(pattern=r"^[A-Za-z0-9_-]{1,128}$")
+    name: str = Field(min_length=1, max_length=255)
+    data: str = Field(min_length=1, max_length=45_000_000)
+    sha256: str = Field(pattern=r"^[a-f0-9]{64}$")
+
+    @field_validator("name")
+    @classmethod
+    def validate_name(cls, value):
+        from pathlib import PurePosixPath
+        if "/" in value or "\\" in value or PurePosixPath(value).suffix.lower() not in {
+            ".pdf", ".docx", ".pptx", ".xlsx", ".txt", ".md", ".csv", ".json"
+        }:
+            raise ValueError("不支持此文档名称或格式")
+        return value
+
+
 class AgentRunRequest(ContractModel):
     contract_version: Literal["v1", "v2"] = CONTRACT_VERSION
     tenant_id: str
@@ -127,11 +144,12 @@ class AgentRunRequest(ContractModel):
     skills: list[SkillSnapshot] = Field(default_factory=list, max_length=200)
     memory_context: list[str] = Field(default_factory=list, max_length=100)
     state_mode: Literal["persistent", "ephemeral"] = "persistent"
-    tool_mode: Literal["workspace", "none"] = "workspace"
+    tool_mode: Literal["workspace", "retrieval", "none"] = "workspace"
     conversation_summary: str | None = Field(default=None, max_length=50_000)
     recent_messages: list[ConversationMessage] = Field(default_factory=list, max_length=20)
     project_files: list[ProjectFileSnapshot] = Field(default_factory=list, max_length=200)
     attachments: list[Attachment] = Field(default_factory=list, max_length=4)
+    documents: list[DocumentSnapshot] = Field(default_factory=list, max_length=8)
 
     @field_validator("tenant_id", "project_id", "task_id", "session_id")
     @classmethod

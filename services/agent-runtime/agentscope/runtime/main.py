@@ -94,7 +94,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
 app = FastAPI(
     title="CineForge AgentScope Runtime",
-    version="0.4.0",
+    version="0.5.0",
     lifespan=lifespan,
     docs_url=None,
     redoc_url=None,

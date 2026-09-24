@@ -1,8 +1,7 @@
 <script setup lang="ts">
 import VideoConcatButton from '@/components/VideoConcatButton.vue'
-import { useVirtualizer } from '@tanstack/vue-virtual'
+import ChapterVirtualList from '@/components/ChapterVirtualList.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, reactive, ref, watch } from 'vue'
-import type { ComponentPublicInstance } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import {
   ArrowLeft,
@@ -173,6 +172,7 @@ const scriptsLoading = ref(false)
 const selectedScriptId = ref('')
 const scriptEditorOpen = ref(false)
 const scriptSaving = ref(false)
+const scriptEditorTarget = ref<{ projectId: string; chapterId: string; chapterTitle: string } | null>(null)
 const scriptActivateTarget = ref<ScriptVersion | null>(null)
 const scriptReviews = ref<ScriptReview[]>([])
 const scriptReviewLoading = ref(false)
@@ -247,53 +247,17 @@ const directorWorkspaceStyle = computed(() => ({
 const selectedChapter = computed(
   () => chapters.value.find((item) => item.id === selectedChapterId.value) ?? chapters.value[0],
 )
-// A 1000+ chapter novel used to mount every row (and its enter animation) at
-// once, which locked the project page. Only the rows near the viewport are
-// rendered now; the list stays virtual on both the desktop rail and the
-// horizontal mobile rail.
-const chapterList = ref<HTMLElement | null>(null)
+// Keep scroll-driven rendering inside the list, not this entire project view.
+const chapterList = ref<InstanceType<typeof ChapterVirtualList> | null>(null)
 const chapterListHorizontal = ref(false)
 let chapterListMediaQuery: MediaQueryList | null = null
-let horizontalChapterRowSize = 0
 function syncChapterListAxis(event: MediaQueryList | MediaQueryListEvent): void {
   chapterListHorizontal.value = event.matches
-  void nextTick(() => chapterVirtualizer.value.measure())
-}
-// Rows carry their own trailing gap so the measured size stays stable on the
-// desktop rail and the horizontal mobile rail (virtual-core has no gap option).
-function estimateChapterRow(): number {
-  if (!chapterListHorizontal.value) return 61
-  // Matches the mobile rail rule: clamp(260px, calc(100vw - 48px), 304px).
-  // The row keeps its trailing gap inside the measured border box.
-  return horizontalChapterRowSize
-    || Math.min(304, Math.max(260, window.innerWidth - 48))
-}
-const chapterVirtualizer = useVirtualizer<HTMLElement, HTMLElement>(computed(() => ({
-  count: chapters.value.length,
-  getScrollElement: () => chapterList.value,
-  estimateSize: estimateChapterRow,
-  getItemKey: (index: number) => chapters.value[index]?.id ?? index,
-  overscan: 8,
-  horizontal: chapterListHorizontal.value,
-})))
-const virtualChapters = computed(() => chapterVirtualizer.value.getVirtualItems().flatMap((virtualRow) => {
-  const chapter = chapters.value[virtualRow.index]
-  return chapter ? [{ virtualRow, chapter }] : []
-}))
-const chapterVirtualSize = computed(() => chapterVirtualizer.value.getTotalSize())
-
-function measureChapterRow(element: Element | ComponentPublicInstance | null): void {
-  const node = element instanceof Element ? element : element?.$el
-  if (!(node instanceof HTMLElement)) return
-  chapterVirtualizer.value.measureElement(node)
-  if (chapterListHorizontal.value) horizontalChapterRowSize = node.offsetWidth
 }
 
 async function scrollSelectedChapterIntoView(): Promise<void> {
-  const index = chapters.value.findIndex((chapter) => chapter.id === selectedChapter.value?.id)
-  if (index < 0) return
   await nextTick()
-  chapterVirtualizer.value.scrollToIndex(index, { align: 'auto' })
+  await chapterList.value?.scrollToSelected()
 }
 const selectedScript = computed(
   () => scripts.value.find((item) => item.id === selectedScriptId.value) ?? scripts.value[0] ?? null,
@@ -312,7 +276,7 @@ const selectedScriptFormallyApproved = computed(() => Boolean(
 ))
 const chapterAgentPrompt = computed(() =>
   selectedChapter.value
-    ? `当前工作章节是《${selectedChapter.value.title}》。请读取本章原文、项目记忆、视觉手册和导演手册，并根据我的要求推进创作。`
+    ? `当前工作章节是《${selectedChapter.value.title}》。先查看本章元信息和当前进度，再按本轮需求检索原文相关片段、项目记忆及对应手册。长文分段读取，不要一次加载整章和全部历史版本。`
     : '',
 )
 const filteredFiles = computed(() => {
@@ -513,6 +477,10 @@ const selectedVideoShots = computed(() => {
 const videoPromptEligibleShots = computed(() => selectedVideoShots.value.filter(
   (shot) => !busyVideoPromptShotIds.value.has(shot.id) && !busyShotIds.value.has(shot.id),
 ))
+/** Batch fill only covers shots that still have no prompt; rewrites stay per-shot. */
+const videoPromptMissingShots = computed(() => videoPromptEligibleShots.value.filter(
+  (shot) => !shotHasVideoPrompt(shot),
+))
 const videoEligibleShots = computed(() => selectedVideoShots.value.filter(
   (shot) => !busyShotIds.value.has(shot.id)
     && !busyVideoPromptShotIds.value.has(shot.id)
@@ -622,6 +590,7 @@ const assetRevisionChangeLabel: Record<string, string> = {
   ai_prompt_generation: 'AI 提示词',
   image_generation: '图片生成',
   library_copy: '资产库复制',
+  library_replace: '资产库同名替换',
   restore: '历史恢复',
   migration_snapshot: '历史基线',
 }
@@ -824,7 +793,6 @@ async function loadWorkspace(): Promise<void> {
     project.value = projectRow
     chapters.value = chapterRows
     await nextTick()
-    chapterVirtualizer.value.measure()
     void scrollSelectedChapterIntoView()
     files.value = fileRows
     projectAssets.value = projectAssetRows
@@ -1414,31 +1382,42 @@ async function queueScriptGeneration(): Promise<void> {
 }
 
 function openScriptEditor(base?: ScriptVersion): void {
+  if (!selectedChapter.value || automationLocked.value || scriptSaving.value) return
+  scriptEditorTarget.value = { projectId: projectId.value, chapterId: selectedChapter.value.id, chapterTitle: selectedChapter.value.title }
   Object.assign(scriptForm, {
     title: base?.title ?? `${selectedChapter.value?.title ?? '未命名章节'} · 短剧改编`,
     content: base?.content ?? '',
     review_notes: base?.review_notes ?? '',
-    status: base?.status ?? 'draft',
+    status: 'draft',
     activate: true,
   })
   scriptEditorOpen.value = true
 }
 
 async function saveScriptVersion(): Promise<void> {
-  if (!selectedChapter.value || !scriptForm.title.trim() || !scriptForm.content.trim()) return
+  const target = scriptEditorTarget.value
+  if (!target || scriptSaving.value || !scriptForm.title.trim() || !scriptForm.content.trim()) return
+  if (scriptForm.content.length > 500_000) {
+    toast.show('单版剧本最多保存 50 万字符，请按章节拆分', { tone: 'error' })
+    return
+  }
   scriptSaving.value = true
   try {
     const created = await api<ScriptVersion>(
-      `/projects/${projectId.value}/chapters/${selectedChapter.value.id}/scripts`,
+      `/projects/${target.projectId}/chapters/${target.chapterId}/scripts`,
       { method: 'POST', body: JSON.stringify(scriptForm) },
     )
     scriptEditorOpen.value = false
-    await Promise.all([
-      loadScripts(selectedChapter.value.id),
-      api<Chapter[]>(`/projects/${projectId.value}/chapters`).then((rows) => { chapters.value = rows }),
-    ])
-    selectedScriptId.value = created.id
-    activeWorkflow.value = created.is_active ? 'review' : 'script'
+    if (projectId.value === target.projectId) {
+      chapters.value = await api<Chapter[]>(`/projects/${target.projectId}/chapters`)
+      if (selectedChapterId.value === target.chapterId) {
+        await Promise.all([loadScripts(target.chapterId), loadAssetExtractions(target.chapterId), loadStoryboards(target.chapterId), refreshProjectFiles(target.projectId)])
+        if (selectedChapterId.value === target.chapterId) {
+          selectedScriptId.value = created.id
+          activeWorkflow.value = 'script'
+        }
+      }
+    }
     toast.show(`剧本 v${created.version} 已保存`, {
       message: created.is_active ? '已设为当前生效版本' : '已加入版本历史',
       tone: 'success',
@@ -1661,11 +1640,15 @@ function downloadReadyVideos(): void {
   })
 }
 
-async function queueVideoPrompts(overwrite = true, shotIdsOverride?: string[]): Promise<void> {
+async function queueVideoPrompts(overwrite = false, shotIdsOverride?: string[]): Promise<void> {
   if (!selectedChapter.value || !storyboardDetail.value) return
   const previousSelection = selectedVideoShotIds.value
   if (shotIdsOverride) selectedVideoShotIds.value = shotIdsOverride
-  if (!videoPromptEligibleShots.value.length) {
+  // Filling gaps must never rewrite (and re-bill) prompts that already exist.
+  const candidates = overwrite
+    ? videoPromptEligibleShots.value
+    : videoPromptMissingShots.value
+  if (!candidates.length) {
     if (shotIdsOverride) selectedVideoShotIds.value = previousSelection
     return
   }
@@ -1676,14 +1659,16 @@ async function queueVideoPrompts(overwrite = true, shotIdsOverride?: string[]): 
       {
         method: 'POST',
         body: JSON.stringify({
-          shot_ids: videoPromptEligibleShots.value.map((shot) => shot.id),
+          shot_ids: candidates.map((shot) => shot.id),
           overwrite,
         }),
       },
     )
     await activity.refresh()
     toast.show('镜头视频提示词任务已进入队列', {
-      message: `${videoPromptEligibleShots.value.length} 个镜头会读取分镜、资产和项目手册后生成提示词`,
+      message: overwrite
+        ? `${candidates.length} 个镜头会重写视频提示词，成功部分会保留`
+        : `${candidates.length} 个缺失提示词的镜头会补齐，已有提示词不动`,
       tone: 'success',
     })
   } catch (error) {
@@ -1954,8 +1939,8 @@ async function restoreAssetRevision(): Promise<void> {
       generation_prompt: restored.generation_prompt,
     })
     await Promise.all([refreshAssets(), loadAssetRevisions(restored.id)])
-    toast.show(`已恢复为新版本 v${restored.version}`, {
-      message: `v${revision.version} 保持只读，当前资产已生成新的恢复版本`,
+    toast.show(`已切换为新版本 v${restored.version}`, {
+      message: `已采用 v${revision.version} 的画面，引用该资产的镜头与视频提示词已同步`,
       tone: 'success',
     })
   } catch (error) {
@@ -2142,12 +2127,24 @@ async function transferAsset(asset: AssetItem): Promise<void> {
     const path = asset.scope === 'project'
       ? `/projects/${projectId.value}/assets/${asset.id}/export-global`
       : `/projects/${projectId.value}/assets/import/${asset.id}`
-    await api(path, { method: 'POST' })
+    const result = await api<AssetItem>(path, { method: 'POST' })
     await refreshAssets()
-    toast.show(asset.scope === 'project' ? '已复制到全局资产库' : '已导入项目塑造资产', {
-      message: asset.parent_asset_id ? '基础资产关系已自动复制或复用' : undefined,
-      tone: 'success',
-    })
+    if (asset.scope === 'project') {
+      toast.show('已复制到全局资产库', {
+        message: asset.parent_asset_id ? '基础资产关系已自动复制或复用' : undefined,
+        tone: 'success',
+      })
+    } else if (typeof result.asset_metadata.replaced_version === 'number') {
+      toast.show(`已用“${asset.name}”替换项目资产`, {
+        message: '同名资产直接更新并启用，分镜与视频提示词已同步',
+        tone: 'success',
+      })
+    } else {
+      toast.show('已导入项目塑造资产', {
+        message: asset.parent_asset_id ? '基础资产关系已自动复制或复用' : undefined,
+        tone: 'success',
+      })
+    }
   } catch (error) {
     toast.show('资产复制失败', { message: error instanceof Error ? error.message : undefined, tone: 'error' })
   }
@@ -2312,33 +2309,10 @@ function fileSize(bytes: number): string {
     <div v-if="chapters.length" class="director-production">
       <aside class="chapter-rail">
         <header><div><strong>章节</strong><span class="tabular-nums">{{ chapters.length }}</span></div><button class="icon-button icon-button--small" type="button" title="继续导入" @click="importOpen = true"><Plus :size="16" /></button></header>
-        <div ref="chapterList" class="chapter-list">
-          <div
-            class="chapter-list__virtual"
-            :class="{ 'is-horizontal': chapterListHorizontal }"
-            :style="chapterListHorizontal
-              ? { width: `${chapterVirtualSize}px` }
-              : { height: `${chapterVirtualSize}px` }"
-          >
-            <div
-              v-for="{ virtualRow, chapter } in virtualChapters"
-              :key="chapter.id"
-              :ref="measureChapterRow"
-              :data-index="virtualRow.index"
-              class="chapter-item-row"
-              :class="{ active: selectedChapter?.id === chapter.id, 'is-horizontal': chapterListHorizontal }"
-              :style="chapterListHorizontal
-                ? `position:absolute;top:0;left:0;height:100%;width:${virtualRow.size}px;transform:translateX(${virtualRow.start}px)`
-                : `position:absolute;top:0;left:0;width:100%;transform:translateY(${virtualRow.start}px)`"
-            >
-              <button class="chapter-item" :disabled="chapter.locked" :class="{ active: selectedChapter?.id === chapter.id }" type="button" @click="selectedChapterId = chapter.id"><span class="chapter-item__number tabular-nums">{{ String(chapter.order_index).padStart(2, '0') }}</span><span class="chapter-item__copy"><strong>{{ chapter.title }}</strong><small>{{ chapter.locked ? '完成前章剧本后解锁' : chapterStatusLabel[chapter.status] }}</small></span><ChevronRight :size="15" /></button>
-              <div class="chapter-item__actions">
-                <button type="button" title="重做章节" aria-label="重做章节" :disabled="chapterActionBusy || chapter.locked" @click.stop="requestChapterAction(chapter, 'redo')"><RotateCcw :size="14" /></button>
-                <button class="danger" type="button" title="删除章节" aria-label="删除章节" :disabled="chapterActionBusy || chapter.locked" @click.stop="requestChapterAction(chapter, 'delete')"><Trash2 :size="14" /></button>
-              </div>
-            </div>
-          </div>
-        </div>
+        <ChapterVirtualList ref="chapterList" :key="chapterListHorizontal ? 'horizontal' : 'vertical'"
+          :chapters="chapters" :selected-id="selectedChapter?.id" :horizontal="chapterListHorizontal"
+          :busy="chapterActionBusy" :status-labels="chapterStatusLabel"
+          @select="selectedChapterId = $event" @action="requestChapterAction" />
       </aside>
 
       <section
@@ -2351,6 +2325,7 @@ function fileSize(bytes: number): string {
         <DirectorChapterCanvas
           :chapter="selectedChapter"
           :scripts="scripts"
+          :selected-script-id="selectedScriptId"
           :assets="projectAssets"
           :storyboard="storyboardDetail"
           :video-resolution="project.video_resolution"
@@ -2363,7 +2338,10 @@ function fileSize(bytes: number): string {
           :automation-action="automationAction"
           :automation-locked="automationLocked"
           @open-assets="openAssetLibrary()"
-          @queue-video-prompts="(shotIds) => queueVideoPrompts(true, shotIds)"
+          @edit-script="openScriptEditor"
+          @select-script="selectedScriptId = $event"
+          @activate-script="scriptActivateTarget = $event"
+          @queue-video-prompts="(shotIds, overwrite) => queueVideoPrompts(overwrite, shotIds)"
           @queue-batch-videos="queueBatchShotVideos"
           @queue-shot-video="queueShotVideo"
           @request-shot-prompts="loadShotPrompts"
@@ -2622,7 +2600,7 @@ function fileSize(bytes: number): string {
                 <div>
                   <button class="button button--secondary" type="button" :disabled="!downloadableVideoClips.length" @click="downloadReadyVideos"><Download :size="15" />批量下载视频</button>
                   <VideoConcatButton v-if="selectedChapter" :project-id="selectedChapter.project_id" :chapter-id="selectedChapter.id" :storyboard-id="storyboardDetail.version.id" :count="downloadableVideoClips.length" />
-                  <button class="button button--secondary" type="button" :disabled="!videoPromptEligibleShots.length || Boolean(storyboardAction) || Boolean(videoPromptTask)" @click="queueVideoPrompts(true)"><LoaderCircle v-if="storyboardAction === 'videoPrompt' || videoPromptTask" class="spin" :size="15" /><WandSparkles v-else :size="15" />批量生成提示词</button>
+                  <button class="button button--secondary" type="button" :disabled="!videoPromptMissingShots.length || Boolean(storyboardAction) || Boolean(videoPromptTask)" @click="queueVideoPrompts(false)"><LoaderCircle v-if="storyboardAction === 'videoPrompt' || videoPromptTask" class="spin" :size="15" /><WandSparkles v-else :size="15" />补齐缺失提示词<span v-if="videoPromptMissingShots.length" class="tabular-nums">{{ videoPromptMissingShots.length }}</span></button>
                   <button class="button button--primary" type="button" :disabled="!videoEligibleShots.length || Boolean(storyboardAction)" @click="() => queueBatchShotVideos()"><LoaderCircle v-if="storyboardAction === 'batchVideo'" class="spin" :size="15" /><Play v-else :size="15" />批量生成视频</button>
                 </div>
               </div>
@@ -2717,8 +2695,8 @@ function fileSize(bytes: number): string {
       <template #footer><button class="button button--ghost" type="button" @click="closeFileDelete">取消</button><button class="button button--danger" type="button" @click="fileDeleteTarget && deleteFile(fileDeleteTarget)"><Trash2 :size="17" />确认删除</button></template>
     </BaseDialog>
 
-    <BaseDialog :open="scriptEditorOpen" :title="scripts.length ? '创建剧本新版本' : '创建首版剧本'" description="版本保存后不可覆盖，可继续创建后续版本" wide @update:open="scriptEditorOpen = $event">
-      <form id="script-version-form" class="script-editor" @submit.prevent="saveScriptVersion">
+    <BaseDialog :open="scriptEditorOpen" title="编辑剧本 · 保存新版本" :description="scriptEditorTarget?.chapterTitle" content-class="director-script-editor-dialog" wide @update:open="!scriptSaving && (scriptEditorOpen = $event)">
+      <form id="script-version-form" class="script-editor" :inert="scriptSaving || undefined" @submit.prevent="saveScriptVersion">
         <div class="script-editor__meta"><label class="field"><span>版本标题</span><input v-model="scriptForm.title" required maxlength="255" placeholder="例如：第 1 集 · 雨夜重逢" /></label><div class="field"><span>审核状态</span><div class="script-status-picker"><button v-for="status in (['draft', 'reviewing', 'approved'] as const)" :key="status" type="button" :class="{ active: scriptForm.status === status }" @click="scriptForm.status = status"><FilePenLine v-if="status === 'draft'" :size="15" /><History v-else-if="status === 'reviewing'" :size="15" /><CircleCheckBig v-else :size="15" />{{ scriptStatusLabel[status] }}</button></div></div></div>
         <label class="field script-editor__content"><span>剧本正文</span><textarea v-model="scriptForm.content" required rows="18" placeholder="场次、地点、时间、人物、动作与台词…"></textarea></label>
         <label class="field"><span>审核备注</span><textarea v-model="scriptForm.review_notes" rows="3" placeholder="记录待调整内容、审核意见或版本变化"></textarea></label>

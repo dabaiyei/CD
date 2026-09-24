@@ -1,0 +1,45 @@
+app\services\task_worker.py:192:111: E501 Line too long (114 > 110)
+app\services\task_worker.py:495:1: E402 Module level import not at top of file
+app\services\task_worker.py:519:1: E402 Module level import not at top of file
+app\services\task_worker.py:519:1: I001 [*] Import block is un-sorted or un-formatted
+app\services\task_worker.py:520:1: E402 Module level import not at top of file
+app\services\task_worker.py:521:1: E402 Module level import not at top of file
+app\services\task_worker.py:522:1: E402 Module level import not at top of file
+app\services\task_worker.py:1336:111: E501 Line too long (112 > 110)
+app\services\task_worker.py:1337:111: E501 Line too long (111 > 110)
+app\services\task_worker.py:1686:111: E501 Line too long (167 > 110)
+app\services\task_worker.py:1897:111: E501 Line too long (112 > 110)
+app\services\task_worker.py:1906:111: E501 Line too long (117 > 110)
+app\services\task_worker.py:2376:111: E501 Line too long (116 > 110)
+app\services\task_worker.py:2403:111: E501 Line too long (187 > 110)
+app\services\task_worker.py:2407:83: E501 Line too long (113 > 110)
+app\services\task_worker.py:2408:111: E501 Line too long (153 > 110)
+app\services\task_worker.py:2435:111: E501 Line too long (121 > 110)
+app\services\task_worker.py:2439:108: E501 Line too long (126 > 110)
+app\services\task_worker.py:2461:102: E501 Line too long (136 > 110)
+app\services\task_worker.py:2493:75: E501 Line too long (131 > 110)
+app\services\task_worker.py:5439:5: I001 [*] Import block is un-sorted or un-formatted
+app\services\task_worker.py:5488:111: E501 Line too long (119 > 110)
+app\services\task_worker.py:5606:111: E501 Line too long (121 > 110)
+app\services\task_worker.py:5794:84: E501 Line too long (171 > 110)
+app\services\task_worker.py:6064:71: E501 Line too long (173 > 110)
+app\services\task_worker.py:6065:71: E501 Line too long (112 > 110)
+app\services\task_worker.py:6068:76: E501 Line too long (121 > 110)
+app\services\task_worker.py:6089:111: E501 Line too long (116 > 110)
+app\services\task_worker.py:6092:111: E501 Line too long (125 > 110)
+app\services\task_worker.py:6273:111: E501 Line too long (116 > 110)
+app\services\task_worker.py:6276:111: E501 Line too long (128 > 110)
+app\services\task_worker.py:6314:111: E501 Line too long (112 > 110)
+app\services\task_worker.py:6415:111: E501 Line too long (119 > 110)
+app\services\task_worker.py:6559:111: E501 Line too long (127 > 110)
+app\services\task_worker.py:6767:13: B904 Within an `except` clause, raise exceptions with `raise ... from err` or `raise ... from None` to distinguish them from errors in exception handling
+app\services\task_worker.py:6896:111: E501 Line too long (111 > 110)
+app\services\task_worker.py:7029:98: E501 Line too long (118 > 110)
+app\services\task_worker.py:7037:111: E501 Line too long (120 > 110)
+app\services\task_worker.py:7081:101: E501 Line too long (112 > 110)
+app\services\task_worker.py:7132:17: F841 Local variable `refunded` is assigned to but never used
+app\services\task_worker.py:7155:88: E501 Line too long (114 > 110)
+app\services\task_worker.py:7159:5: I001 [*] Import block is un-sorted or un-formatted
+app\services\task_worker.py:7262:72: E501 Line too long (112 > 110)
+Found 43 errors.
+[*] 3 fixable with the `--fix` option (1 hidden fix can be enabled with the `--unsafe-fixes` option).

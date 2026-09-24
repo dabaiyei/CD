@@ -1,5 +1,7 @@
 <script setup lang="ts">
 import { IMAGE_ACCEPT_ATTRIBUTE, MAX_IMAGE_UPLOAD_BYTES, isSupportedImage, prepareChatImage } from '@/lib/imageUpload'
+const DOCUMENT_EXTENSIONS = /\.(pdf|docx|pptx|xlsx|txt|md|csv|json)$/i
+const ATTACHMENT_ACCEPT = `${IMAGE_ACCEPT_ATTRIBUTE},.pdf,.docx,.pptx,.xlsx,.txt,.md,.csv,.json`
 import { useVirtualizer } from '@tanstack/vue-virtual'
 import { DropdownMenuRoot, DropdownMenuTrigger, DropdownMenuPortal, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator } from 'reka-ui'
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
@@ -1137,17 +1139,18 @@ async function uploadAttachmentFiles(files: File[], fromClipboard = false): Prom
     for (const [index, file] of files.slice(0, available).entries()) {
       if (controller.signal.aborted) break
       const fileLabel = file.name || '剪贴板图片'
-      if (!isSupportedImage(file)) {
-        toast.show('图片格式不支持', { message: `${fileLabel} 不是 JPG、PNG 或 WebP`, tone: 'error' })
+      const isDocument = DOCUMENT_EXTENSIONS.test(file.name)
+      if (!isSupportedImage(file) && !isDocument) {
+        toast.show('附件格式不支持', { message: '支持图片、PDF、Office文档和文本', tone: 'error' })
         continue
       }
-      if (file.size > maxAttachmentBytes) {
-        toast.show('图片过大', { message: `${fileLabel} 超过 100MB`, tone: 'error' })
+      if (file.size > (isDocument ? 32 * 1024 * 1024 : maxAttachmentBytes)) {
+        toast.show('附件过大', { message: `${fileLabel} 超过 ${isDocument ? '32MB' : '100MB'}`, tone: 'error' })
         continue
       }
       try {
-        attachmentUploadStatus.value = `第 ${index + 1} 张：正在本地压缩…`
-        const prepared = await prepareChatImage(file, controller.signal)
+        attachmentUploadStatus.value = `第 ${index + 1} 个：${isDocument ? '正在准备文档…' : '正在本地压缩…'}`
+        const prepared = isDocument ? file : await prepareChatImage(file, controller.signal)
         if (controller.signal.aborted) break
         const body = new FormData()
         const extension = attachmentExtensions[prepared.type] || 'jpg'
@@ -1264,6 +1267,9 @@ function updateScrollIntent(): void {
 }
 
 function containConversationScroll(event: WheelEvent): void {
+  // Embedded director chat uses native nested scrolling; intercepting the
+  // wheel after focusing its composer traps the surrounding project page.
+  if (props.scene === 'director' && !focusMode.value) return
   if (event.ctrlKey || Math.abs(event.deltaY) <= Math.abs(event.deltaX)) return
 
   const studio = event.currentTarget
@@ -1271,6 +1277,23 @@ function containConversationScroll(event: WheelEvent): void {
   if (!focusMode.value && !studio.contains(document.activeElement)) return
 
   const messageThread = thread.value
+  const eventPath = event.composedPath()
+
+  // 输入框、下拉面板等内部可滚动区域保留原生滚轮行为，否则滑轮到不了自己的滚动条
+  const localScroller = eventPath.find((node): node is HTMLElement => {
+    if (!(node instanceof HTMLElement)) return false
+    if (node === messageThread || node === studio || !studio.contains(node)) return false
+    if (node.scrollHeight - node.clientHeight <= 1) return false
+    return /(auto|scroll|overlay)/.test(window.getComputedStyle(node).overflowY)
+  })
+  if (localScroller) {
+    const atLocalTop = localScroller.scrollTop <= 0
+    const atLocalBottom = localScroller.scrollTop + localScroller.clientHeight >= localScroller.scrollHeight - 1
+    const localBoundary = (event.deltaY < 0 && atLocalTop) || (event.deltaY > 0 && atLocalBottom)
+    // 手还没滑到这条输入内容的尽头时，把滚轮留给它自己
+    if (!localBoundary) return
+  }
+
   event.stopPropagation()
 
   if (!messageThread) {
@@ -1278,7 +1301,7 @@ function containConversationScroll(event: WheelEvent): void {
     return
   }
 
-  const eventStartedInThread = event.composedPath().includes(messageThread)
+  const eventStartedInThread = eventPath.includes(messageThread)
   const atTop = messageThread.scrollTop <= 0
   const atBottom = messageThread.scrollTop + messageThread.clientHeight >= messageThread.scrollHeight - 1
   const reachedBoundary = (event.deltaY < 0 && atTop) || (event.deltaY > 0 && atBottom)
@@ -1616,7 +1639,7 @@ async function sendMessage(): Promise<void> {
       v-bind="$attrs"
       ref="agentRoot"
       class="agent-studio"
-      :class="{ 'agent-studio--focus': focusMode, 'agent-studio--collapsed': collapsed, 'agent-studio--personal': personalMode }"
+      :class="{ 'agent-studio--focus': focusMode, 'agent-studio--collapsed': collapsed, 'agent-studio--personal': personalMode, 'agent-studio--director': scene === 'director' }"
       aria-labelledby="agent-studio-title"
       @wheel="containConversationScroll"
     >
@@ -1813,7 +1836,8 @@ async function sendMessage(): Promise<void> {
                 </div>
                 <div v-if="messageAttachments(message).length" class="agent-message-attachments">
                   <figure v-for="attachment in messageAttachments(message)" :key="attachment.id">
-                    <img :src="attachment.media_url" :alt="attachment.name" />
+                    <img v-if="attachment.mime_type.startsWith('image/')" :src="attachment.media_url" :alt="attachment.name" />
+                    <span v-else aria-label="文档附件">📄</span>
                     <figcaption>{{ attachment.name }}</figcaption>
                   </figure>
                 </div>
@@ -2081,7 +2105,8 @@ async function sendMessage(): Promise<void> {
           </div>
           <TransitionGroup v-if="pendingAttachments.length" name="agent-attachment" tag="div" class="agent-attachment-tray">
             <figure v-for="attachment in pendingAttachments" :key="attachment.id">
-              <img :src="attachment.media_url" :alt="attachment.name" />
+              <img v-if="attachment.mime_type.startsWith('image/')" :src="attachment.media_url" :alt="attachment.name" />
+              <span v-else aria-label="文档附件">📄 {{ attachment.name }}</span>
               <button type="button" title="移除图片" @click="removePendingAttachment(attachment)"><X :size="14" /></button>
             </figure>
           </TransitionGroup>
@@ -2099,12 +2124,12 @@ async function sendMessage(): Promise<void> {
           ></textarea>
 
           <div class="agent-composer__actions">
-            <input ref="fileInput" class="sr-only" type="file" :accept="IMAGE_ACCEPT_ATTRIBUTE" multiple :disabled="disabled" @change="uploadAttachments" />
+            <input ref="fileInput" class="sr-only" type="file" :accept="ATTACHMENT_ACCEPT" multiple :disabled="disabled" @change="uploadAttachments" />
             <button
               class="agent-attach-button"
               type="button"
               :disabled="disabled || sending || uploadingAttachments || pendingAttachments.length >= maxAttachmentCount"
-              :title="pendingAttachments.length >= maxAttachmentCount ? `最多添加 ${maxAttachmentCount} 张图片` : '上传图片'"
+              :title="pendingAttachments.length >= maxAttachmentCount ? `最多添加 ${maxAttachmentCount} 个附件` : '上传图片或文档'"
               @click="openAttachmentPicker"
             >
               <LoaderCircle v-if="uploadingAttachments" class="spin" :size="18" />

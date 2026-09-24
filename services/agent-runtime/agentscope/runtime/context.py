@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import base64
 import json
 import os
 import re
@@ -63,12 +64,19 @@ def prepare_run_context(data_root: Path, request: AgentRunRequest) -> RunContext
     snapshot_root = workspace / ".cineforge" / "skills"
     agentscope_skills_root = workspace / ".cineforge" / "agentscope-skills"
     project_files_root = workspace / "project-files"
-    for root in (snapshot_root, agentscope_skills_root, project_files_root):
+    documents_root = workspace / ".cineforge" / "documents"
+    for root in (snapshot_root, agentscope_skills_root, project_files_root, documents_root):
         if root.is_symlink():
             root.unlink()
         elif root.exists():
             shutil.rmtree(root)
         root.mkdir(parents=True, exist_ok=True)
+
+    for document in request.documents:
+        data = base64.b64decode(document.data, validate=True)
+        if len(data) > 32 * 1024 * 1024 or hashlib.sha256(data).hexdigest() != document.sha256:
+            raise InvalidProjectFileSnapshot("Document size or checksum mismatch")
+        (documents_root / f"{document.id}{Path(document.name).suffix.lower()}").write_bytes(data)
 
     for snapshot in request.skills:
         _verify_skill(snapshot)
@@ -131,6 +139,9 @@ def prepare_run_context(data_root: Path, request: AgentRunRequest) -> RunContext
             for item in request.skills
         ],
         "projectFiles": project_manifest_files,
+        "documents": [{"id": item.id, "name": item.name,
+                       "path": f".cineforge/documents/{item.id}{Path(item.name).suffix.lower()}"}
+                      for item in request.documents],
     }
     (workspace / ".cineforge" / "execution-manifest.json").write_text(
         json.dumps(manifest, ensure_ascii=False, indent=2), encoding="utf-8", newline="\n"
@@ -286,7 +297,7 @@ def compose_prompt(
     include_conversation_context: bool = True,
 ) -> str:
     sections = ["Platform context:"]
-    if request.tool_mode == "workspace":
+    if request.tool_mode in {"workspace", "retrieval"}:
         sections.extend(
             [
                 f"- The task workspace is {workspace}.",
@@ -302,13 +313,24 @@ def compose_prompt(
         sections.extend(
             [
                 "- Project text files are under project-files/<file-id>/.",
+                "- Text Read is paged (12000 characters per call). Use next_char_offset to continue only relevant sections; never load all chapters or historical versions for ordinary chat.",
+                "- Large sources have a part index at the original path. Parts cover the complete source and are read-only. A partial read is not the whole chapter.",
                 "- Read every relevant file before editing it.",
                 "- Edit an existing file in place only when its manifest entry is editable.",
+                "- 每章的分镜表.json 和视频提示词.json 是固定文件。修改时先检索/读取目标镜头，"
+                "使用 Edit 原位修改；不得另建 v2/v3、修复版或备份副本。保持 shot_id、order_index 不变，"
+                "只修改目标镜头的相关字段，不要重写无关镜头；已有分镜不要再次发布全量新版本。",
                 "- Create new text files under project-files/new/ only.",
             ]
         )
+    if request.tool_mode == "retrieval":
+        sections.append("- This is a read-only automatic task. Use Ripgrep/AstGrep/Read/MarkItDown to gather evidence, then return the requested JSON. Do not write files or execute platform actions.")
     if request.memory_context:
         sections.extend(["", "Platform-managed long-term memory:", *request.memory_context])
+    if request.documents:
+        sections.append("Local documents (use MarkItDown, then Ripgrep/Read; do not load every document):")
+        sections.extend(f"- {item.name}: .cineforge/documents/{item.id}{Path(item.name).suffix.lower()}"
+                        for item in request.documents)
     if include_conversation_context and request.conversation_summary:
         sections.extend(
             ["", "Platform-managed conversation summary for state recovery:", request.conversation_summary]

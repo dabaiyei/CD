@@ -120,6 +120,7 @@ export interface SecurityEventPage {
 }
 
 export interface Project {
+  first_frame_mode: boolean
   creation_mode: 'import' | 'ai'
   cinematic: boolean
   text_model_id: string | null
@@ -198,6 +199,13 @@ export interface VideoModelCapabilities extends Record<string, unknown> {
   prompt_languages: string[]
   negative_prompt_supported: boolean
   asynchronous: boolean
+  /**
+   * Some providers name their modes/resolutions differently from our internal
+   * vocabulary. Without these maps the request falls back to internal values
+   * ("first_frame"/"720p") and the upstream rejects it with HTTP 400.
+   */
+  provider_mode_map?: Record<string, string>
+  provider_resolution_map?: Record<string, string>
 }
 
 export interface ProviderCredentialField {

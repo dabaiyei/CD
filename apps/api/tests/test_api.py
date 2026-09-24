@@ -3659,6 +3659,52 @@ def test_concurrent_claims_do_not_exceed_provider_capacity(
     asyncio.run(scenario())
 
 
+def test_generation_reservations_share_provider_capacity(client, creator_headers):
+    from app.services.generation_parallel import reserve_task_slots
+
+    project_id = client.get("/api/v1/projects", headers=creator_headers).json()[0]["id"]
+
+    async def scenario():
+        async with SessionLocal() as session:
+            project = await session.get(Project, project_id)
+            model = await session.get(AIModel, project.image_model_id)
+            provider = await session.get(Provider, model.provider_id)
+            original_limit, provider_id = provider.max_concurrency, provider.id
+            provider.max_concurrency = 4
+            tasks = [AITask(tenant_id=project.tenant_id, user_id=project.owner_id,
+                project_id=project.id, model_id=model.id, task_type="slot_probe") for _ in range(3)]
+            session.add_all(tasks)
+            await session.commit()
+            ids = [task.id for task in tasks]
+        try:
+            assert await claim_task(ids[0]) == ids[0]
+            assert await claim_task(ids[1]) == ids[1]
+            granted = await asyncio.gather(*(reserve_task_slots(i, 3) for i in ids[:2]))
+            assert sum(granted) == 4 and min(granted) == 1
+            assert await claim_task(ids[2]) is None
+            released = ids[granted.index(3)]
+            async with SessionLocal() as session:
+                task = await session.get(AITask, released)
+                task.status = TaskStatus.SUCCEEDED
+                # A stale reservation on a queued retry must be reset at claim.
+                queued = await session.get(AITask, ids[2])
+                queued.request_payload = {"runtime_concurrency_slots": 3}
+                await session.commit()
+            assert await claim_task(ids[2]) == ids[2]
+            async with SessionLocal() as session:
+                task = await session.get(AITask, ids[2])
+                assert task.request_payload["runtime_concurrency_slots"] == 1
+            assert await reserve_task_slots(ids[2], 3) == 3
+        finally:
+            async with SessionLocal() as session:
+                await session.execute(delete(AITask).where(AITask.id.in_(ids)))
+                provider = await session.get(Provider, provider_id)
+                provider.max_concurrency = original_limit
+                await session.commit()
+
+    asyncio.run(scenario())
+
+
 def test_worker_slots_execute_tasks_concurrently(monkeypatch: pytest.MonkeyPatch) -> None:
     from app import worker
 
@@ -4367,7 +4413,10 @@ def test_script_versions_invalidate_downstream_and_assets_copy_between_libraries
     )
     assert copied_back.status_code == 200
     assert copied_back.json()["scope"] == "project"
-    assert copied_back.json()["id"] != project_asset["id"]
+    # Same-name import replaces the existing library entry in place instead of
+    # adding a duplicate, so downstream steps keep pointing at the imported look.
+    assert copied_back.json()["id"] == project_asset["id"]
+    assert copied_back.json()["version"] == 2
 
     second_script = client.post(
         script_path,
@@ -4616,6 +4665,180 @@ def test_asset_image_upload_creates_history_and_prompt_edit_keeps_ready_status(
     assert prompt_updated.status_code == 200
     assert prompt_updated.json()["status"] == "ready"
     assert prompt_updated.json()["media_url"] == uploaded.json()["media_url"]
+
+
+def test_asset_version_switch_and_same_name_import_reach_the_storyboard(
+    client: TestClient,
+    creator_headers: dict[str, str],
+) -> None:
+    """Switching an asset look has to reach the board production already uses.
+
+    Regression: restoring a revision or importing a same-name global asset used
+    to change only the library row, so the board, the video prompts and the
+    rendered clips kept the previous look.
+    """
+    project_id = client.get("/api/v1/projects", headers=creator_headers).json()[0]["id"]
+    project_assets_path = f"/api/v1/projects/{project_id}/assets"
+
+    imported = client.post(
+        f"/api/v1/projects/{project_id}/sources/import",
+        headers=creator_headers,
+        data={"mode": "script", "pasted_text": "第一场 雨夜\n版本联动角色站在雨里。"},
+    ).json()
+    chapter_id = imported["chapters"][0]["id"]
+    assert client.post(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/scripts",
+        headers=creator_headers,
+        json={"title": "联动稿", "content": "版本联动角色站在雨里。", "activate": True},
+    ).status_code == 201
+    extracted = client.post(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/asset-extractions",
+        headers=creator_headers,
+        json={"assets": [{"asset_type": "character", "name": "版本联动角色", "description": "初始形象"}]},
+    )
+    assert extracted.status_code == 201
+    asset = extracted.json()["assets"][0]
+    history_path = f"/api/v1/assets/{asset['id']}/revisions"
+    initial_revision = client.get(history_path, headers=creator_headers).json()[0]
+
+    first_image = BytesIO()
+    Image.new("RGB", (640, 640), "#1f5f5b").save(first_image, format="PNG")
+    uploaded = client.post(
+        f"/api/v1/assets/{asset['id']}/image/upload",
+        headers=creator_headers,
+        files={"file": ("v2.png", first_image.getvalue(), "image/png")},
+    )
+    assert uploaded.status_code == 200
+    first_url = uploaded.json()["media_url"]
+
+    storyboard = client.post(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/storyboards",
+        headers=creator_headers,
+        json={
+            "shots": [
+                {
+                    "title": "雨中站立",
+                    "duration_seconds": 5,
+                    "scene_description": "雨夜街道",
+                    "action_description": "角色站在雨里",
+                    "image_prompt": "雨夜中的角色",
+                    "video_prompt": "角色站在雨里不动。",
+                    "asset_ids": [asset["id"]],
+                }
+            ]
+        },
+    )
+    assert storyboard.status_code == 201
+    storyboard_id = storyboard.json()["version"]["id"]
+    shot_id = storyboard.json()["shots"][0]["id"]
+    assert storyboard.json()["shots"][0]["reference_image_url"] == first_url
+
+    # Restoring v1 drops the uploaded image; the shot must not keep pointing at it.
+    restored = client.post(
+        f"{history_path}/{initial_revision['id']}/restore",
+        headers=creator_headers,
+    )
+    assert restored.status_code == 200
+    detail = client.get(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/storyboards/{storyboard_id}",
+        headers=creator_headers,
+    ).json()
+    refreshed = next(shot for shot in detail["shots"] if shot["id"] == shot_id)
+    assert refreshed["reference_image_url"] is None
+    prompts = client.get(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/storyboards/"
+        f"{storyboard_id}/shots/{shot_id}/prompts",
+        headers=creator_headers,
+    ).json()
+    assert prompts["video_prompt"] == ""
+
+    # A derivative already drawn from the previous look is flagged until it is redrawn.
+    derivative = client.post(
+        project_assets_path,
+        headers=creator_headers,
+        json={
+            "asset_type": "character",
+            "parent_asset_id": asset["id"],
+            "name": "版本联动角色·衍生",
+            "description": "依赖主资产的外观",
+        },
+    )
+    assert derivative.status_code == 201
+    derivative_id = derivative.json()["id"]
+    assert "stale_parent_version" not in derivative.json()["asset_metadata"]
+    derivative_image = BytesIO()
+    Image.new("RGB", (640, 640), "#4b3a72").save(derivative_image, format="PNG")
+    assert client.post(
+        f"/api/v1/assets/{derivative_id}/image/upload",
+        headers=creator_headers,
+        files={"file": ("derivative.png", derivative_image.getvalue(), "image/png")},
+    ).status_code == 200
+    second_upload = BytesIO()
+    Image.new("RGB", (640, 640), "#2f6b6b").save(second_upload, format="PNG")
+    assert client.post(
+        f"/api/v1/assets/{asset['id']}/image/upload",
+        headers=creator_headers,
+        files={"file": ("parent-v4.png", second_upload.getvalue(), "image/png")},
+    ).status_code == 200
+    derivative_after = next(
+        item
+        for item in client.get(project_assets_path, headers=creator_headers).json()
+        if item["id"] == derivative_id
+    )
+    parent_after = next(
+        item
+        for item in client.get(project_assets_path, headers=creator_headers).json()
+        if item["id"] == asset["id"]
+    )
+    assert derivative_after["asset_metadata"]["stale_parent_version"] == parent_after["version"]
+
+    # Importing a same-name global asset replaces the project asset in place and
+    # re-points the shot at the imported file instead of leaving a duplicate.
+    second_image = BytesIO()
+    Image.new("RGB", (640, 640), "#7a4a1c").save(second_image, format="PNG")
+    assert client.post(
+        f"/api/v1/assets/{asset['id']}/image/upload",
+        headers=creator_headers,
+        files={"file": ("v3.png", second_image.getvalue(), "image/png")},
+    ).status_code == 200
+    exported = client.post(
+        f"{project_assets_path}/{asset['id']}/export-global",
+        headers=creator_headers,
+    )
+    assert exported.status_code == 200
+    global_asset = exported.json()
+    global_image = BytesIO()
+    Image.new("RGB", (640, 640), "#3b2f6b").save(global_image, format="PNG")
+    assert client.post(
+        f"/api/v1/assets/{global_asset['id']}/image/upload",
+        headers=creator_headers,
+        files={"file": ("global.png", global_image.getvalue(), "image/png")},
+    ).status_code == 200
+    global_detail = next(
+        item
+        for item in client.get("/api/v1/assets", headers=creator_headers).json()
+        if item["id"] == global_asset["id"]
+    )
+
+    reimported = client.post(
+        f"{project_assets_path}/import/{global_asset['id']}",
+        headers=creator_headers,
+    )
+    assert reimported.status_code == 200
+    assert reimported.json()["id"] == asset["id"]
+    assert reimported.json()["media_url"] == global_detail["media_url"]
+
+    project_list = client.get(project_assets_path, headers=creator_headers).json()
+    same_name = [item for item in project_list if item["name"] == "版本联动角色"]
+    assert len(same_name) == 1
+    assert same_name[0]["id"] == asset["id"]
+
+    detail = client.get(
+        f"/api/v1/projects/{project_id}/chapters/{chapter_id}/storyboards/{storyboard_id}",
+        headers=creator_headers,
+    ).json()
+    refreshed = next(shot for shot in detail["shots"] if shot["id"] == shot_id)
+    assert refreshed["reference_image_url"] == reimported.json()["media_url"]
 
 
 def test_character_reference_audio_flows_into_video_prompt_and_generation_task(
@@ -5098,7 +5321,9 @@ def test_automatic_director_workflow_completes_chapter_to_ready_videos(
     assert video_gateway.requests
     assert all(request.audio_enabled is True for request in video_gateway.requests)
     assert all("完全无声" not in request.prompt for request in video_gateway.requests)
-    assert all(child["max_attempts"] == 5 for child in detail["child_runs"])
+    assert all(child["max_attempts"] == (2 if child["kind"] in {
+        "storyboard_generation", "storyboard_repair", "storyboard_review",
+    } else 5) for child in detail["child_runs"])
     child_task_ids = [child["task_id"] for child in detail["child_runs"]]
     assert len(child_task_ids) == len(set(child_task_ids))
     assert {
@@ -5356,6 +5581,97 @@ def test_director_credit_recovery_failure_is_local_to_workflow(
     assert task["status"] == "succeeded"
 
 
+@pytest.mark.parametrize("interruption", ["between_steps", "missing_task", "legacy_gap"])
+def test_automatic_restart_gap_continues_from_script_without_duplicate_tasks(
+    client, creator_headers, admin_headers, interruption,
+):
+    from app.db.models import DirectorWorkflowStatus
+
+    grant_creator_test_credits(client, creator_headers, admin_headers)
+    provider_id = client.get("/api/v1/admin/providers", headers=admin_headers).json()[0]["id"]
+    assert client.patch(f"/api/v1/admin/providers/{provider_id}", headers=admin_headers,
+                        json={"api_key": "test-restart-gap"}).status_code == 200
+    project_id = client.get("/api/v1/projects", headers=creator_headers).json()[1]["id"]
+    imported = client.post(f"/api/v1/projects/{project_id}/sources/import", headers=creator_headers,
+        data={"mode": "novel", "source_name": "重启衔接", "pasted_text": "第一章 重启\n人物进入房间。"}).json()
+    chapter_id = imported["chapters"][0]["id"]
+    root = f"/api/v1/projects/{project_id}/chapters/{chapter_id}"
+    script = client.post(f"{root}/scripts", headers=creator_headers,
+        json={"title": "已完成的剧本", "content": "人物进入房间。", "status": "approved", "activate": True})
+    assert script.status_code == 201
+    path = f"{root}/director-workflow"
+    started = client.post(f"{path}/automatic", headers=creator_headers,
+                         json={"instruction": "保留剧本从资产继续"}).json()
+    old_id = started["workflow"]["id"]
+
+    async def interrupt():
+        async with SessionLocal() as session:
+            workflow = await session.get(DirectorWorkflowRun, old_id)
+            task = await session.get(AITask, workflow.current_task_id)
+            child = await session.get(DirectorChildRun, started["child_runs"][0]["id"])
+            if interruption == "missing_task":
+                child.task_id = None
+                workflow.current_task_id = None
+                await session.delete(task)
+            else:
+                task.status = TaskStatus.SUCCEEDED
+                child.status = DirectorChildStatus.SUCCEEDED
+                # Leave a stale pointer to exercise the commit-before-advance gap.
+                if interruption == "legacy_gap":
+                    workflow.status = DirectorWorkflowStatus.FAILED
+                    workflow.last_error = "自动流程已中断：上一步完成后没有可继续的任务"
+            await session.commit()
+
+    asyncio.run(interrupt())
+    assert asyncio.run(recover_automatic_workflows()) >= 1
+    resumed = client.get(path, headers=creator_headers).json()
+    assert resumed["workflow"]["id"] != old_id
+    assert resumed["workflow"]["script_version_id"] == script.json()["id"]
+    assert resumed["workflow"]["stage"] == "asset_extracting"
+    assert resumed["workflow"]["context_snapshot"]["restart_resumed_from"] == old_id
+    assert len(resumed["child_runs"]) == 1
+    assert asyncio.run(recover_automatic_workflows()) == 0
+    again = client.get(path, headers=creator_headers).json()
+    assert again["workflow"]["current_task_id"] == resumed["workflow"]["current_task_id"]
+    assert client.post(f"/api/v1/projects/{project_id}/director-workflows/{resumed['workflow']['id']}/stop",
+                       headers=creator_headers).status_code == 200
+
+
+@pytest.mark.parametrize("mode", ["waiting", "stopped", "completed", "failed", "manual"])
+def test_restart_does_not_take_over_user_decisions_or_real_failures(
+    client, creator_headers, monkeypatch, mode,
+):
+    from app.db.models import DirectorWorkflowStage, DirectorWorkflowStatus
+    from app.services import director_orchestration as orchestration
+
+    project_id = client.get("/api/v1/projects", headers=creator_headers).json()[1]["id"]
+    imported = client.post(f"/api/v1/projects/{project_id}/sources/import", headers=creator_headers,
+        data={"mode": "novel", "source_name": "恢复边界", "pasted_text": "第一章 暂停\n人物在房间。"}).json()
+    chapter_id = imported["chapters"][0]["id"]
+
+    async def create():
+        async with SessionLocal() as session:
+            chapter = await session.get(Chapter, chapter_id)
+            workflow = DirectorWorkflowRun(tenant_id=chapter.tenant_id, user_id=chapter.user_id,
+                project_id=project_id, chapter_id=chapter_id, stage=DirectorWorkflowStage.SCRIPT_REVIEWING,
+                status={"waiting": DirectorWorkflowStatus.WAITING_USER,
+                        "completed": DirectorWorkflowStatus.COMPLETED,
+                        "failed": DirectorWorkflowStatus.FAILED}.get(mode, DirectorWorkflowStatus.RUNNING),
+                automation_mode=mode != "manual", stop_requested=mode == "stopped", last_error="模型接口不可用")
+            session.add(workflow)
+            await session.commit()
+            return workflow.id
+
+    identity = asyncio.run(create())
+
+    async def forbidden(*args, **kwargs):
+        raise AssertionError("must not restart this workflow")
+
+    monkeypatch.setattr(orchestration, "start_automatic_workflow_from_progress", forbidden)
+    assert asyncio.run(recover_automatic_workflows()) == 0
+    assert not asyncio.run(orchestration._resume_restart_gap(identity))
+
+
 def test_automatic_director_workflow_recovers_after_worker_restart(
     client: TestClient,
     creator_headers: dict[str, str],
@@ -5458,7 +5774,9 @@ def test_automatic_director_workflow_recovers_after_worker_restart(
     task_ids = [child["task_id"] for child in detail["child_runs"]]
     assert len(task_ids) == len(set(task_ids))
     assert task_ids.count(review_task_id) == 1
-    assert all(child["max_attempts"] == 5 for child in detail["child_runs"])
+    assert all(child["max_attempts"] == (2 if child["kind"] in {
+        "storyboard_generation", "storyboard_repair", "storyboard_review",
+    } else 5) for child in detail["child_runs"])
 
 
 @pytest.mark.parametrize(
@@ -6362,7 +6680,7 @@ def test_storyboard_batch_video_prompt_and_video_queue(
     assert client.patch(
         f"/api/v1/admin/providers/{provider_id}",
         headers=admin_headers,
-        json={"api_key": "test-batch-video-key"},
+        json={"api_key": "test-batch-video-key", "max_concurrency": 3},
     ).status_code == 200
     project_id = client.get("/api/v1/projects", headers=creator_headers).json()[0]["id"]
     imported = client.post(
@@ -6452,10 +6770,19 @@ def test_storyboard_batch_video_prompt_and_video_queue(
     class PartialFailureRuntime(FakeWorkflowRuntime):
         failed = False
 
+        def __init__(self):
+            super().__init__()
+            self.second_started = asyncio.Event()
+
         async def run(self, request):
-            if fail_once and len(self.requests) == 1 and not self.failed:
-                self.failed = True
-                raise RuntimeError("second shot failed")
+            rows = json.loads(request.prompt.split("镜头数据：\n", 1)[1])
+            if rows[0]["order_index"] == 1:
+                await asyncio.wait_for(self.second_started.wait(), 2)
+            else:
+                self.second_started.set()
+                if fail_once and not self.failed:
+                    self.failed = True
+                    raise RuntimeError("second shot failed")
             return await super().run(request)
 
     runtime = PartialFailureRuntime()
@@ -7436,10 +7763,12 @@ def test_admin_cannot_use_director_agent_for_another_users_project(
     assert session.status_code == 404
 
 
+@pytest.mark.parametrize("long_source", [False, True])
 def test_director_agent_publishes_formal_script_version_for_bound_chapter(
     client: TestClient,
     creator_headers: dict[str, str],
     admin_headers: dict[str, str],
+    long_source: bool,
 ) -> None:
     project_id = client.get("/api/v1/projects", headers=creator_headers).json()[0]["id"]
     imported = client.post(
@@ -7448,8 +7777,9 @@ def test_director_agent_publishes_formal_script_version_for_bound_chapter(
         data={
             "mode": "novel",
             "source_name": "导演 Agent 正式剧本测试",
-            "pasted_text": "第一章 雨夜来客\n林遥在停电的修复室里听见三次敲门声。",
+            "pasted_text": "" if long_source else "第一章 雨夜来客\n林遥在停电的修复室里听见三次敲门声。",
         },
+        files={"file": ("long-chapter.txt", ("第一章 雨夜来客\n" + "林遥在停电的修复室里听见三次敲门声。" * 80_000).encode("utf-8"), "text/plain")} if long_source else None,
     )
     assert imported.status_code == 201
     chapter_id = imported.json()["chapters"][0]["id"]
@@ -7513,7 +7843,16 @@ def test_director_agent_publishes_formal_script_version_for_bound_chapter(
     )
     assert "雨夜来客" in chapter_context.content
     assert "林遥在停电的修复室" not in chapter_context.content
-    assert "林遥在停电的修复室" in chapter_original.content
+    if long_source:
+        original_parts = [item for item in chat_request.project_files if item.id.startswith("current-chapter-original-part-")]
+        assert len(original_parts) > 1
+        assert "林遥在停电的修复室" in original_parts[0].content
+        assert original_parts[-1].path in chapter_original.content
+        assert all(not item.editable for item in original_parts)
+        assert len(chat_request.project_files) <= 200
+        assert "林遥在停电的修复室" * 100 not in chat_request.prompt
+    else:
+        assert "林遥在停电的修复室" in chapter_original.content
     assert chapter_context.editable is False
     assert chapter_original.editable is False
     assert chapter_context.directory_id == "current-chapter-context"

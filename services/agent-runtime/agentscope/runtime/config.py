@@ -16,7 +16,7 @@ class Settings(BaseSettings):
 
     internal_token: str = "development-agent-runtime-token"
     data_root: Path = Path("runtime-data")
-    max_concurrent_runs: int = 2
+    max_concurrent_runs: int = 4
     request_timeout_seconds: float = 900.0
     max_react_iterations: int = 30
     model_context_size: int = 128_000

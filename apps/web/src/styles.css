@@ -4680,6 +4680,7 @@ body.agent-focus-open {
   min-height: 74px;
   max-height: 176px;
   overflow-x: hidden;
+  overflow-y: auto;
   resize: none;
   padding: 0;
   border: 0;
@@ -4688,6 +4689,25 @@ body.agent-focus-open {
   outline: 0;
   font-size: 14px;
   line-height: 1.65;
+}
+
+:root .agent-composer textarea::-webkit-scrollbar {
+  width: 6px;
+}
+
+:root .agent-composer textarea::-webkit-scrollbar-track {
+  background: transparent;
+}
+
+:root .agent-composer textarea::-webkit-scrollbar-thumb {
+  border-radius: 999px;
+  background: color-mix(in srgb, var(--brand) 32%, transparent);
+  background-clip: padding-box;
+}
+
+:root .agent-composer textarea::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--brand) 52%, transparent);
+  background-clip: padding-box;
 }
 
 .agent-composer-shell--active textarea {
@@ -21339,14 +21359,14 @@ body.director-resizing {
   max-height: 210px;
 }
 
+/* These boards are row-virtualized by VirtualGrid, which follows whichever
+   ancestor actually scrolls. Pinning them to a short local scroller makes the
+   virtualizer mount only the first few rows, so long chapters lose every shot
+   past the first screen on H5. Let the document own the scroll instead. */
 .director-asset-board,
 .director-storyboard-board,
 .director-video-board {
-  max-height: 290px;
-  overflow-y: auto;
   padding: 2px 3px 12px;
-  overscroll-behavior: contain;
-  scrollbar-width: thin;
 }
 
 .director-canvas__placeholder {

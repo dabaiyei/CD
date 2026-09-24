@@ -1,0 +1,265 @@
+/* Align every project panel with the floating navigation, including on H5. */
+:root .app-shell .director-page.director-workspace {
+  box-sizing: border-box;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  height: calc(100dvh - var(--topbar-height));
+  padding: 0 var(--shell-edge-gap, 14px) max(var(--shell-edge-gap, 14px), env(safe-area-inset-bottom));
+  row-gap: 12px;
+}
+
+:root .app-shell .director-page > .director-production {
+  height: 100%;
+  min-height: 0;
+  column-gap: 12px;
+}
+
+@media (max-width: 1080px) {
+  :root .app-shell .director-page.director-workspace {
+    height: auto;
+    min-height: calc(100dvh - var(--topbar-height));
+    grid-template-rows: auto auto;
+    overflow: visible;
+  }
+  :root .app-shell .director-page > .director-production {
+    height: auto;
+  }
+}
+
+@media (max-width: 760px) {
+  :root .app-shell .director-page > .director-header { margin-bottom: 12px; }
+  :root .app-shell .director-page > .director-production {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr);
+    gap: 12px;
+  }
+  :root .app-shell .director-page .director-main-workspace {
+    padding: 0;
+    gap: 12px;
+  }
+}
+
+/* Keep the embedded/teleported director chat independent of homepage layout. */
+:root .agent-studio.agent-studio--director {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  color: var(--ink);
+  background: transparent;
+}
+
+:root .agent-studio.agent-studio--director .agent-composer-shell {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  height: 100%;
+  max-height: none;
+  overflow: hidden;
+  border-radius: 18px;
+  background: var(--glass-panel, var(--surface));
+}
+
+:root .agent-studio--director .agent-workbench-header {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  flex: 0 0 auto;
+  gap: 8px;
+  padding: 12px;
+  background: transparent;
+}
+
+:root .agent-studio--director :is(.agent-workbench-header__identity, .agent-context-switcher, .agent-context-switcher__copy) {
+  min-width: 0;
+  max-width: 100%;
+}
+
+:root .agent-studio--director .agent-context-switcher__copy :is(strong, small) {
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .agent-studio--director .agent-workbench-header__actions {
+  display: flex;
+  width: 100%;
+  gap: 6px;
+  min-width: 0;
+}
+
+:root .agent-studio--director .ui-select--history {
+  flex: 1 1 0;
+  width: auto;
+  min-width: 0;
+  min-height: 40px;
+  padding: 0 10px;
+}
+
+:root .agent-studio--director .ui-select--history .ui-select__value {
+  min-width: 0;
+}
+
+:root .agent-studio--director .ui-select--history .ui-select__value span {
+  display: block;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+:root .agent-studio--director .ui-select--history .ui-select__chevron {
+  display: block;
+  flex-shrink: 0;
+}
+
+:root .agent-studio--director .agent-toolbar-button {
+  flex: 0 0 40px;
+  width: 40px;
+  min-width: 40px;
+  min-height: 40px;
+  padding: 0;
+  color: var(--ink-secondary);
+  background: var(--glass-inset, var(--surface-subtle));
+}
+
+:root .agent-studio--director .agent-toolbar-button span { display: none; }
+
+:root .agent-studio--director .agent-workspace-body,
+:root .agent-studio--director .agent-conversation {
+  display: flex;
+  flex: 1 1 0;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  height: auto;
+  overflow: hidden;
+  padding: 0;
+  background: transparent;
+}
+
+:root .agent-studio.agent-studio--director .agent-thread {
+  display: block;
+  flex: 1 1 0;
+  width: 100%;
+  min-width: 0;
+  min-height: 0;
+  max-height: none;
+  padding: 16px 12px 20px;
+  overflow-x: hidden;
+  overflow-y: auto;
+  scrollbar-gutter: stable;
+  scroll-behavior: auto;
+  overscroll-behavior-y: contain;
+  background: transparent;
+}
+
+:root .agent-studio--director .agent-empty-guide {
+  width: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 18px 14px;
+}
+
+:root .agent-studio--director .agent-empty-guide__surface { min-width: 0; }
+:root .agent-studio--director .agent-starters {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+  width: 100%;
+  overflow: visible;
+}
+:root .agent-studio--director .agent-starters button {
+  width: 100%;
+  min-width: 0;
+  min-height: 40px;
+  padding: 8px;
+  white-space: normal;
+  text-align: left;
+  color: var(--ink-secondary);
+  background: var(--glass-inset, var(--surface-subtle));
+}
+
+:root .agent-studio--director .agent-message {
+  min-width: 0;
+  max-width: 100%;
+}
+:root .agent-studio--director .agent-message__bubble {
+  min-width: 0;
+  max-width: 100%;
+  overflow-wrap: anywhere;
+}
+
+:root .agent-studio.agent-studio--director .agent-composer {
+  position: relative;
+  inset: auto;
+  flex: 0 0 auto;
+  width: calc(100% - 24px);
+  min-width: 0;
+  margin: 0 12px 12px;
+  padding: 12px;
+  border: 1px solid var(--glass-edge, var(--line));
+  border-radius: 14px;
+  background: var(--glass-inset, var(--surface-subtle));
+  box-shadow: none;
+}
+
+:root .agent-studio--director .agent-composer textarea {
+  min-height: 52px;
+  max-height: min(160px, 25dvh);
+  overflow-y: auto;
+  color: var(--ink);
+  font-size: 14px;
+}
+:root .agent-studio--director .agent-composer textarea::placeholder { color: var(--ink-tertiary); }
+:root .agent-studio--director .agent-composer__actions { min-width: 0; gap: 8px; }
+:root .agent-studio--director .agent-composer__submit-group { margin-left: auto; }
+:root .agent-studio--director :is(.agent-attach-button, .agent-send-button) { min-width: 40px; min-height: 40px; }
+
+:root .agent-studio.agent-studio--director.agent-studio--focus {
+  height: 100dvh;
+  padding: max(12px, env(safe-area-inset-top)) 12px max(12px, env(safe-area-inset-bottom));
+  background: var(--glass-popup, var(--surface));
+}
+:root .agent-studio--director.agent-studio--focus .agent-composer-shell {
+  width: min(100%, 1100px);
+  margin-inline: auto;
+}
+
+:root .director-script-document > header { flex-wrap: wrap; }
+:root .director-script-heading { flex: 1 1 220px; }
+:root .director-script-heading > div { min-width: 0; }
+:root .director-script-document .director-script-actions {
+  display: flex;
+  flex: 0 1 auto;
+  flex-wrap: wrap;
+  gap: 8px;
+  min-width: 0;
+}
+:root .director-script-actions .ui-select { width: auto; min-width: 100px; }
+:root .director-script-actions .button { min-height: 40px; }
+:root .director-script-editor-dialog .script-editor { min-width: 0; }
+:root .director-script-editor-dialog .script-editor__content textarea {
+  min-height: 240px;
+  height: 42dvh;
+  max-height: 60dvh;
+  resize: vertical;
+  line-height: 1.85;
+}
+
+@media (max-width: 760px) {
+  :root .director-agent-workspace { min-width: 0; overflow: hidden; }
+  :root .director-agent-workspace > .agent-studio.agent-studio--director {
+    height: min(720px, max(400px, calc(100svh - 100px)));
+  }
+  :root .agent-studio--director .agent-composer textarea { font-size: 16px; }
+  :root .director-script-editor-dialog .script-editor__meta { grid-template-columns: minmax(0, 1fr); }
+  :root .director-script-editor-dialog .script-status-picker { flex-wrap: wrap; }
+  :root .director-script-editor-dialog .script-status-picker button { flex: 1 1 auto; }
+  :root .director-script-editor-dialog .dialog-footer { flex-wrap: wrap; gap: 8px; }
+  :root .director-script-editor-dialog .dialog-selection-count { flex: 1 1 100%; }
+}

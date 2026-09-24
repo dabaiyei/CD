@@ -128,6 +128,8 @@ async def create_project(
     from app.services.ai_creation import validate_creation_capabilities
 
     await validate_creation_capabilities(session, values)
+    from app.services.first_frame_policy import validate_project_first_frame
+    await validate_project_first_frame(session, values)
     project = Project(tenant_id=user.tenant_id, owner_id=user.id, **values)
     session.add(project)
     await session.commit()
@@ -207,6 +209,11 @@ async def update_project(
         if "text_model_id" in values and not values["text_model_id"]:
             raise HTTPException(status_code=422, detail="AI 创作项目必须保留文本模型")
     await validate_project_relations(session, user.tenant_id, values)
+    from app.services.first_frame_policy import validate_project_first_frame
+    await validate_project_first_frame(session, {
+        "first_frame_mode": values.get("first_frame_mode", project.first_frame_mode),
+        "video_model_id": values.get("video_model_id", project.video_model_id),
+    })
     for field, value in values.items():
         setattr(project, field, value)
     from app.services.ai_creation import validate_creation_capabilities

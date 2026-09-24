@@ -245,6 +245,8 @@ async def _legacy_execute(task_id, gateway_factory):
                 raise RuntimeError("人物或招式参考已修改，请重新生成首帧")
             shot.reference_image_url = url
             shot.video_prompt = ""
+            from app.services.chapter_prompt_files import sync_chapter_prompt_files
+            await sync_chapter_prompt_files(session, board)
             task.status = TaskStatus.SUCCEEDED
             task.result_payload = {"shot_id": shot.id, "media_url": url, "source_asset_versions": asset_versions,
                 "frame_layout": layout, "effective_image_prompt": prompt, "spatial_prompt_version": 2}

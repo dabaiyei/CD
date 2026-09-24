@@ -129,6 +129,36 @@ function removeGroup(index: number): void {
   next.duration_resolution_map.splice(index, 1)
   emit('update:modelValue', next)
 }
+
+/**
+ * Providers often use their own names for modes and resolutions. These maps
+ * translate our internal values (e.g. `first_frame` / `720p`) into whatever the
+ * upstream expects (e.g. `reference` / `720P`). Leaving them empty sends the
+ * internal value, which upstreams reject with HTTP 400.
+ */
+function mappingText(field: 'provider_mode_map' | 'provider_resolution_map'): string {
+  const value = props.modelValue[field]
+  if (!value || typeof value !== 'object') return ''
+  return Object.entries(value as Record<string, string>)
+    .filter(([key, item]) => key && typeof item === 'string' && item)
+    .map(([key, item]) => `${key}=${item}`)
+    .join(', ')
+}
+
+function setMapping(field: 'provider_mode_map' | 'provider_resolution_map', raw: string): void {
+  const next = clone()
+  const entries: Array<[string, string]> = []
+  for (const chunk of raw.split(/[,，\n]+/)) {
+    const parts = chunk.split(/[=:：]/)
+    if (parts.length !== 2) continue
+    const key = (parts[0] ?? '').trim()
+    const mapped = (parts[1] ?? '').trim()
+    if (key && mapped) entries.push([key, mapped])
+  }
+  if (entries.length) next[field] = Object.fromEntries(entries)
+  else delete next[field]
+  emit('update:modelValue', next)
+}
 </script>
 
 <template>
@@ -188,6 +218,19 @@ function removeGroup(index: number): void {
       <label class="field"><span>提示词语言</span><input :value="modelValue.prompt_languages.join(', ')" placeholder="zh-CN, en-US" @change="setList('prompt_languages', ($event.target as HTMLInputElement).value)" /><small>使用标准语言代码</small></label>
       <button type="button" class="capability-switch" :aria-pressed="modelValue.negative_prompt_supported" @click="$emit('update:modelValue', { ...clone(), negative_prompt_supported: !modelValue.negative_prompt_supported })"><span><i></i></span><div><strong>负面提示词</strong><small>模型支持独立负面提示词字段</small></div></button>
       <button type="button" class="capability-switch" :aria-pressed="modelValue.asynchronous" @click="$emit('update:modelValue', { ...clone(), asynchronous: !modelValue.asynchronous })"><span><i></i></span><div><strong>异步任务</strong><small>创建后通过任务 ID 轮询结果</small></div></button>
+    </section>
+
+    <section class="capability-section capability-meta-grid">
+      <label class="field">
+        <span>生成模式字段映射</span>
+        <input :value="mappingText('provider_mode_map')" placeholder="text_to_video=text, first_frame=reference" @change="setMapping('provider_mode_map', ($event.target as HTMLInputElement).value)" />
+        <small>把内部模式翻译成供应商实际接受的取值，留空则原样发送</small>
+      </label>
+      <label class="field">
+        <span>分辨率字段映射</span>
+        <input :value="mappingText('provider_resolution_map')" placeholder="720p=720P" @change="setMapping('provider_resolution_map', ($event.target as HTMLInputElement).value)" />
+        <small>把内部分辨率翻译成供应商实际接受的取值，留空则原样发送</small>
+      </label>
     </section>
   </div>
 </template>

@@ -1,5 +1,9 @@
 # Architecture
 
+## Agent retrieval boundary
+
+AgentScope Runtime 0.5 exposes scoped Ripgrep, AstGrep and MarkItDown tools. Automatic tasks use read-only `retrieval` mode, while chat retains the existing authorized workspace edits. Large sources and reference bodies are immutable files rather than model prompt prefixes; storyboard reviews mount one target shot and retrieve source/continuity evidence as needed. API code still validates and commits structured results, preserves checkpoints and owns billing. Document attachments have separate checksum-verified binary snapshots and never enter image reference lists. Native parsing/conversion runs in bounded subprocesses without shell access. See [retrieval integration](agent-retrieval.md) for limits and upgrade requirements.
+
 ## Service boundaries
 
 ```text

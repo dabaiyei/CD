@@ -148,6 +148,7 @@ const revisionLabel: Record<string, string> = {
   image_generation: 'AI 生图',
   image_upload: '用户上传',
   library_copy: '资产库复制',
+  library_replace: '资产库同名替换',
   restore: '历史恢复',
   migration_snapshot: '历史基线',
 }
@@ -170,6 +171,10 @@ const referenceAudioUrl = computed(() => metadataString(editorAsset.value, 'refe
 const referenceAudioName = computed(() => metadataString(editorAsset.value, 'reference_audio_filename'))
 const referenceAudioMime = computed(() => metadataString(editorAsset.value, 'reference_audio_mime_type'))
 const referenceAudioSize = computed(() => Number(editorAsset.value?.asset_metadata.reference_audio_size_bytes || 0))
+const staleParentVersion = computed(() => {
+  const value = editorAsset.value?.asset_metadata.stale_parent_version
+  return typeof value === 'number' ? value : 0
+})
 const parentCandidates = computed(() => sourceAssets.value.filter((asset) => (
   !asset.parent_asset_id
   && asset.asset_type === form.asset_type
@@ -530,7 +535,10 @@ async function restoreRevision(): Promise<void> {
       generation_prompt: restored.generation_prompt,
     })
     await Promise.all([refreshAssets(), loadRevisions(restored.id)])
-    toast.show(`已恢复为 v${restored.version}`, { tone: 'success' })
+    toast.show(`已切换为 v${restored.version}`, {
+      message: '引用该资产的镜头与视频提示词已同步，需要时请重新生成视频',
+      tone: 'success',
+    })
   } catch (error) {
     toast.show('历史版本恢复失败', { message: error instanceof Error ? error.message : undefined, tone: 'error' })
   } finally {
@@ -548,12 +556,24 @@ async function transferAsset(asset: AssetItem): Promise<void> {
     const path = asset.scope === 'project'
       ? `/projects/${props.projectId}/assets/${asset.id}/export-global`
       : `/projects/${props.projectId}/assets/import/${asset.id}`
-    await api(path, { method: 'POST' })
+    const result = await api<AssetItem>(path, { method: 'POST' })
     await refreshAssets()
-    toast.show(asset.scope === 'project' ? '已复制到全局资产库' : '已导入项目塑造资产', {
-      message: asset.parent_asset_id ? '基础资产关系已一并保留' : undefined,
-      tone: 'success',
-    })
+    if (asset.scope === 'project') {
+      toast.show('已复制到全局资产库', {
+        message: asset.parent_asset_id ? '基础资产关系已一并保留' : undefined,
+        tone: 'success',
+      })
+    } else if (typeof result.asset_metadata.replaced_version === 'number') {
+      toast.show(`已用“${asset.name}”替换项目资产`, {
+        message: '同名资产直接更新并启用，分镜与视频提示词已同步',
+        tone: 'success',
+      })
+    } else {
+      toast.show('已导入项目塑造资产', {
+        message: asset.parent_asset_id ? '基础资产关系已一并保留' : undefined,
+        tone: 'success',
+      })
+    }
   } catch (error) {
     toast.show('资产复制失败', { message: error instanceof Error ? error.message : undefined, tone: 'error' })
   } finally {
@@ -746,6 +766,7 @@ onBeforeUnmount(() => {
           <button v-for="technique in techniqueChildren" :key="technique.id" class="technique-panel__item" type="button" @click="openEditor(technique)"><img v-image-preview="technique.media_url" v-if="technique.media_url" :src="technique.media_url" alt="" loading="lazy" /><Swords v-else :size="24" /><span>{{ technique.name }}<small>{{ technique.media_url ? '参考图已就绪' : '待生成参考图' }}</small></span><ChevronRight :size="16" /></button>
         </section>
         <p v-if="editorAsset?.asset_metadata.combat_technique" class="asset-lineage-hint"><Swords :size="16" />人物专属招式：说明作为长期记忆，图片作为视频外观参考。可在下方编辑或上传图片。</p>
+        <p v-if="staleParentVersion" class="asset-lineage-hint asset-lineage-hint--stale"><GitBranchPlus :size="16" />主资产已切换到新版本（v{{ staleParentVersion }}），建议重新生成本衍生资产的图片，确保与主图保持一致。</p>
         <form id="asset-workbench-form" class="asset-detail-form" @submit.prevent="saveAsset(false)">
           <div class="asset-detail-form__types"><button v-for="type in assetTypes.filter((item) => item.value !== 'all')" :key="type.value" type="button" :disabled="Boolean(editorAssetId)" :aria-pressed="form.asset_type === type.value" @click="setAssetType(type.value as AssetType)"><component :is="type.icon" :size="15" />{{ type.label }}</button></div>
           <label><span>资产名称</span><input v-model="form.name" required maxlength="160" placeholder="输入资产名称" /></label>
@@ -964,6 +985,7 @@ onBeforeUnmount(() => {
 .asset-detail-form textarea { resize: vertical; padding: 10px 11px; line-height: 1.65; }
 .asset-detail-form input:focus, .asset-detail-form textarea:focus, .asset-detail-form select:focus { border-color: rgb(8 127 122 / 55%); background: #fff; box-shadow: 0 0 0 3px rgb(8 127 122 / 9%); }
 .asset-lineage-hint { display: flex; align-items: center; gap: 5px; color: #087f7a; font-size: 8px; font-weight: 500; }
+.asset-lineage-hint--stale { color: #a4611a; }
 .asset-prompt-field { position: relative; }
 .asset-prompt-field textarea { padding-bottom: 48px; }
 .asset-prompt-field > button { position: absolute; right: 7px; bottom: 7px; display: inline-flex; min-height: 34px; align-items: center; gap: 6px; padding: 0 9px; border: 0; border-radius: 5px; color: #087f7a; background: #e7f4f2; cursor: pointer; font-size: 9px; font-weight: 700; transition-property: color, background-color, scale, opacity; transition-duration: 150ms; }

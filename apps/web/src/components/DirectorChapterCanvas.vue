@@ -8,6 +8,7 @@ import {
   Clapperboard,
   Download,
   FileText,
+  FilePenLine,
   Film,
   History,
   Image,
@@ -21,6 +22,7 @@ import {
 } from 'lucide-vue-next'
 
 import BaseDialog from '@/components/BaseDialog.vue'
+import UiSelect from '@/components/UiSelect.vue'
 import VideoConcatButton from '@/components/VideoConcatButton.vue'
 import VirtualGrid from '@/components/VirtualGrid.vue'
 import { apiBlob } from '@/lib/api'
@@ -33,6 +35,7 @@ import type { AssetItem, Chapter, DirectorWorkflowDetail, ScriptVersion, Storybo
 const props = defineProps<{
   chapter: Chapter
   scripts: ScriptVersion[]
+  selectedScriptId?: string
   assets: AssetItem[]
   storyboard: StoryboardVersionDetail | null
   videoResolution?: string | null
@@ -47,7 +50,10 @@ const props = defineProps<{
 }>()
 const emit = defineEmits<{
   openAssets: []
-  queueVideoPrompts: [shotIds: string[]]
+  editScript: [script?: ScriptVersion]
+  selectScript: [id: string]
+  activateScript: [script: ScriptVersion]
+  queueVideoPrompts: [shotIds: string[], overwrite: boolean]
   queueBatchVideos: [shotIds: string[]]
   queueShotVideo: [shot: StoryboardShot]
   startAutomation: []
@@ -58,6 +64,7 @@ const emit = defineEmits<{
 const tab = ref<'source' | 'script' | 'assets' | 'storyboard' | 'video'>('source')
 const selectedVideoShotId = ref('')
 const selectedVideoShotIds = ref<string[]>([])
+const selectedVideoShotIdSet = computed(() => new Set(selectedVideoShotIds.value))
 const playingVideoUrl = ref('')
 const downloadingVideos = ref(false)
 const automationConfirmOpen = ref(false)
@@ -97,7 +104,14 @@ const automationStageLabels: Record<string, string> = {
 
 const storyboardShots = computed(() => props.storyboard?.shots ?? [])
 const storyboardClips = computed(() => props.storyboard?.video_clips ?? [])
-const activeScript = computed(() => props.scripts.find((item) => item.is_active) ?? props.scripts[0] ?? null)
+const activeScript = computed(() => props.scripts.find((item) => item.id === props.selectedScriptId)
+  ?? props.scripts.find((item) => item.is_active) ?? props.scripts[0] ?? null)
+const scriptVersions = computed(() => props.scripts.map((script) => ({
+  value: script.id,
+  label: `v${script.version}${script.is_active ? ' · 生效中' : ''}`,
+  description: script.title,
+})))
+const scriptStateLabels: Record<string, string> = { draft: '草稿', reviewing: '审核中', approved: '审核通过', changes_requested: '待修改', rejected: '未通过' }
 const readyAssets = computed(() => props.assets.filter((item) => Boolean(item.media_url)))
 const assetsById = computed(() => new Map(props.assets.map((asset) => [asset.id, asset])))
 const shotAssetsById = computed(() => new Map(
@@ -154,15 +168,23 @@ const selectedVideoShotAssets = computed(() => (
   selectedVideoShot.value ? shotAssets(selectedVideoShot.value) : []
 ))
 const allVideoShotsSelected = computed(() => Boolean(storyboardShots.value.length)
-  && storyboardShots.value.every((shot) => selectedVideoShotIds.value.includes(shot.id)))
+  && storyboardShots.value.every((shot) => selectedVideoShotIdSet.value.has(shot.id)))
 const selectedVideoShots = computed(() => {
   const shots = storyboardShots.value
   return selectedVideoShotIds.value.length
-    ? shots.filter((shot) => selectedVideoShotIds.value.includes(shot.id))
+    ? shots.filter((shot) => selectedVideoShotIdSet.value.has(shot.id))
     : shots
 })
 const videoPromptEligibleShots = computed(() => selectedVideoShots.value.filter(
   (shot) => !busyVideoPromptShotIdSet.value.has(shot.id) && !busyShotIdSet.value.has(shot.id),
+))
+/**
+ * The batch button fills the gaps left by a failed run: only shots that still
+ * have no prompt. Rewriting an existing prompt is a deliberate per-shot action
+ * ("重写提示词"), so a retry never re-runs and re-bills the whole chapter.
+ */
+const videoPromptMissingShots = computed(() => videoPromptEligibleShots.value.filter(
+  (shot) => !shotHasVideoPrompt(shot),
 ))
 const selectedVideoUrl = computed(() => activeClips.value.get(selectedVideoShot.value?.id || '')?.media_url || '')
 watch([selectedVideoUrl, tab], () => { playingVideoUrl.value = '' })
@@ -286,12 +308,14 @@ function toggleAllVideoShots(): void {
 
 function queueVideoPrompts(): void {
   if (!props.storyboard) return
-  emit('queueVideoPrompts', videoPromptEligibleShots.value.map((shot) => shot.id))
+  // Fill only the gaps: shots whose last attempt failed or never ran. Existing
+  // prompts are rewritten one at a time from the shot panel.
+  emit('queueVideoPrompts', videoPromptMissingShots.value.map((shot) => shot.id), false)
 }
 
 function queueSelectedVideoPrompt(): void {
   if (!props.storyboard || !selectedVideoShot.value) return
-  emit('queueVideoPrompts', [selectedVideoShot.value.id])
+  emit('queueVideoPrompts', [selectedVideoShot.value.id], true)
 }
 
 function queueBatchVideos(): void {
@@ -423,8 +447,12 @@ watch(
 
     <section v-else-if="tab === 'script' && activeScript" class="director-script-document">
       <header>
-        <div><span><Clapperboard :size="16" /></span><div><small>当前生效剧本 · v{{ activeScript.version }}</small><strong>{{ activeScript.title }}</strong></div></div>
-        <span :data-status="activeScript.status"><Check :size="13" />{{ activeScript.status === 'approved' ? '审核通过' : '审核中' }}</span>
+        <div class="director-script-heading"><span><Clapperboard :size="16" /></span><div><small>{{ activeScript.is_active ? '当前生效剧本' : '剧本版本' }} · v{{ activeScript.version }} · {{ scriptStateLabels[activeScript.status] || activeScript.status }}</small><strong>{{ activeScript.title }}</strong></div></div>
+        <div class="director-script-actions">
+          <UiSelect v-if="scripts.length > 1" :model-value="activeScript.id" :options="scriptVersions" placeholder="查看剧本版本" variant="compact" @update:model-value="emit('selectScript', $event)" />
+          <button v-if="!activeScript.is_active" class="button button--ghost" type="button" :disabled="automationLocked" @click="emit('activateScript', activeScript)"><Check :size="16" />设为生效</button>
+          <button class="button button--secondary" type="button" :disabled="automationLocked" @click="emit('editScript', activeScript)"><FilePenLine :size="16" />编辑剧本</button>
+        </div>
       </header>
       <article><p>{{ activeScript.content }}</p></article>
       <footer v-if="activeScript.review_notes"><strong>版本说明</strong><p>{{ activeScript.review_notes }}</p></footer>
@@ -432,10 +460,10 @@ watch(
 
     <section v-else-if="tab === 'assets' && assets.length" class="director-asset-board">
       <header><div><strong>本章塑造资产</strong><span>{{ readyAssets.length }} / {{ assets.length }} 已定稿</span></div><button type="button" :disabled="automationLocked" @click="emit('openAssets')"><LockKeyhole v-if="automationLocked" :size="15" /><Boxes v-else :size="15" />{{ automationLocked ? '全自动运行中' : '管理资产' }}</button></header>
-      <VirtualGrid :items="assets" :min-column-width="150" :estimate-row-height="196">
+      <VirtualGrid :items="assets" :min-column-width="150" :media-aspect-ratio="4 / 3" :card-footer-height="48">
         <template #default="{ item: asset }">
-        <article>
-          <div><img v-image-preview="asset.media_url" v-if="asset.media_url" :src="asset.media_url" :alt="asset.name" /><span v-else><Image :size="22" /></span><i :data-ready="Boolean(asset.media_url)">{{ asset.media_url ? '已定稿' : asset.generation_prompt ? '待生图' : '待提示词' }}</i></div>
+        <article class="director-media-card director-media-card--asset">
+          <div><img v-image-preview="asset.media_url" v-if="asset.media_url" :src="mediaPreview(asset.media_url)" :alt="asset.name" loading="lazy" decoding="async" /><span v-else><Image :size="22" /></span><i :data-ready="Boolean(asset.media_url)">{{ asset.media_url ? '已定稿' : asset.generation_prompt ? '待生图' : '待提示词' }}</i></div>
           <strong>{{ asset.name }}</strong><small>{{ asset.asset_type === 'character' ? '人物' : asset.asset_type === 'scene' ? '场景' : asset.asset_type === 'prop' ? '道具' : '素材' }}</small>
         </article>
         </template>
@@ -444,10 +472,10 @@ watch(
 
     <section v-else-if="tab === 'storyboard' && storyboard" class="director-storyboard-board">
       <header><div><strong>导演分镜 v{{ storyboard.version.version }}</strong><span>{{ storyboardShots.length }} 个镜头</span></div><span><Sparkles :size="14" />已通过资产校验</span></header>
-      <VirtualGrid :items="storyboardShots" :min-column-width="150" :estimate-row-height="230">
+      <VirtualGrid :items="storyboardShots" :min-column-width="150" :media-aspect-ratio="4 / 3" :card-footer-height="76">
         <template #default="{ item: shot }">
-        <article>
-          <div><img v-image-preview="shot.reference_image_url" v-if="shot.reference_image_url" :src="shot.reference_image_url" :alt="shot.title" /><span v-else><Camera :size="24" /></span><b class="tabular-nums">{{ String(shot.order_index).padStart(2, '0') }}</b></div>
+        <article class="director-media-card director-media-card--storyboard">
+          <div><img v-image-preview="shot.reference_image_url" v-if="shot.reference_image_url" :src="mediaPreview(shot.reference_image_url)" :alt="shot.title" loading="lazy" decoding="async" /><span v-else><Camera :size="24" /></span><b class="tabular-nums">{{ String(shot.order_index).padStart(2, '0') }}</b></div>
           <header><strong>{{ shot.title }}</strong><small>{{ shot.shot_type }} · {{ shot.duration_seconds }}s</small></header>
           <p>{{ shot.action_description || shot.scene_description }}</p>
         </article>
@@ -464,10 +492,10 @@ watch(
         <div class="director-video-board__actions">
           <button type="button" class="button button--secondary" :disabled="!downloadableVideoClips.length || downloadingVideos" @click="downloadReadyVideos"><LoaderCircle v-if="downloadingVideos" class="spin" :size="15" /><Download v-else :size="15" />{{ downloadingVideos ? '正在打包' : '下载已完成' }}</button>
           <VideoConcatButton v-if="storyboard" :project-id="chapter.project_id" :chapter-id="chapter.id" :storyboard-id="storyboard.version.id" :count="downloadableVideoClips.length" />
-          <button type="button" class="button button--secondary" :disabled="automationLocked || !videoPromptEligibleShots.length || videoAction === 'videoPrompt' || videoPromptTaskActive" @click="queueVideoPrompts">
+          <button type="button" class="button button--secondary" :disabled="automationLocked || !videoPromptMissingShots.length || videoAction === 'videoPrompt' || videoPromptTaskActive" @click="queueVideoPrompts">
             <LoaderCircle v-if="videoAction === 'videoPrompt' || videoPromptTaskActive" class="spin" :size="15" />
             <WandSparkles v-else :size="15" />
-            批量提示词
+            补齐缺失提示词<span v-if="videoPromptMissingShots.length" class="tabular-nums">{{ videoPromptMissingShots.length }}</span>
           </button>
           <button type="button" class="button button--primary" :disabled="automationLocked || !videoEligibleShots.length || Boolean(videoAction)" @click="queueBatchVideos">
             <LoaderCircle v-if="videoAction === 'batchVideo'" class="spin" :size="15" />
@@ -544,14 +572,17 @@ watch(
         </div>
       </section>
 
-      <VirtualGrid class="director-video-shot-grid" :items="storyboardShots" :min-column-width="150" :estimate-row-height="236">
+      <VirtualGrid class="director-video-shot-grid" :items="storyboardShots" :min-column-width="150" :media-aspect-ratio="16 / 9" :card-footer-height="56">
         <template #default="{ item: shot }">
           <article
-            v-memo="[shot.version, shotFallbackImage(shot), shot.has_video_prompt, selectedVideoShot?.id === shot.id, selectedVideoShotIds.includes(shot.id), busyShotIdSet.has(shot.id), busyVideoPromptShotIdSet.has(shot.id), activeClips.get(shot.id)?.id, activeClips.get(shot.id)?.status]"
-            :class="{ active: selectedVideoShot?.id === shot.id, selected: selectedVideoShotIds.includes(shot.id) }"
+            class="director-media-card director-media-card--video"
+            :class="{ active: selectedVideoShot?.id === shot.id, selected: selectedVideoShotIdSet.has(shot.id) }"
+            tabindex="0" :aria-label="`查看镜头：${shot.title}`"
             @click="selectVideoShot(shot)"
+            @keydown.enter.self="selectVideoShot(shot)"
+            @keydown.space.self.prevent="selectVideoShot(shot)"
           >
-            <button type="button" :aria-pressed="selectedVideoShotIds.includes(shot.id)" :title="selectedVideoShotIds.includes(shot.id) ? '取消选择' : '选择镜头'" @click.stop="toggleVideoShotSelection(shot.id)"><Check :size="13" /></button>
+            <button type="button" :aria-pressed="selectedVideoShotIdSet.has(shot.id)" :title="selectedVideoShotIdSet.has(shot.id) ? '取消选择' : '选择镜头'" @click.stop="toggleVideoShotSelection(shot.id)"><Check :size="13" /></button>
             <div>
               <img v-image-preview="shotFallbackImage(shot)" v-if="shotFallbackImage(shot)" :src="mediaPreview(shotFallbackImage(shot))" :alt="shot.title" loading="lazy" decoding="async" />
               <span v-else><Camera :size="20" /></span>
@@ -571,6 +602,7 @@ watch(
 
     <section v-else class="director-canvas__placeholder">
       <span><Sparkles :size="22" /></span><strong>{{ emptyStageContent.title }}</strong><p>{{ emptyStageContent.description }}</p>
+      <button v-if="tab === 'script'" type="button" class="button button--secondary" :disabled="automationLocked" @click="emit('editScript')"><FilePenLine :size="16" />手动创建剧本</button>
     </section>
   </main>
 
@@ -613,6 +645,22 @@ watch(
 </template>
 
 <style scoped>
+/* Match the virtualizer's geometry: media + bounded footer, independent of
+   image decoding, long text, selection state and provider progress updates. */
+.director-media-card { height: 100%; min-width: 0; }
+.director-media-card > div { width: 100%; aspect-ratio: 4 / 3; }
+.director-media-card--video > div { aspect-ratio: 16 / 9; }
+.director-media-card > header { height: 22px; min-width: 0; margin-top: 6px; gap: 4px; }
+.director-media-card > header strong { min-width: 0; }
+.director-media-card > header small { max-width: 55%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.director-media-card > p { max-height: 34px; margin: 4px 0 0; overflow: hidden; }
+.director-media-card img { display: block; }
+.director-media-card--asset > strong { line-height: 16px; }
+.director-media-card--asset > small { line-height: 14px; }
+.director-media-card--video > p { white-space: nowrap; text-overflow: ellipsis; line-height: 16px; }
+.director-video-shot-grid.virtual-grid {
+  display: block; overflow: visible; margin-right: 0; padding: 0; scroll-snap-type: none;
+}
 .director-video-play-trigger { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 8px; border: 0; color: white; background: rgb(0 0 0 / 20%); cursor: pointer; font: inherit; }
 @media (hover: none) {
   .director-video-shot-grid article > button { backdrop-filter: none; -webkit-backdrop-filter: none; }

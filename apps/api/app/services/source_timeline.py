@@ -16,6 +16,10 @@ class Span:
     start: float
     end: float
     cue: str
+    # Full passage this marker governs, up to the next marker. ``cue`` is a
+    # short preview for planning labels; batches need the complete text so a
+    # window request can carry just its own source instead of the chapter body.
+    body: str = ""
 
     @property
     def label(self) -> str:
@@ -45,7 +49,8 @@ def extract(source: str) -> list[Span]:
         stop = matches[index + 1].start() if index + 1 < len(matches) else len(source)
         tail = source[match.end():stop].splitlines()
         cue = " ".join(line.strip() for line in tail[:2])[:180]
-        spans.append(Span(start, end, cue))
+        body = source[match.end():stop].strip(" -—–~～\n\t")
+        spans.append(Span(start, end, cue, body))
     return spans
 
 

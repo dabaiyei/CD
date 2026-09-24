@@ -13,7 +13,7 @@ import { ApiError } from '@/lib/api'
 import { useAuthStore } from '@/stores/auth'
 import { useProjectsStore, type ProjectPayload } from '@/stores/projects'
 import { useToastStore } from '@/stores/toast'
-import type { Project } from '@/types'
+import type { Project, VideoModelCapabilities } from '@/types'
 
 const router = useRouter()
 const route = useRoute()
@@ -39,6 +39,7 @@ const projectsOnly = computed(() => route.name === 'projects')
 const emptyForm = (): Partial<ProjectPayload> & Pick<ProjectPayload, 'name'> => ({
   creation_mode: 'import',
   cinematic: false,
+  first_frame_mode: false,
   text_model_id: null,
   name: '',
   description: '',
@@ -60,6 +61,18 @@ const imageModelOptions = computed(() => (projectStore.options?.image_models ?? 
 const videoModelOptions = computed(() => (projectStore.options?.video_models ?? []).map((item) => ({ value: item.id, label: item.name, description: '视频生成模型', icon: Film })))
 const textModelOptions = computed(() => (projectStore.options?.text_models ?? []).map((item) => ({ value: item.id, label: item.name, icon: Sparkles })))
 const selectedVideoCapabilities = computed(() => projectStore.options?.video_models.find((item) => item.id === form.video_model_id)?.capabilities ?? {})
+const supportsFirstFrame = computed(() => {
+  const caps = selectedVideoCapabilities.value as Partial<VideoModelCapabilities>
+  const images = caps.reference_limits?.image
+  const formats = images?.accepted_mime_types
+  return capabilityStrings(caps.generation_modes).includes('first_frame')
+    && Boolean(images?.enabled) && Number(images?.max_count ?? 0) >= 1
+    && Number(images?.min_count ?? 0) <= 1
+    && (!formats?.length || formats.some((format: string) => ['image/png', 'image/jpeg', 'image/webp'].includes(format)))
+})
+watch(() => form.video_model_id, () => {
+  if (dialogOpen.value && !supportsFirstFrame.value) form.first_frame_mode = false
+})
 const selectedImageCapabilities = computed(() => projectStore.options?.image_models.find((item) => item.id === form.image_model_id)?.capabilities ?? {})
 function capabilityStrings(value: unknown): string[] { return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : [] }
 const videoResolutionOptions = computed(() => {
@@ -426,6 +439,14 @@ async function generateCover(): Promise<void> {
             <span>视频分辨率</span>
             <UiSelect :model-value="form.video_resolution ?? ''" :options="videoResolutionOptions" placeholder="选择视频分辨率" @update:model-value="form.video_resolution = $event" />
           </div>
+          <div class="field field--full project-first-frame-setting">
+            <button class="button" :class="form.first_frame_mode ? 'button--primary' : 'button--secondary'" type="button"
+              role="switch" :aria-checked="Boolean(form.first_frame_mode)" aria-describedby="first-frame-description"
+              :disabled="!supportsFirstFrame && !form.first_frame_mode" @click="form.first_frame_mode = !form.first_frame_mode">
+              <Film :size="18" /><span>首帧模式</span><small>{{ form.first_frame_mode ? '已开启' : '已关闭' }}</small>
+            </button>
+            <small id="first-frame-description">{{ !supportsFirstFrame ? '当前视频模型不支持单张首帧输入，请切换支持首帧的模型。' : form.first_frame_mode ? '关联镜头等待上一段完成，用真实尾帧接续；独立镜头可同时生成。' : '各镜头独立生成，不等待前镜视频；通过资产、站位和动作规划保持连贯。' }}</small>
+          </div>
           <div class="field">
             <span>影片比例</span>
             <UiSelect :disabled="Boolean(editingId && form.creation_mode === 'ai')" :model-value="form.aspect_ratio ?? ''" :options="aspectRatioOptions" placeholder="选择影片比例" @update:model-value="form.aspect_ratio = $event" />
@@ -533,3 +554,9 @@ async function generateCover(): Promise<void> {
     </BaseDialog>
   </div>
 </template>
+
+<style scoped>
+.project-first-frame-setting { gap: 8px; min-width: 0; }
+.project-first-frame-setting .button { min-height: 44px; width: fit-content; max-width: 100%; flex-wrap: wrap; }
+.project-first-frame-setting small { white-space: normal; line-height: 1.6; overflow-wrap: anywhere; }
+</style>

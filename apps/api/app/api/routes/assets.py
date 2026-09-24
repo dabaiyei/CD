@@ -42,7 +42,8 @@ from app.domain.schemas import (
     AssetUpdate,
     TaskPublic,
 )
-from app.services.asset_identity import extraction_asset_catalog, reusable_asset
+from app.services.asset_identity import asset_name_key, extraction_asset_catalog, reusable_asset
+from app.services.asset_propagation import mark_asset_image_version, propagate_asset_change
 from app.services.asset_revisions import snapshot_asset_revision
 from app.services.asset_tasks import (
     project_assets_by_ids,
@@ -50,6 +51,7 @@ from app.services.asset_tasks import (
     queue_asset_prompt_generation_task,
 )
 from app.services.billing import resolve_task_pricing
+from app.services.combat_techniques import TechniqueDesignRequest
 from app.services.director_orchestration import (
     ensure_asset_not_automating,
     ensure_chapter_not_automating,
@@ -68,7 +70,6 @@ from app.services.object_storage import (
 from app.services.task_events import publish_task_event
 from app.services.task_queue import enqueue_task
 from app.services.task_submission import active_tasks, create_queued_task
-from app.services.combat_techniques import TechniqueDesignRequest
 
 router = APIRouter(tags=["assets"])
 
@@ -184,6 +185,108 @@ def copied_asset(
     )
 
 
+async def same_name_asset(
+    session: AsyncSession,
+    *,
+    name: str,
+    asset_type: AssetType,
+    user: User,
+    scope: AssetScope,
+    project_id: str | None,
+    parent_id: str | None,
+) -> Asset | None:
+    """Find the asset a same-name import should replace inside a library.
+
+    Matching is case/width-normalized and keeps the parent identity, so a
+    derivative is only swapped for the derivative of the same base asset.
+    """
+    key = asset_name_key(name)
+    candidates = (
+        await session.scalars(
+            select(Asset)
+            .where(
+                Asset.tenant_id == user.tenant_id,
+                Asset.user_id == user.id,
+                Asset.scope == scope,
+                Asset.project_id == project_id,
+                Asset.asset_type == asset_type,
+            )
+            .order_by(Asset.created_at, Asset.id)
+        )
+    ).all()
+    for candidate in candidates:
+        if asset_name_key(candidate.name) == key and candidate.parent_asset_id == parent_id:
+            return candidate
+    return None
+
+
+async def sync_asset_into_library(
+    session: AsyncSession,
+    source: Asset,
+    *,
+    user: User,
+    scope: AssetScope,
+    project_id: str | None,
+    parent_asset_id: str | None,
+) -> Asset:
+    """Import an asset, replacing a same-name one in place instead of duplicating.
+
+    Users expect importing a global asset named like a project asset to update
+    that asset and become the active look. Adding a second record left every
+    downstream step pointing at the old version, which is the bug this avoids.
+    """
+    existing = await same_name_asset(
+        session,
+        name=source.name,
+        asset_type=source.asset_type,
+        user=user,
+        scope=scope,
+        project_id=project_id,
+        parent_id=parent_asset_id,
+    )
+    if existing is None:
+        copied = copied_asset(
+            source,
+            user=user,
+            scope=scope,
+            project_id=project_id,
+            parent_asset_id=parent_asset_id,
+        )
+        session.add(copied)
+        await session.flush()
+        await snapshot_asset_revision(session, copied, change_type="library_copy")
+        return copied
+
+    replaced_version = existing.version
+    existing.parent_asset_id = parent_asset_id
+    existing.name = source.name
+    existing.description = source.description
+    existing.generation_prompt = source.generation_prompt
+    existing.media_url = source.media_url
+    existing.status = source.status
+    existing.asset_metadata = {
+        **source.asset_metadata,
+        "source_asset_id": source.id,
+        "replaced_version": replaced_version,
+    }
+    existing.version += 1
+    # The imported look is authoritative now, and the replacement itself may
+    # clear or move the parent, so a stale marker would be misleading.
+    await mark_asset_image_version(session, existing)
+    await propagate_asset_change(
+        session,
+        existing,
+        reason=f"资产“{existing.name}”已用资产库同名版本替换",
+    )
+    await snapshot_asset_revision(
+        session,
+        existing,
+        change_type="library_replace",
+        source_revision_id=None,
+    )
+    return existing
+
+
 async def copy_asset_between_libraries(
     session: AsyncSession,
     source: Asset,
@@ -205,18 +308,28 @@ async def copy_asset_between_libraries(
             child_id=source.id,
         )
         assert source_parent is not None
-        destination_parent = await session.scalar(
-            select(Asset)
-            .where(
-                Asset.tenant_id == user.tenant_id,
-                Asset.user_id == user.id,
-                Asset.scope == scope,
-                Asset.project_id == project_id,
-                Asset.parent_asset_id.is_(None),
-                Asset.lineage_id == source_parent.lineage_id,
-            )
-            .order_by(Asset.created_at, Asset.id)
+        destination_parent = await same_name_asset(
+            session,
+            name=source_parent.name,
+            asset_type=source_parent.asset_type,
+            user=user,
+            scope=scope,
+            project_id=project_id,
+            parent_id=None,
         )
+        if destination_parent is None:
+            destination_parent = await session.scalar(
+                select(Asset)
+                .where(
+                    Asset.tenant_id == user.tenant_id,
+                    Asset.user_id == user.id,
+                    Asset.scope == scope,
+                    Asset.project_id == project_id,
+                    Asset.parent_asset_id.is_(None),
+                    Asset.lineage_id == source_parent.lineage_id,
+                )
+                .order_by(Asset.created_at, Asset.id)
+            )
         if destination_parent is None:
             destination_parent = copied_asset(
                 source_parent,
@@ -228,17 +341,14 @@ async def copy_asset_between_libraries(
             await session.flush()
             await snapshot_asset_revision(session, destination_parent, change_type="library_copy")
         destination_parent_id = destination_parent.id
-    copied = copied_asset(
+    return await sync_asset_into_library(
+        session,
         source,
         user=user,
         scope=scope,
         project_id=project_id,
         parent_asset_id=destination_parent_id,
     )
-    session.add(copied)
-    await session.flush()
-    await snapshot_asset_revision(session, copied, change_type="library_copy")
-    return copied
 
 
 def new_asset(
@@ -549,6 +659,13 @@ async def update_asset(
     if payload.media_url is not None:
         asset.status = AssetStatus.READY if payload.media_url else AssetStatus.PROMPT_READY
     asset.version += 1
+    if payload.media_url is not None:
+        # Replacing the file directly is the same change as a new generation.
+        await propagate_asset_change(
+            session,
+            asset,
+            reason=f"资产“{asset.name}”的图片已更新",
+        )
     await snapshot_asset_revision(session, asset, change_type="manual_update")
     await session.commit()
     await session.refresh(asset)
@@ -601,6 +718,12 @@ async def upload_asset_image(
         "original_filename": file.filename or "asset-image",
     }
     asset.version += 1
+    await mark_asset_image_version(session, asset)
+    await propagate_asset_change(
+        session,
+        asset,
+        reason=f"资产“{asset.name}”的图片已更新",
+    )
     await snapshot_asset_revision(session, asset, change_type="image_upload")
     try:
         await session.commit()
@@ -759,6 +882,13 @@ async def restore_asset_revision(
     asset.status = revision.status
     asset.asset_metadata = dict(revision.asset_metadata or {})
     asset.version += 1
+    # A restored image is a different look for the same asset, so every board
+    # that snapshotted the old file has to snap to the restored one.
+    await propagate_asset_change(
+        session,
+        asset,
+        reason=f"资产“{asset.name}”已切换到 v{revision.version}",
+    )
     await snapshot_asset_revision(
         session,
         asset,

@@ -31,6 +31,7 @@ def setup_shots(client, headers, project_id):
     async def create():
         async with SessionLocal() as session:
             project = await session.get(Project, project_id)
+            project.first_frame_mode = True
             scope = dict(tenant_id=project.tenant_id, user_id=project.owner_id, project_id=project.id, chapter_id=chapter_id)
             script = ScriptVersion(**scope, version=1, title="接续测试", content="走向窗边", is_active=True)
             session.add(script)

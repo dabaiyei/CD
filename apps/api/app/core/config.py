@@ -69,6 +69,7 @@ class Settings(BaseSettings):
     agent_runtime_url: str = "http://127.0.0.1:8010"
     agent_runtime_internal_token: str = "development-agent-runtime-token"
     agent_runtime_timeout_seconds: float = 900.0
+    storyboard_review_concurrency: int = Field(default=4, ge=1, le=8)
     redis_url: str | None = None
     task_queue_name: str = "cineforge:tasks"
     task_event_channel: str = "cineforge:events"

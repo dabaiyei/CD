@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 from datetime import datetime
+from decimal import Decimal
 from typing import Literal
 
 from fastapi import APIRouter, Depends, HTTPException, Query, status
@@ -306,8 +307,51 @@ async def retry_task(
     if task.status not in {TaskStatus.FAILED, TaskStatus.CANCELLED}:
         raise HTTPException(status_code=409, detail="只有失败或已取消的任务可以重试")
     if task.task_type == "shot_video_prompt_generation":
-        task.request_payload = {**task.request_payload, "first_frame_waiting": False,
-            "first_frame_attempts": {}, "first_frame_task_ids": []}
+        # A failed batch kept every prompt it committed. Retry only the shots
+        # that failed, and charge only those, so long storyboards never re-run
+        # (or re-bill) work that already succeeded.
+        previous = dict(task.result_payload or {})
+        failed_ids = [
+            str(shot_id)
+            for shot_id in (previous.get("failed_shot_ids") or previous.get("failed_shots") or [])
+            if isinstance(shot_id, str)
+        ]
+        requested_ids = [
+            str(shot_id) for shot_id in (task.request_payload.get("shot_ids") or [])
+            if isinstance(shot_id, str)
+        ]
+        remaining_ids = [shot_id for shot_id in failed_ids if shot_id in requested_ids]
+        if not remaining_ids:
+            # Older tasks stored failures as a {shot_id: message} mapping.
+            failures = previous.get("failed_shots")
+            if isinstance(failures, dict):
+                remaining_ids = [shot_id for shot_id in failures if shot_id in requested_ids]
+        if not remaining_ids:
+            raise HTTPException(status_code=409, detail="没有可重试的失败镜头，请重新生成提示词")
+        unit_cost = Decimal(str(
+            task.request_payload.get("shot_unit_cost")
+            or previous.get("shot_unit_cost")
+            or "0"
+        ))
+        if unit_cost <= 0:
+            original_count = max(len(requested_ids), 1)
+            per_head = Decimal(str(task.cost)) / Decimal(original_count)
+            unit_cost = per_head
+        task.cost = unit_cost * Decimal(len(remaining_ids))
+        task.result_payload = {
+            **previous,
+            "credit_refunded": False,
+            "refunded_amount": "0",
+            "failed_shot_ids": [],
+        }
+        task.request_payload = {
+            **task.request_payload,
+            "shot_ids": remaining_ids,
+            "overwrite": True,
+            "first_frame_waiting": False,
+            "first_frame_attempts": {},
+            "first_frame_task_ids": [],
+        }
     if task.task_type == "project_ai_creation":
         project = await session.get(Project, task.project_id)
         if project is None or project.creation_state.get("task_id") != task.id:
@@ -490,6 +534,9 @@ async def retry_task(
     provider_job_id = str(task.provider_job_id or result.get("provider_job_id") or "") or None
     resume_provider_job = bool(result.get("resume_provider_job") and provider_job_id)
     result["credit_refunded"] = False
+    # The task is charged again below, so previously returned credit no longer
+    # offsets the new charge; a later failure must be able to refund it in full.
+    result["refunded_amount"] = "0"
     result["retry_count"] = int(result.get("retry_count") or 0) + 1
     task.result_payload = result
     task.status = TaskStatus.QUEUED

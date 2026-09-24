@@ -16,7 +16,8 @@ from app.services.combat_effects import CombatEffect, RENDERERS, effect_context,
 
 logger = logging.getLogger(__name__)
 
-VERSION = "4"
+# v5 adds the per-beat performance field, so cached designs must be rebuilt.
+VERSION = "5"
 
 # Failed replies are kept for diagnosis; three of them must not bloat the task row.
 MAX_ATTEMPT_CHARS = 4000
@@ -78,6 +79,9 @@ class CombatBeat(BaseModel):
     effects: list[CombatEffect] = Field(default_factory=list, max_length=8)
     impact: str = Field(default="", max_length=1600)
     continuity: str = Field(default="", max_length=1600)
+    # Performance rides on the beat so a fight is not two blank faces hitting
+    # each other: the same five-element rule the plain path uses.
+    expression: str = Field(default="", max_length=1600)
 
 
 class CombatDesign(BaseModel):
@@ -95,6 +99,13 @@ class CombatDesign(BaseModel):
         for beat in self.beats:
             if not beat.continuity.strip():
                 raise ValueError(f"{beat.start:g}秒节拍缺少衔接：写明出拍姿态、动量、武器位置及下一拍承接")
+            # A fight beat without a face is a pose, not a performance. Pure
+            # spectacle (a technique firing with nobody in frame) is exempt.
+            if beat.phase in {"exchange", "decisive_strike"} and not beat.expression.strip():
+                raise ValueError(
+                    f"{beat.start:g}秒交锋缺少人物表演：按五要素写明眼神、眉毛、嘴部、身体反应与此刻处境，"
+                    "不能只写动作和特效"
+                )
             if beat.phase in {"exchange", "decisive_strike"} and not beat.impact.strip():
                 raise ValueError(f"{beat.start:g}秒交锋缺少打击反馈：写接触或落空位置、受力反应及后续变招；不能只写火花震动")
 
@@ -216,7 +227,7 @@ decisive_strike最多1秒；蓄能、显形、冲击传播与余波使用独立s
 逆转：先表现优势方压制，再以已设定破绽/招式翻盘。逃脱：围绕摆脱追击而非强行打赢。
 showdown与明确静止要求保持，不自作主张添加交锋。只有大招显形和关键命中展示才短暂放慢。
 每beat明确camera跟随目标、路径与速度，lighting写主光和随动作变化的局部特效照明。
-同组承接真实尾帧，连续动作不复位；保留原文及internal_shots明确的切点和一镜到底要求。
+按项目首帧模式处理接续：开启且明确同组时才承接真实尾帧；关闭时凭资产与明确入镜状态独立生成，禁止依赖前镜尾帧。连续动作不复位；保留原文及internal_shots明确的切点和一镜到底要求。
 未锁定机位的粗略战斗段允许在本阶段细化动作匹配切镜，不改变原时间段、事件或结局；
 camera明确切点、前后机位与同一轴线侧，切前切后承接同一动量，不重演命中、不跳过关键接触。
 读取模型能力、手册、人物/招式参考、邻镜和台词；无人招式图仅约束特效武器，明确其所属人物与释放点。
@@ -232,6 +243,10 @@ identity_lock必须按实际reference_map/人物资产逐人绑定五官、发�
 关键重击可有极短命中顿挫、短促相机反冲并立即恢复实时速度；不是低帧率、停格或每击慢放。
 每beat必须输出continuity：当前动量、落脚点、兵器方位、出拍姿态及下一拍如何接招，
 最后一拍接end_state；不每1.5秒重置站位，不为切镜凭空腾空、落地或恢复破损场景。
+每beat必须输出expression：按五要素写明参战者的眼神、眉毛、嘴部、身体反应与此刻处境，
+让打斗有真实反应而不是两张面无表情的脸互撞；exchange/decisive_strike缺失表演即校验失败。
+表演服从本镜emotion_plan的主情绪与强度，同一节拍只给一个主情绪，不堆三种情绪。
+音频关闭时嘴唇保持完全闭合，情绪只走眼神、呼吸、肩颈和手部；打斗中的表情不得新增台词或声音。
 高速均势战斗优先用约1—2秒的攻防簇：抢攻→格挡/闪避→顺反弹变线→反击/追击，
 每簇包含多次具体应对，以优势变化推进；这不是必须每簇硬切，也不是固定12秒八镜模板。
 示例节奏：低位突进硬碰后卸力侧移，侧向追拍接连续拆招，利用破绽变线追击，
@@ -353,6 +368,8 @@ def compile_prompt(design: CombatDesign, protocol: dict) -> str:
         lines.extend(compile_effect(effect, zh) for effect in beat.effects)
         if beat.impact:
             lines.append(("打击反馈：" if zh else "Impact response: ") + beat.impact)
+        if beat.expression:
+            lines.append(("人物表演：" if zh else "Performance: ") + beat.expression)
         if beat.continuity:
             lines.append(("动作衔接：" if zh else "Motion continuity: ") + beat.continuity)
     lines.append(design.end_state)
@@ -390,6 +407,7 @@ def _shrink_skill_reference(prompt: str, over: int) -> str:
 
 async def generate(task_id: str, row: dict, contract: dict, protocol: dict, runtime_factory):
     from app.services import task_worker as worker
+    from app.services.generation_parallel import task_write_lock
     from app.services.martial_skill_retrieval import retrieve, shot_query, MAX_REQUEST_CHARS
     # Image prompts and old video prose are redundant with authoritative scene/assets and can be enormous.
     shot = {k: v for k, v in row.items() if k not in {"image_prompt", "current_video_prompt"}}
@@ -473,7 +491,12 @@ async def generate(task_id: str, row: dict, contract: dict, protocol: dict, runt
                 if any(w.balance == "balanced" and w.tempo == "measured" for w in design.plan.windows):
                     raise ValueError("当前镜头未要求慢节奏，不能把实时交锋降为measured")
             text = compile_prompt(design, protocol)
+            if row.get("first_frame_mode") is False:
+                from app.services.first_frame_policy import validate_independent_text
+                validate_independent_text(text)
         except (ValueError, TypeError, RuntimeError) as exc:
+            if hasattr(runtime_factory, "invalid_output"):
+                runtime_factory.invalid_output()
             error = repair_instruction(exc, truncated=truncated)
             attempts.append({"attempt": attempt + 1, "truncated": truncated,
                              "finish_reason": str(getattr(result, "finish_reason", "") or ""),
@@ -482,7 +505,7 @@ async def generate(task_id: str, row: dict, contract: dict, protocol: dict, runt
             continue
         cached = {"fingerprint": key, "version": VERSION, "design": design.model_dump(),
                   "runtime_manifest": result.manifest, "skill_retrieval": retrieval}
-        async with worker.SessionLocal() as session:
+        async with task_write_lock(task_id), worker.SessionLocal() as session:
             task = await worker.owned_task_for_update(session, task_id)
             if not worker.owns_running_task(task):
                 raise RuntimeError("打斗编排任务已停止，结果未保存")
@@ -508,8 +531,10 @@ async def _record_attempts(worker, task_id: str, shot_id: str, attempts: list[di
     """
     if not attempts:
         return
+    from app.services.generation_parallel import task_write_lock
+
     try:
-        async with worker.SessionLocal() as session:
+        async with task_write_lock(task_id), worker.SessionLocal() as session:
             task = await worker.owned_task_for_update(session, task_id)
             if task is None:
                 return

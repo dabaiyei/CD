@@ -94,7 +94,12 @@ from app.services.agent_runtime import (
 )
 from app.services.asset_identity import asset_name_key, extraction_asset_catalog, reusable_asset
 from app.services.asset_revisions import snapshot_asset_revision
-from app.services.billing import debit_additional_task_cost, refund_task_cost, resolve_task_pricing
+from app.services.billing import (
+    debit_additional_task_cost,
+    refund_task_amount,
+    refund_task_cost,
+    resolve_task_pricing,
+)
 from app.services.composition import invalidate_compositions
 from app.services.composition_renderer import FFmpegCompositionRenderer
 from app.services.image_model_routing import normalize_image_resolution, resolve_image_model
@@ -514,11 +519,13 @@ class PromptGenerationPayload(BaseModel):
 from app.services.frame_composition import FrameLayout
 from app.services.clip_timeline import CLIP_RULES, InternalShot, video_timeline_instruction
 from app.services.combat_choreography import CombatPlan
+from app.services.expression_choreography import EmotionPlan
 
 
 class GeneratedStoryboardShotPayload(BaseModel):
     internal_shots: list[InternalShot] = Field(default_factory=list, max_length=500)
     combat_plan: CombatPlan | None = None
+    emotion_plan: EmotionPlan | None = None
     frame_layout: FrameLayout | None = None
     continuity_group: str = Field(default="", max_length=120)
     title: str = Field(min_length=1, max_length=255)
@@ -559,6 +566,9 @@ class VideoPromptTemplateGenerationPayload(BaseModel):
 
 
 class DirectorReviewFindingPayload(BaseModel):
+    shot_indices: list[int] = Field(default_factory=list, max_length=300)
+    context_shot_indices: list[int] = Field(default_factory=list, max_length=300)
+    fields: list[str] = Field(default_factory=list, max_length=20)
     severity: Literal["blocking", "major", "minor"] = "major"
     location: str = Field(default="", max_length=500)
     issue: str = Field(min_length=1, max_length=5_000)
@@ -1322,11 +1332,11 @@ def reference_lock_text(reference: dict[str, str], *, language: str = "en") -> s
         owner = reference.get("owner_name") or asset_names
         if language.lower().startswith("zh"):
             return (f"{token} 仅作为{owner}所属招式{asset_names}的特效、武器或召唤物形态参考；"
-                    "不复制图中任何人物、性别、面容、服装或构图。人物以人物资产及实际尾帧为准；"
+                    "不复制图中任何人物、性别、面容、服装或构图。人物以实际提供的人物参考为准；"
                     "按本镜动作绑定释放位置、持握手、目标方向、尺度和遮挡，不能新增施术者")
         return (f"{token} defines only the effects, weapon or summon of {asset_names}, owned by {owner}. "
                 "Do not copy any person, gender, face, costume or composition from it. "
-                "Use character references and the actual previous end frame for identity; bind emission point, "
+                "Use the actually supplied character references for identity; bind emission point, "
                 "holding hand, target direction, scale and occlusion to the shot action. Do not add a caster.")
     if language.lower().startswith("zh"):
         if role == "first_frame":
@@ -1668,7 +1678,16 @@ async def queued_provider_candidates() -> list[str]:
 
 
 async def _claim_task_candidate(task_id: str) -> tuple[AITask, TaskEvent] | None:
+    from app.services.generation_parallel import running_slots
+
+    provider_id = await _provider_id_for_task(task_id)
     async with SessionLocal() as session, session.begin():
+        if provider_id:
+            # Match slot reservation's lock order; acquire SQLite's write lock
+            # before taking a read snapshot, and a provider row lock on Postgres.
+            await session.execute(update(Provider).where(Provider.id == provider_id).values(
+                updated_at=Provider.updated_at
+            ))
         task = await session.scalar(
             select(AITask)
             .where(AITask.id == task_id, AITask.status == TaskStatus.QUEUED)
@@ -1687,7 +1706,7 @@ async def _claim_task_candidate(task_id: str) -> tuple[AITask, TaskEvent] | None
             )
             if provider is not None:
                 running_count = await session.scalar(
-                    select(func.count(AITask.id))
+                    select(running_slots())
                     .select_from(AITask)
                     .join(AIModel, AIModel.id == AITask.model_id)
                     .where(
@@ -1700,6 +1719,7 @@ async def _claim_task_candidate(task_id: str) -> tuple[AITask, TaskEvent] | None
         now = datetime.now(UTC)
         lease_expires_at = now + timedelta(seconds=get_settings().task_lease_timeout_seconds)
         task.status = TaskStatus.RUNNING
+        task.request_payload = {**task.request_payload, "runtime_concurrency_slots": 1}
         task.worker_id = WORKER_ID
         task.lease_expires_at = lease_expires_at
         task.heartbeat_at = now
@@ -2232,17 +2252,13 @@ def assemble_runtime_request(
     combat_guidance: str = "",
 ) -> AgentRuntimeRequest:
     """Build one shot's request from a shared task context. No I/O."""
-    full_prompt = "\n\n".join(
-        section
-        for section in (context.template_content, prompt_appendix, context.skill_context, prompt)
-        if section
-    )
-    return AgentRuntimeRequest(
+    from app.services.retrieval_context import automatic_request
+    request = AgentRuntimeRequest(
         tenant_id=context.tenant_id,
         project_id=context.project_id,
         task_id=context.task_id,
         session_id=context.task_id,
-        prompt=full_prompt,
+        prompt=prompt,
         # combat_guidance depends on the prompt text, so it is inserted between
         # the task-level halves to keep the original wording and order.
         system_prompt=(
@@ -2256,6 +2272,9 @@ def assemble_runtime_request(
         state_mode="ephemeral",
         tool_mode="none",
     )
+    return automatic_request(request,
+        rules="\n\n".join((request.system_prompt, context.template_content, prompt_appendix)),
+        references=context.skill_context)
 
 
 async def build_task_runtime_context(
@@ -2270,6 +2289,7 @@ async def build_task_runtime_context(
     """Resolve the task-level half of a runtime request: identity, model, skills, guidance."""
     from app.api.routes.agent_chat import project_handbooks, skill_snapshots
     from app.services.ai_creation import project_creation_guidance
+    from app.services.first_frame_policy import planning_contract
 
     async with SessionLocal() as session:
         task = await owned_task_for_update(session, task_id)
@@ -2371,18 +2391,36 @@ async def build_task_runtime_context(
             f'<skill-file path="{snapshot["path"]}">\n{snapshot["content"]}\n</skill-file>'
             for snapshot in selected_skill_snapshots
         )
+        # The adapted storyboard method is routed by stage and only relevant
+        # references are inlined; the hard rules ride along in the system prompt
+        # so trimming the reference block can never drop them.
+        from app.services.storyboard_skill_retrieval import retrieve as retrieve_storyboard_skill
+
+        storyboard_skill_context, storyboard_skill = retrieve_storyboard_skill(prompt_code, prompt)
+        if storyboard_skill_context:
+            skill_context = "\n\n".join(
+                section for section in (skill_context, storyboard_skill_context) if section
+            )
+            skill_versions = {
+                **skill_versions,
+                f"storyboard-skill:{storyboard_skill['source']}@{storyboard_skill['revision']}":
+                    str(storyboard_skill["characters"]),
+            }
         include_story = prompt_code != "asset-prompt-generation" and not combat_design
-        creation_guidance = await project_creation_guidance(session, project, include_story=include_story)
+        creation_guidance = await project_creation_guidance(session, project, include_story=False)
+        if include_story:
+            story_reference = await project_creation_guidance(session, project, include_story=True)
+            skill_context += "\n\n项目创作记忆与大纲（按需检索，不得全量读取）：\n" + story_reference
         if prompt_code in {"script-generation", "script-repair", "script-review", "storyboard-review"}:
             from app.services.source_timeline import contract
             timed_chapter = await session.get(Chapter, str(task.request_payload.get("chapter_id") or ""))
             if timed_chapter and timed_chapter.project_id == project.id:
-                creation_guidance += contract(timed_chapter.original_content)
+                skill_context += "\n原始时间轴契约：\n" + contract(timed_chapter.original_content)
         if not combat_design and prompt_code in {"script-generation", "script-repair", "script-asset-extraction", "storyboard-generation", "storyboard-repair", "video-prompt-generation"}:
             from app.services.combat_techniques import technique_catalog
             techniques = await technique_catalog(session, project.id, task.user_id)
             if techniques:
-                creation_guidance += "\n人物招式记忆（沿用已有命名、动作与外观，不得重新设计）：\n" + json.dumps(
+                skill_context += "\n人物招式记忆（沿用已有命名、动作与外观，不得重新设计）：\n" + json.dumps(
                     [{"name": a.name, "description": a.description[:2500], "has_image": bool(a.media_url)} for a in techniques[:40]], ensure_ascii=False)
         if prompt_code in {
             "storyboard-generation",
@@ -2395,6 +2433,21 @@ async def build_task_runtime_context(
             creation_guidance += "\n\n" + CONTINUITY_RULES
             from app.services.motion_intent import MOTION_RULES
             creation_guidance += "\n" + MOTION_RULES
+        # Performance is a first-class part of both halves: the storyboard
+        # registers the emotion timeline, the video stage expands it into a
+        # five-element performance. The rules ride in the system prompt so they
+        # survive any trimming of the retriable reference block.
+        if prompt_code in {"storyboard-generation", "storyboard-repair", "storyboard-review"}:
+            from app.services.expression_choreography import PLANNING_RULES
+
+            creation_guidance += "\n" + PLANNING_RULES
+        if prompt_code == "video-prompt-generation" and not combat_design:
+            # Aliased on purpose: the combat branch below imports its own
+            # DESIGN_RULES into this same function scope.
+            from app.services.expression_choreography import DESIGN_RULES as EXPRESSION_RULES
+            from app.services.expression_skill_retrieval import guidance as expression_guidance
+
+            creation_guidance += "\n" + EXPRESSION_RULES + expression_guidance()
         if prompt_code in {"storyboard-generation", "storyboard-review", "storyboard-repair", "video-prompt-generation"}:
             from app.services.frame_composition import FRAME_RULES
             creation_guidance += "\n" + FRAME_RULES
@@ -2407,8 +2460,24 @@ async def build_task_runtime_context(
         creation_guidance = ""
         if combat_design:
             creation_guidance += "\n" + DESIGN_RULES
+            # Combat shots need performance too, so the same five-element rules
+            # ride in the combat system prompt. Only the rules travel here; the
+            # matching library entries are appended deterministically after the
+            # reply, which keeps the combat request inside its character budget.
+            from app.services.expression_choreography import DESIGN_RULES as EXPRESSION_RULES
+            from app.services.expression_skill_retrieval import guidance as expression_guidance
+
+            creation_guidance += "\n" + EXPRESSION_RULES + expression_guidance()
+        # Hard rules stay in the system prompt, which is never trimmed, while the
+        # citable reference bodies live in skill_context where they can be sized.
+        from app.services.storyboard_skill_retrieval import guidance as storyboard_skill_guidance
+
+        creation_guidance += storyboard_skill_guidance(prompt_code, prompt)
         if prompt_code in {"storyboard-generation", "storyboard-repair"}:
             creation_guidance += "\ncombat_plan 结构（无战斗则null）：" + json.dumps(CombatPlan.model_json_schema(), ensure_ascii=False)
+        if prompt_code in {"storyboard-generation", "storyboard-repair", "storyboard-review"}:
+            creation_guidance += "\nemotion_plan 结构（无人物则null）：" + json.dumps(
+                EmotionPlan.model_json_schema(), ensure_ascii=False)
         if prompt_code in {"script-generation", "script-repair", "script-review"}:
             creation_guidance += "\n\n" + SCRIPT_OUTPUT_BOUNDARY
         if not combat_design and project.creation_mode == "ai" and task.request_payload.get("chapter_id"):
@@ -2417,7 +2486,7 @@ async def build_task_runtime_context(
             current_chapter = await session.get(Chapter, task.request_payload["chapter_id"])
             if current_chapter and current_chapter.project_id == project.id:
                 continuity = await chapter_continuity_context(session, current_chapter)
-                creation_guidance += "\n\n" + continuity
+                skill_context += "\n\n章节连续性记忆（按需检索）：\n" + continuity
         logger.info(
             "Task %s context chars: template=%d skills=%d source=%d guidance=%d agent=%d files=%d",
             task_id,
@@ -2430,8 +2499,8 @@ async def build_task_runtime_context(
         )
         handbook_instructions = (
             "项目创作手册（强制执行）：平台已经按当前任务阶段检索所选视觉手册、"
-            "导演手册和用户启用的相关 Skill，并以内联 <skill-file> 提供。"
-            "必须直接依据这些内容完成任务，不要尝试再次调用 Skill 或文件工具。"
+            "导演手册和用户启用的相关 Skill，以只读检索文件提供。"
+            "先搜索定位本次镜头或字段适用的规则，再用 Read/Skill 按需读取；不得一次加载全部手册。"
             "平台注入的模型能力、合法值列表和输出结构属于更高优先级硬约束；"
             "战斗专项规则对招式、连续攻防和大招镜头表现优先于手册，画风和人物外观仍按项目设定；"
             "手册中的固定秒数或旧模型参数若与其冲突，必须映射到当前模型的合法值，不得照抄。"
@@ -2448,7 +2517,10 @@ async def build_task_runtime_context(
             ),
             system_prompt_tail=(
                 f"{creation_guidance}\n\n"
-                "个人技能的本阶段规则已内联提供；无需也不能再次调用技能工具。\n\n"
+                + (planning_contract(project.first_frame_mode)
+                   if prompt_code in {"storyboard-generation", "storyboard-repair", "storyboard-review", "video-prompt-generation"} else "")
+                + "\n"
+                "个人技能的本阶段规则可通过检索工具按需读取。\n\n"
                 "当前任务要求只返回符合指定结构的 JSON，不要返回 Markdown、解释或代码围栏。"
             ),
             skill_context=skill_context,
@@ -2517,10 +2589,37 @@ async def runtime_request(
     request = assemble_runtime_request(
         context, prompt=prompt, prompt_appendix=prompt_appendix, combat_guidance=combat_guidance
     )
+    # Evidence stays in the scoped runtime filesystem. It is never concatenated
+    # into each single-shot prompt or a model-visible conversation history.
+    from app.services.retrieval_context import evidence_file, json_evidence, mount
+    async with SessionLocal() as evidence_session:
+        evidence_task = await owned_task_for_update(evidence_session, task_id)
+        if not owns_running_task(evidence_task):
+            raise RuntimeError("任务上下文已失效")
+        chapter_id = str(evidence_task.request_payload.get("chapter_id") or "")
+        chapter = await evidence_session.get(Chapter, chapter_id) if chapter_id else None
+        if chapter and chapter.project_id == evidence_task.project_id and chapter.user_id == evidence_task.user_id:
+            files = [evidence_file("chapter-source", chapter.original_content)]
+            script = await evidence_session.get(ScriptVersion, chapter.active_script_version_id) if chapter.active_script_version_id else None
+            if script:
+                files.append(evidence_file("chapter-script", script.content))
+            board = await evidence_session.scalar(select(StoryboardVersion).where(
+                StoryboardVersion.chapter_id == chapter.id, StoryboardVersion.user_id == evidence_task.user_id,
+                StoryboardVersion.is_active.is_(True)).order_by(StoryboardVersion.version.desc()).limit(1))
+            if board:
+                files.append(json_evidence("chapter-shots", board.content))
+            assets = list((await evidence_session.scalars(select(Asset).where(
+                Asset.project_id == chapter.project_id, Asset.user_id == evidence_task.user_id,
+                Asset.tenant_id == evidence_task.tenant_id))).all())
+            files.append(json_evidence("project-assets", [{"id": item.id, "name": item.name,
+                "description": item.description, "parent_asset_id": item.parent_asset_id,
+                "media_url": item.media_url} for item in assets]))
+            request = mount(request, *files)
     memories = await load_context_memories(context, request.prompt)
     if not memories:
         return request
-    return request.model_copy(update={"memory_context": memories})
+    from app.services.retrieval_context import evidence_file, mount
+    return mount(request, evidence_file("task-memory", "\n\n".join(memories)))
 
 
 def current_agent_chat_prompt(current_message: AgentChatMessage) -> str:
@@ -2549,6 +2648,9 @@ def project_agent_platform_action_instructions() -> str:
 
 def director_chapter_instructions(chapter: Chapter, workflow_summary: str | None = None) -> str:
     return (
+        "先读取当前章节元信息和流程状态，只在本轮问题确有需要时检索相关原文、剧本与手册。"
+        "长文通过 Read 的 char_offset 分页读取，每次最多12000字符；超过单文件大小时原路径是完整分段索引。"
+        "不要为了普通问答通读整章或所有历史文件，不得将未读内容视为不存在。"
         "你是当前项目的主导演 Agent 和流程负责人，不是旁观顾问。"
         "用户要求设计人物招式、大招、宝术、神诀时，读取项目资产目录定位所属人物，"
         "用 Write 创建 project-files/new/cineforge-character-techniques.json："
@@ -2624,6 +2726,8 @@ def director_chapter_snapshots(
     chapter: Chapter,
     active_script: ScriptVersion | None,
 ) -> list[AgentRuntimeProjectFileSnapshot]:
+    from app.services.agent_file_context import paged_snapshot
+
     metadata_content = (
         f"# 当前导演台章节\n\n"
         f"- 章节 ID：{chapter.id}\n"
@@ -2674,10 +2778,7 @@ def director_chapter_snapshots(
                 editable=False,
             )
         )
-    for snapshot in snapshots:
-        if len(snapshot.content.encode("utf-8")) > 2_000_000:
-            raise RuntimeError(f"当前章节文件超过 Agent 单文件上下文上限：{snapshot.name}")
-    return snapshots
+    return [part for snapshot in snapshots for part in paged_snapshot(snapshot)]
 
 
 async def director_workflow_snapshot(
@@ -3002,6 +3103,7 @@ async def agent_chat_runtime_request(
         project_handbooks,
         skill_snapshots,
     )
+    from app.services.agent_file_context import paged_snapshot
 
     async with SessionLocal() as session:
         task = await owned_task_for_update(session, task_id)
@@ -3071,7 +3173,7 @@ async def agent_chat_runtime_request(
         )
         handbooks = await project_handbooks(session, project) if project is not None else []
         skill_files, skill_versions = await run_in_threadpool(skill_snapshots, handbooks)
-        project_files = await project_file_snapshots(session, user, project.id) if project is not None else []
+        project_files = []
         if project is not None:
             project_files.append(await project_assets_snapshot(session, project, user))
         chapter_id = str(task.request_payload.get("chapter_id") or "")
@@ -3098,6 +3200,14 @@ async def agent_chat_runtime_request(
             workflow_file, workflow_summary = await director_workflow_snapshot(session, chapter)
             if workflow_file is not None:
                 project_files.append(workflow_file)
+        if project is not None:
+            # Required current-chapter files take priority; optional historic
+            # project files must not consume the runtime's 200-file allowance.
+            project_files = [part for snapshot in project_files for part in paged_snapshot(snapshot)]
+            project_files.extend(await project_file_snapshots(
+                session, user, project.id, chapter_id=chapter.id if chapter else None,
+                max_files=max(0, 200 - len(project_files)),
+            ))
         personal_request_mode = str(task.request_payload.get("mode") or "chat")
         if personal_scope:
             personal_media_models = list(
@@ -3200,6 +3310,18 @@ async def agent_chat_runtime_request(
         # Agent can actually see them and return their IDs in a media action.
         runtime_attachment_rows = attachment_rows
         historical_rows: list[PersonalAgentAttachment] = []
+        historical_document_ids = set()
+        if not personal_scope and len(attachment_rows) < MAX_CHAT_ATTACHMENTS:
+            from app.services.chat_documents import DOCUMENT_TYPES
+            prior_documents = list((await session.scalars(select(ProjectFile)
+                .join(AgentChatMessage, ProjectFile.file_metadata["agent_chat_message_id"].as_string() == AgentChatMessage.id)
+                .where(ProjectFile.project_id == project.id, ProjectFile.tenant_id == task.tenant_id,
+                       ProjectFile.user_id == task.user_id, AgentChatMessage.session_id == chat_session.id,
+                       ProjectFile.mime_type.in_(list(DOCUMENT_TYPES.values())),
+                       ProjectFile.id.not_in(attachment_ids or [""]))
+                .order_by(ProjectFile.created_at.desc()).limit(MAX_CHAT_ATTACHMENTS - len(attachment_rows)))).all())
+            historical_document_ids = {item.id for item in prior_documents}
+            runtime_attachment_rows = attachment_rows + prior_documents
         if personal_scope and len(runtime_attachment_rows) < MAX_CHAT_ATTACHMENTS:
             historical_rows = list(
                 (
@@ -3210,7 +3332,6 @@ async def agent_chat_runtime_request(
                             PersonalAgentAttachment.tenant_id == task.tenant_id,
                             PersonalAgentAttachment.user_id == task.user_id,
                             PersonalAgentAttachment.message_id.is_not(None),
-                            PersonalAgentAttachment.mime_type.like("image/%"),
                             PersonalAgentAttachment.id.not_in(attachment_ids or [""]),
                         )
                         .order_by(PersonalAgentAttachment.created_at.desc())
@@ -3225,10 +3346,10 @@ async def agent_chat_runtime_request(
             personal_scope
             and personal_request_mode in {"image", "video"}
             and not attachment_ids
-            and historical_rows
+            and any(item.mime_type.startswith("image/") for item in historical_rows)
             and should_reuse_historical_image(user_message.content)
         ):
-            reference = historical_rows[0]
+            reference = next(item for item in historical_rows if item.mime_type.startswith("image/"))
             attachment_ids = [reference.id]
             payload = {
                 **task.request_payload,
@@ -3243,17 +3364,19 @@ async def agent_chat_runtime_request(
                 item for item in runtime_attachment_rows if item.id != reference.id
             ]
         attachment_files: list[ProjectFile | PersonalAgentAttachment] = []
+        from app.services.chat_documents import supported_attachment
         for attachment in runtime_attachment_rows:
             if (
                 attachment is None
                 or not attachment.storage_path
-                or not attachment.mime_type.startswith("image/")
+                or not supported_attachment(attachment.mime_type)
             ):
                 raise RuntimeError("Agent 对话图片附件已失效")
             if not personal_scope and (
                 not isinstance(attachment, ProjectFile)
                 or attachment.file_metadata.get("role") != "agent_chat_attachment"
-                or attachment.file_metadata.get("agent_chat_message_id") != user_message.id
+                or (attachment.file_metadata.get("agent_chat_message_id") != user_message.id
+                    and attachment.id not in historical_document_ids)
             ):
                 raise RuntimeError("Agent 对话图片附件已失效")
             attachment_files.append(attachment)
@@ -3268,12 +3391,18 @@ async def agent_chat_runtime_request(
                 data=base64.b64encode(data).decode("ascii"),
             )
             for item, data in zip(attachment_files, attachment_bytes, strict=True)
+            if item.mime_type.startswith("image/")
         ]
+        from app.services.agent_runtime import AgentRuntimeDocument
+        runtime_documents = [AgentRuntimeDocument(id=item.id, name=item.name,
+            data=base64.b64encode(data).decode("ascii"), sha256=hashlib.sha256(data).hexdigest())
+            for item, data in zip(attachment_files, attachment_bytes, strict=True)
+            if not item.mime_type.startswith("image/")]
         config = agent.config or {}
         capabilities = model.capabilities or {}
         prompt = current_agent_chat_prompt(user_message)
-        if personal_scope and runtime_attachment_rows:
-            catalog = "、".join(f"{item.id}（{item.name}）" for item in runtime_attachment_rows)
+        if personal_scope and runtime_attachments:
+            catalog = "、".join(f"{item.id}（{item.name}）" for item in runtime_attachments)
             attachment_instruction = (
                 "如果用户要求基于、参考或仿照某张历史图片，必须在媒体动作标记的 "
                 "reference_attachment_ids 中填写对应 ID。"
@@ -3401,6 +3530,7 @@ async def agent_chat_runtime_request(
             recent_messages=recent_messages,
             project_files=project_files,
             attachments=runtime_attachments,
+            documents=runtime_documents,
         )
         return request, project_files, task
 
@@ -3912,7 +4042,7 @@ async def generate_personal_agent_media(
             if attachment_ids
             else []
         )
-        attachments_by_id = {item.id: item for item in attachments}
+        attachments_by_id = {item.id: item for item in attachments if item.mime_type.startswith("image/")}
         ordered_attachments = [
             attachments_by_id[item_id] for item_id in attachment_ids if item_id in attachments_by_id
         ]
@@ -4316,7 +4446,7 @@ async def execute_agent_chat_task(
                 reference_ids = list(action.reference_attachment_ids)
                 if action.generation_mode.startswith("image_to_") and not reference_ids:
                     reference_ids = [
-                        str(item) for item in task.request_payload.get("attachment_ids") or [] if str(item)
+                        str(item) for item in task.request_payload.get("attachment_ids") or [] if str(item) in available_image_ids
                     ]
                 if action.generation_mode.startswith("image_to_") and not reference_ids:
                     reference_ids = [
@@ -4779,6 +4909,8 @@ async def missing_storyboard_ready_asset_names(assets: list[Asset]) -> list[str]
 
 
 async def record_progress(task_id: str, progress: int, message: str) -> None:
+    from app.services.generation_parallel import task_write_lock
+
     signal_task_activity(task_id)
     # Progress is cosmetic: it must never be able to fail the work it reports on.
     # A concurrent writer can still briefly win the SQLite write lock even with
@@ -4786,7 +4918,7 @@ async def record_progress(task_id: str, progress: int, message: str) -> None:
     # instead of propagating OperationalError into the task's result.
     for attempt in range(4):
         try:
-            async with SessionLocal() as session:
+            async with task_write_lock(task_id), SessionLocal() as session:
                 task = await owned_task_for_update(session, task_id)
                 if not owns_running_task(task):
                     return
@@ -5330,6 +5462,8 @@ async def execute_director_storyboard_review_task(
         )
         if storyboard is None:
             raise RuntimeError("分镜审核目标已不存在")
+        script = await session.get(ScriptVersion, storyboard.script_version_id)
+        script_content = (script.content if script else "") or ""
         project = await session.get(Project, storyboard.project_id)
         video_model = await project_video_model_for_storyboard(
             session,
@@ -5352,6 +5486,12 @@ async def execute_director_storyboard_review_task(
             selected_resolution=str(project.image_resolution or "1K") if project else "1K",
             aspect_ratio=str(project.aspect_ratio or "1:1") if project else "1:1",
         )
+        from app.services.storyboard_generation import scenes_for_coverage
+
+        coverage_scenes = scenes_for_coverage(
+            script_content,
+            duration_contract["supported_durations_seconds"],
+        )
         prompt = (
             "你是独立的导演分镜审核子智能体。依据导演规划、分镜表和视觉风格 Skills，"
             "审核镜头是否完整覆盖生效剧本，并检查角色/场景/道具连续性、轴线、景别变化、光影氛围、"
@@ -5364,21 +5504,87 @@ async def execute_director_storyboard_review_task(
             f"目标视频模型时长约束：{json.dumps(duration_contract, ensure_ascii=False)}\n"
             f"目标视频模型完整执行契约：{json.dumps(model_contract, ensure_ascii=False)}\n"
             f"目标图片模型完整执行契约：{json.dumps(image_contract, ensure_ascii=False)}\n"
-            f"分镜：{json.dumps(storyboard.content, ensure_ascii=False)}"
+            "分镜与对应剧本将按批次提供，相邻镜头仅用于检查衔接。"
         )
+        review_state = dict(task.request_payload.get("storyboard_review_cache") or {})
+        if not review_state:
+            prior = (await session.execute(
+                select(AITask.request_payload, AITask.result_payload).where(
+                    AITask.project_id == task.project_id, AITask.user_id == task.user_id,
+                    AITask.tenant_id == task.tenant_id,
+                    AITask.task_type == "director_storyboard_review",
+                    AITask.id != task.id,
+                    AITask.status.in_([TaskStatus.SUCCEEDED, TaskStatus.FAILED]),
+                    AITask.request_payload["chapter_id"].as_string() == storyboard.chapter_id,
+                    or_(AITask.request_payload["storyboard_review_cache"].as_string().is_not(None),
+                        AITask.result_payload["storyboard_review_cache"].as_string().is_not(None)),
+                ).order_by(AITask.created_at.desc()).limit(1)
+            )).first()
+            review_state = dict(((prior[0] or {}).get("storyboard_review_cache")
+                                 or (prior[1] or {}).get("storyboard_review_cache") or {}) if prior else {})
+            if not review_state:
+                # Clearing the notification/task center must not discard paid
+                # review checkpoints retained by the chapter workflow.
+                from app.db.models import DirectorChildRun, DirectorChildStatus, DirectorWorkflowRun
+                durable = await session.scalar(
+                    select(DirectorChildRun.output_refs)
+                    .join(DirectorWorkflowRun, DirectorWorkflowRun.id == DirectorChildRun.workflow_id)
+                    .where(DirectorWorkflowRun.chapter_id == storyboard.chapter_id,
+                           DirectorWorkflowRun.tenant_id == task.tenant_id,
+                           DirectorWorkflowRun.user_id == task.user_id,
+                           DirectorChildRun.kind == "storyboard_review",
+                           DirectorChildRun.status == DirectorChildStatus.SUCCEEDED)
+                    .order_by(DirectorChildRun.created_at.desc()).limit(1))
+                review_state = dict((durable or {}).get("storyboard_review_cache") or {})
+        shots = [shot for shot in storyboard.content if isinstance(shot, dict)]
     request = await runtime_request(task_id, prompt_code="storyboard-review", prompt=prompt)
-    result = await runtime_factory().run(request)
-    try:
-        review = DirectorReviewPayload.model_validate(parse_json_object(result.final_response))
-    except ValidationError as exc:
-        raise RuntimeError("AI 返回的分镜审核结构不符合要求") from exc
+    from app.services.storyboard_review import review_board
+    from app.services.generation_parallel import ParallelRuntime, reserve_task_slots, task_write_lock
+
+    concurrency = await reserve_task_slots(task_id, get_settings().storyboard_review_concurrency)
+    runtime_factory = ParallelRuntime(runtime_factory, concurrency, task_id=task_id)
+
+    async def save_review(value):
+        async with task_write_lock(task_id), SessionLocal() as checkpoint_session:
+            current_task = await owned_task_for_update(checkpoint_session, task_id)
+            if not owns_running_task(current_task):
+                raise RuntimeError("分镜审核任务已停止")
+            current_task.request_payload = {**current_task.request_payload,
+                                            "storyboard_review_cache": json.loads(json.dumps(value))}
+            await checkpoint_session.commit()
+
+    async def review_progress(message):
+        total = max(1, int(review_state.get("total_units") or 1))
+        completed = min(total, len(review_state.get("completed", {})))
+        await record_progress(task_id, 50 + int(40 * completed / total), message)
+
+    review, review_manifest = await review_board(
+        request, runtime_factory, shots=shots, script=script_content, state=review_state,
+        save=save_review, progress=review_progress, concurrency=concurrency,
+    )
+    # Deterministic gates run after the model and only add advisory findings; the
+    # model keeps its own verdict. Re-validating keeps a malformed merge from
+    # escaping as an untyped payload.
+    from app.services.storyboard_quality import (
+        apply_coverage_gate,
+        merge as merge_storyboard_gates,
+    )
+
+    shots = [shot for shot in storyboard.content if isinstance(shot, dict)]
+    merged = merge_storyboard_gates(review.model_dump(mode="json"), shots)
+    # A board with fewer shots than scenes cannot cover the chapter, whatever
+    # the model says about it, so the verdict is forced to false and the
+    # pipeline repairs instead of approving a truncated board.
+    merged = apply_coverage_gate(merged, shots, coverage_scenes)
+    review = DirectorReviewPayload.model_validate(merged)
     await _complete_director_agent_task(
         task_id,
         result_payload={
             "approved": review.approved,
             "summary": review.summary,
             "review": review.model_dump(mode="json"),
-            "runtime_manifest": result.manifest,
+            "runtime_manifest": review_manifest,
+            "storyboard_review_cache": review_state,
         },
         message="分镜审核通过" if review.approved else "分镜审核发现需要确认的问题",
     )
@@ -5434,10 +5640,39 @@ async def execute_director_storyboard_repair_task(
             aspect_ratio=str(project.aspect_ratio or "1:1") if project else "1:1",
         )
         schema_duration = float(duration_contract["schema_example_duration_seconds"])
+        # A chapter without a source timeline is repaired scene by scene, exactly
+        # like it was generated. Dumping the whole board into every request is
+        # what let a truncated reply pass for a complete rewrite.
+        from app.services.storyboard_generation import allocate_timeline, segment_script
+
+        timing_plan = allocate_timeline(
+            chapter.original_content,
+            duration_contract["supported_durations_seconds"],
+        )
+        scene_repair = bool(segment_script(script.content)) and not timing_plan
+        asset_names_by_id = {asset.id: asset.name for asset in assets}
+        repair_source = [GeneratedStoryboardShotPayload.model_validate({
+            **row, "asset_names": [asset_names_by_id[asset_id] for asset_id in row.get("asset_ids", [])
+                                    if asset_id in asset_names_by_id],
+        }).model_dump(mode="json") for row in (storyboard.content or []) if isinstance(row, dict)]
+        original_board = (
+            "原分镜将按场景随每个场景的修复指令分开发送，不要期待这里看到全部分镜。"
+            if scene_repair
+            else (
+                # Timed chapters repair one window per request. A long board is
+                # hundreds of kilobytes; embedding it here would repeat that
+                # payload for every batch and exhaust the model context. Each
+                # request instead receives only its own window's shots.
+                "原分镜将按时间窗随每个时间窗的修复指令分开发送，不要期待这里看到全部分镜。"
+                if timing_plan
+                else f"原分镜：{json.dumps(storyboard.content, ensure_ascii=False)}"
+            )
+        )
         prompt = (
             "你是分镜修复子智能体。依据导演 Skills、审核意见和已完成资产修复分镜。"
             "partial 模式只调整问题镜头，"
-            "但返回完整分镜；full 模式重新制作完整分镜。asset_names 只能使用资产清单中的精确名称。"
+            "但不能删减镜头；full 模式重新制作完整分镜。asset_names 只能使用资产清单中的精确名称。"
+            "必须覆盖生效剧本的全部场景，一个场景都不能少。\n"
             "duration_seconds 必须从目标视频模型支持时长中选择，并按时长档位与叙事负载重新判断；"
             "不得生成列表外时长，也不得无理由把多数镜头压到最短档。\n"
             f'返回结构：{{"shots":[{{"title":"镜头标题","shot_type":"中景","duration_seconds":{schema_duration:g},'
@@ -5453,15 +5688,12 @@ async def execute_director_storyboard_repair_task(
             f"用户意见：{task.request_payload.get('feedback') or '无补充'}\n"
             f"审核结果：{json.dumps(task.request_payload.get('review') or {}, ensure_ascii=False)}\n"
             f"资产清单：{json.dumps(asset_context, ensure_ascii=False)}\n"
-            f"剧本：\n{script.content}\n原分镜：{json.dumps(storyboard.content, ensure_ascii=False)}"
+            f"剧本：\n{script.content}\n{original_board}"
         )
     from app.services import storyboard_assets
     from app.services.source_timeline import contract, validate_shots
     # Include timing in the durable draft key as well as the runtime guidance.
     prompt += contract(chapter.original_content)
-    from app.services.storyboard_generation import allocate_timeline
-    timing_plan = allocate_timeline(chapter.original_content,
-        duration_contract["supported_durations_seconds"])
     def validate_timed_board(text):
         board = StoryboardGenerationPayload.model_validate(parse_json_object(text))
         # Explicit timestamps in the source define the runtime; the budget only
@@ -5471,7 +5703,18 @@ async def execute_director_storyboard_repair_task(
         validate_shots(chapter.original_content, board.shots)
     result = await storyboard_assets.storyboard_response(
         task_id, "storyboard-repair", prompt, runtime_factory, validator=validate_timed_board,
-        timing_plan=timing_plan, durations=duration_contract["supported_durations_seconds"])
+        timing_plan=timing_plan, durations=duration_contract["supported_durations_seconds"],
+        script=script.content, budget=chapter_duration_budget(project),
+        repair_shots=repair_source,
+        # partial mode names the offending shots and only those are patched;
+        # full mode deliberately rewrites the whole board.
+        findings=(
+            list((task.request_payload.get("review") or {}).get("findings") or [])
+            if task.request_payload.get("repair_mode") != "full" else []
+        ),
+        feedback=str(task.request_payload.get("feedback") or ""),
+        partial=task.request_payload.get("repair_mode") != "full",
+    )
     try:
         repaired = StoryboardGenerationPayload.model_validate(parse_json_object(result.final_response))
     except ValidationError as exc:
@@ -5485,9 +5728,13 @@ async def execute_director_storyboard_repair_task(
         for shot in repaired.shots
     ]
 
-    definitions, bindings = await storyboard_assets.plan(task_id, repaired.shots, runtime_factory)
+    definitions, bindings = await storyboard_assets.plan(
+        task_id, repaired.shots, runtime_factory, previous_shots=repair_source)
     for index, shot in enumerate(repaired.shots, 1):
         shot.asset_names = bindings[index]
+    original_rows = [{key: value for key, value in row.items() if key != "video_prompt"} for row in repair_source]
+    changed_shot_count = sum(shot.model_dump(mode="json", exclude={"video_prompt"}) not in original_rows
+                             for shot in repaired.shots)
 
     async with SessionLocal() as session:
         from app.api.routes.storyboards import create_storyboard
@@ -5513,14 +5760,21 @@ async def execute_director_storyboard_repair_task(
         )
         if unknown:
             raise RuntimeError(f"修复分镜引用了未知资产：{'、'.join(unknown[:5])}")
+        def preserved_reference(shot):
+            # A new version must not replace a user-selected reference merely
+            # because a dialogue or emotion patch was saved.
+            for old, source in zip(repair_source, storyboard.content or []):
+                if all(old.get(field) == getattr(shot, field) for field in
+                       ("image_prompt", "scene_description", "action_description", "asset_names")):
+                    return source.get("reference_image_url") or next(
+                        (by_name[name].media_url for name in shot.asset_names if by_name[name].media_url), None)
+            return next((by_name[name].media_url for name in shot.asset_names if by_name[name].media_url), None)
+
         shot_payloads = [
             StoryboardShotCreate(
                 **shot.model_dump(exclude={"asset_names"}),
                 asset_ids=[by_name[name].id for name in shot.asset_names],
-                reference_image_url=next(
-                    (by_name[name].media_url for name in shot.asset_names if by_name[name].media_url),
-                    None,
-                ),
+                reference_image_url=preserved_reference(shot),
             )
             for shot in repaired.shots
         ]
@@ -5531,32 +5785,15 @@ async def execute_director_storyboard_repair_task(
             script=script,
             shots=shot_payloads,
         )
-        serialized = json.dumps({"shots": version.content}, ensure_ascii=False, indent=2)
-        session.add(
-            ProjectFile(
-                tenant_id=task.tenant_id,
-                user_id=task.user_id,
-                project_id=chapter.project_id,
-                name=f"{chapter.title}-分镜修复-v{version.version}.json",
-                kind=ProjectFileKind.STORYBOARD,
-                mime_type="application/json",
-                size_bytes=len(serialized.encode("utf-8")),
-                content=serialized,
-                editable=True,
-                file_metadata={
-                    "chapter_id": chapter.id,
-                    "storyboard_version_id": version.id,
-                    "source_task_id": task.id,
-                },
-            )
-        )
+        from app.services.chapter_prompt_files import sync_chapter_prompt_files
+        await sync_chapter_prompt_files(session, version, metadata={"source_task_id": task.id})
         task.status = TaskStatus.SUCCEEDED
         task.result_payload = {
             "credit_refunded": False,
             "storyboard_version_id": version.id,
             "shot_ids": [shot.id for shot in records],
             "shot_count": len(records),
-            "summary": f"已修复 {len(records)} 个镜头",
+            "summary": f"已调整 {changed_shot_count} 个镜头，共保留 {len(records)} 个镜头",
             "runtime_manifest": result.manifest,
         }
         event = record_task_event(
@@ -6234,6 +6471,14 @@ async def execute_asset_image_task(
         asset.media_url = media_url
         asset.status = AssetStatus.READY
         asset.version += 1
+        from app.services.asset_propagation import mark_asset_image_version, propagate_asset_change
+
+        await mark_asset_image_version(session, asset)
+        await propagate_asset_change(
+            session,
+            asset,
+            reason=f"资产“{asset.name}”的图片已重新生成",
+        )
         await snapshot_asset_revision(
             session,
             asset,
@@ -6494,7 +6739,10 @@ async def execute_storyboard_task(task_id: str, runtime_factory: RuntimeFactory)
             chapter_id=chapter.id,
             script_version_id=script.id,
             version=(latest or 0) + 1,
-            content=content,
+            # A fresh list, not the accumulator below: JSON columns are not
+            # mutation-tracked, so sharing the list made the flush write the
+            # still-empty value while the exported project file got every shot.
+            content=[],
             is_active=True,
         )
         session.add(storyboard)
@@ -6512,7 +6760,12 @@ async def execute_storyboard_task(task_id: str, runtime_factory: RuntimeFactory)
             )
             if payload.combat_plan:
                 payload.combat_plan.validate_duration(float(payload.duration_seconds))
-            values = payload.model_dump(exclude={"asset_names", "continuity_group", "frame_layout", "combat_plan", "internal_shots"})
+            if payload.emotion_plan:
+                payload.emotion_plan.validate_duration(float(payload.duration_seconds))
+            values = payload.model_dump(exclude={
+                "asset_names", "continuity_group", "frame_layout", "combat_plan",
+                "internal_shots", "emotion_plan",
+            })
             values.update(asset_ids=asset_ids, reference_image_url=reference_url)
             shot = StoryboardShot(
                 tenant_id=task.tenant_id,
@@ -6527,27 +6780,10 @@ async def execute_storyboard_task(task_id: str, runtime_factory: RuntimeFactory)
             await session.flush()
             shot_ids.append(shot.id)
             content.append({"order_index": index, **payload.model_dump(mode="json"), "asset_ids": asset_ids})
-        storyboard.content = content
-        serialized = json.dumps({"shots": content}, ensure_ascii=False, indent=2)
-        session.add(
-            ProjectFile(
-                tenant_id=task.tenant_id,
-                user_id=task.user_id,
-                project_id=chapter.project_id,
-                name=f"{chapter.title}-分镜表-v{storyboard.version}.json",
-                kind=ProjectFileKind.STORYBOARD,
-                mime_type="application/json",
-                size_bytes=len(serialized.encode("utf-8")),
-                content=serialized,
-                editable=True,
-                file_metadata={
-                    "chapter_id": chapter.id,
-                    "script_version_id": script.id,
-                    "storyboard_version_id": storyboard.id,
-                    "source_task_id": task.id,
-                },
-            )
-        )
+        # Assign a copy so the assignment is a real change for SQLAlchemy.
+        storyboard.content = list(content)
+        from app.services.chapter_prompt_files import sync_chapter_prompt_files
+        await sync_chapter_prompt_files(session, storyboard, metadata={"source_task_id": task.id})
         chapter.status = ChapterStatus.STORYBOARD
         task.status = TaskStatus.SUCCEEDED
         task.result_payload = {
@@ -6597,9 +6833,15 @@ async def generate_shot_video_prompt(
             request.prompt += "\n上次返回未通过校验，请修正后重新输出完整 JSON：" + error
         result = await runtime_factory().run(request)
         try:
-            return parse_shot_video_prompt(result.final_response, row)
+            text = parse_shot_video_prompt(result.final_response, row)
+            if row.get("first_frame_mode") is False:
+                from app.services.first_frame_policy import validate_independent_text
+                validate_independent_text(text)
+            return text
         except (ValueError, ValidationError, RuntimeError) as exc:
             error = str(exc)[:1200]
+            if hasattr(runtime_factory, "invalid_output"):
+                runtime_factory.invalid_output()
     raise RuntimeError(f"镜头 {row.get('order_index', '')} 视频提示词连续 {attempts} 次未通过校验：{error}")
 
 
@@ -6611,8 +6853,21 @@ async def runtime_request_from_context(
 ) -> AgentRuntimeRequest:
     """Assemble one shot's request, including the memories it would retrieve."""
     from app.services.creation_context import combat_stage_guidance
+    from app.services.expression_skill_retrieval import retrieve as retrieve_expressions
 
+    # The performance reference is resolved from this shot's own emotion
+    # timeline, so only the categories this shot performs are opened. A shot
+    # without a plan infers its emotion from its own text rather than failing.
+    # It goes *before* the shot data: that section is the machine-readable tail
+    # consumers split on, so nothing may be appended after it.
+    expression_context, _ = retrieve_expressions(row)
     prompt = base_prompt + json.dumps([row], ensure_ascii=False)
+    if expression_context:
+        marker = "镜头数据："
+        insert_at = prompt.rfind(marker)
+        reference = "本镜按需表演参考：\n" + expression_context + "\n\n"
+        prompt = (prompt[:insert_at] + reference + prompt[insert_at:]
+                  if insert_at >= 0 else prompt + "\n\n" + reference)
     guidance = combat_stage_guidance("video-prompt-generation", prompt)
     request = assemble_runtime_request(
         context,
@@ -6621,7 +6876,10 @@ async def runtime_request_from_context(
         combat_guidance=("\n" + guidance) if guidance else "",
     )
     memories = await load_context_memories(context, request.prompt)
-    return request.model_copy(update={"memory_context": memories}) if memories else request
+    if memories:
+        from app.services.retrieval_context import evidence_file, mount
+        request = mount(request, evidence_file("task-memory", "\n\n".join(memories)))
+    return request
 
 
 def parse_shot_video_prompt(raw: str, row: dict[str, Any]) -> str:
@@ -6643,6 +6901,9 @@ def parse_shot_video_prompt(raw: str, row: dict[str, Any]) -> str:
 
 
 async def execute_shot_video_prompt_task(task_id: str, runtime_factory: RuntimeFactory) -> None:
+    from app.services.generation_parallel import (
+        ParallelRuntime, bounded_each, reserve_task_slots, task_stopped, task_write_lock,
+    )
     from app.services.shot_continuity import neighboring_shots
     from app.services.video_text import video_text_tracks
 
@@ -6687,6 +6948,9 @@ async def execute_shot_video_prompt_task(task_id: str, runtime_factory: RuntimeF
             )
         ).all()
         neighbors = neighboring_shots(neighbor_rows)
+        project = await session.get(Project, task.project_id)
+        first_frame_mode = bool(project and project.first_frame_mode)
+        groups = {item.get("order_index"): item.get("continuity_group", "") for item in (storyboard.content or [])}
         assets_by_id = await load_shot_assets_with_parents(
             session,
             shots=shots,
@@ -6748,6 +7012,14 @@ async def execute_shot_video_prompt_task(task_id: str, runtime_factory: RuntimeF
                     "shot_id": shot.id,
                     "shot_order_index": shot.order_index,
                     "neighboring_shots": neighbors[shot.id],
+                    "first_frame_mode": first_frame_mode,
+                    "continuity_group": groups.get(shot.order_index, "") if first_frame_mode else "",
+                    "tail_frame_source_order_index": (
+                        neighbors[shot.id]["previous"]["shot_order_index"]
+                        if first_frame_mode and neighbors[shot.id]["previous"] and groups.get(shot.order_index)
+                        and groups.get(neighbors[shot.id]["previous"]["shot_order_index"]) == groups.get(shot.order_index)
+                        else None
+                    ),
                     "order_index": shot.order_index,
                     "title": shot.title,
                     "shot_type": shot.shot_type,
@@ -6767,6 +7039,8 @@ async def execute_shot_video_prompt_task(task_id: str, runtime_factory: RuntimeF
                     "internal_shots": next((row.get("internal_shots", []) for row in (storyboard.content or [])
                         if row.get("order_index") == shot.order_index), []),
                     "combat_plan": next((row.get("combat_plan") for row in (storyboard.content or [])
+                        if row.get("order_index") == shot.order_index), None),
+                    "emotion_plan": next((row.get("emotion_plan") for row in (storyboard.content or [])
                         if row.get("order_index") == shot.order_index), None),
                     "reference_image_url": shot.reference_image_url,
                     "reference_map": [
@@ -6887,14 +7161,23 @@ async def execute_shot_video_prompt_task(task_id: str, runtime_factory: RuntimeF
     )
     failures = {}
     changed_shot_ids = []
-    for index, row in enumerate(shot_rows):
+    concurrency = await reserve_task_slots(task_id, min(3, max(1, len(shot_rows))))
+    runtime_factory = ParallelRuntime(runtime_factory, concurrency, task_id=task_id)
+    versions_at_start = {s.id: s.version for s in shots}
+    dialogue_by_shot = {s.id: s.dialogue for s in shots}
+
+    async def generate_one(indexed_row):
+        index, row = indexed_row
         shot_id = row["shot_id"]
-        if next(s.version for s in shots if s.id == shot_id) != shot_versions.get(shot_id, -1):
+        if versions_at_start[shot_id] != shot_versions.get(shot_id, -1):
             failures[shot_id] = "镜头已被编辑，请为该镜头创建新任务"
-            continue
+            return
         if shot_id in completed:
-            continue
-        await record_progress(task_id, 15 + int(70 * index / len(shot_rows)),
+            return
+        async with SessionLocal() as session:
+            if not owns_running_task(await owned_task_for_update(session, task_id)):
+                raise RuntimeError("提示词任务已停止")
+        await record_progress(task_id, 15 + int(70 * len(completed) / len(shot_rows)),
                               f"正在生成镜头 {row['order_index']} 提示词（已保存 {len(completed)}/{len(shot_rows)}）")
         try:
             from app.services.prompt_batches import video_prompt_batches
@@ -6917,27 +7200,38 @@ async def execute_shot_video_prompt_task(task_id: str, runtime_factory: RuntimeF
                     ensure_video_prompt_reference_locks(text, reference_map_by_shot.get(shot_id, []),
                                                         language=preferred_language),
                     audio_reference_map_by_shot.get(shot_id, []), language=preferred_language),
-                next(s.dialogue for s in shots if s.id == shot_id),
+                dialogue_by_shot[shot_id],
                 audio_enabled=audio_enabled, protocol_name=str(protocol["name"]), language=preferred_language,
             ) + motion_contract(row["action_description"], row["scene_description"])
+            # Performance is a floor, not an option: whether the shot went
+            # through combat design or the plain path, the shot must not ship
+            # with a blank face. Beats the reply already performed are skipped.
+            from app.services.expression_choreography import expression_contract, inject_contract
+
+            # Structured protocols end on the audio fields, so the lock goes
+            # inside the described body next to the other reference locks.
+            text = inject_contract(
+                text,
+                expression_contract(row, language=preferred_language, existing=text),
+            )
             text += video_timeline_instruction(row.get("internal_shots", []))
-            async with SessionLocal() as session:
+            async with task_write_lock(task_id), SessionLocal() as session:
                 current = await owned_task_for_update(session, task_id)
                 if not owns_running_task(current):
-                    return
+                    raise RuntimeError("提示词任务已停止")
                 board = await session.get(StoryboardVersion, storyboard_id)
                 shot = await session.get(StoryboardShot, shot_id, with_for_update=True)
                 if not board or not board.is_active or not shot or shot.version != shot_versions[shot_id]:
                     raise RuntimeError("镜头已编辑，结果未覆盖新版本")
-                if shot.video_prompt != text:
+                changed = shot.video_prompt != text
+                if changed:
                     shot.video_prompt = text
                     shot.version += 1
-                    changed_shot_ids.append(shot.id)
                     await session.execute(update(VideoClip).where(
                         VideoClip.shot_id == shot.id, VideoClip.is_active.is_(True)
                     ).values(is_active=False, invalidated_reason="镜头视频提示词已更新"))
                     await invalidate_compositions(session, chapter_id=chapter_id, reason="镜头视频提示词已更新")
-                completed[shot_id] = shot.version
+                saved_version = shot.version
                 if combat_record:
                     content = list(board.content or [])
                     if not any(item.get("order_index") == shot.order_index for item in content):
@@ -6947,16 +7241,28 @@ async def execute_shot_video_prompt_task(task_id: str, runtime_factory: RuntimeF
                         if item.get("order_index") == shot.order_index else item
                         for item in content
                     ]
-                shot_versions[shot_id] = shot.version
+                next_completed = {**completed, shot_id: saved_version}
+                next_versions = {**shot_versions, shot_id: saved_version}
                 current.request_payload = {**current.request_payload,
-                    "shot_versions": shot_versions, "video_prompt_completed": completed}
+                    "shot_versions": next_versions, "video_prompt_completed": next_completed}
                 current.result_payload = {**(current.result_payload or {}),
-                    "completed_shot_ids": list(completed), "shot_count": len(completed)}
+                    "completed_shot_ids": list(next_completed), "shot_count": len(next_completed)}
+                from app.services.chapter_prompt_files import sync_chapter_prompt_files
+                await sync_chapter_prompt_files(session, board, metadata={"source_task_id": task_id})
                 await session.commit()
+                if changed:
+                    changed_shot_ids.append(shot_id)
+                completed[shot_id] = saved_version
+                shot_versions[shot_id] = saved_version
+            await record_progress(task_id, 15 + int(70 * len(completed) / len(shot_rows)),
+                                  f"镜头 {row['order_index']} 提示词已保存（{len(completed)}/{len(shot_rows)}）")
         except Exception as exc:
+            if task_stopped(exc):
+                raise
             failures[shot_id] = str(exc)[:500]
-            await record_progress(task_id, 15 + int(70 * (index + 1) / len(shot_rows)),
+            await record_progress(task_id, 15 + int(70 * len(completed) / len(shot_rows)),
                                   f"镜头 {row['order_index']} 提示词失败，已保存的镜头保留，继续处理其它镜头")
+    await bounded_each(enumerate(shot_rows), generate_one, concurrency)
     async with SessionLocal() as session:
         task = await owned_task_for_update(session, task_id)
         if not owns_running_task(task):
@@ -6972,6 +7278,43 @@ async def execute_shot_video_prompt_task(task_id: str, runtime_factory: RuntimeF
         await session.commit()
         if not failures:
             await publish_task_event(task, event)
+    # A batch keeps the prompts it already committed, so it must only ever be
+    # charged for those. Refund the unfinished share, shrink the live charge to
+    # the delivered work, and record the per-shot price so a retry can bill
+    # exactly the failed shots instead of re-running the whole batch.
+    if failures:
+        async with SessionLocal() as session:
+            task = await owned_task_for_update(session, task_id)
+            if owns_running_task(task):
+                total_charged = Decimal(str(task.cost))
+                per_shot = Decimal(str(
+                    task.request_payload.get("shot_unit_cost") or "0"
+                ))
+                if per_shot <= 0:
+                    per_shot = total_charged / Decimal(str(max(len(shot_ids), 1)))
+                failed_share = per_shot * Decimal(len(failures))
+                refunded = await refund_task_amount(
+                    session,
+                    task,
+                    failed_share,
+                    reason="镜头视频提示词：仅失败镜头退款",
+                )
+                result = dict(task.result_payload or {})
+                result["failed_shot_ids"] = list(failures)
+                result["shot_unit_cost"] = str(per_shot)
+                result["delivered_cost"] = str(total_charged - Decimal(str(
+                    result.get("refunded_amount") or "0"
+                )))
+                # The generic failure handler must not refund the prompts that
+                # were actually delivered; only the failed share was returned.
+                result["partial_refund_applied"] = True
+                # Nothing further is owed unless a retry re-queues the failed
+                # shots; the committed prompts stay legitimately charged.
+                result["credit_refunded"] = (
+                    Decimal(str(result.get("refunded_amount") or "0")) >= total_charged
+                )
+                task.result_payload = result
+                await session.commit()
     if failures:
         raise RuntimeError(f"{len(failures)} 个镜头提示词失败，已保存 {len(completed)} 个；重试仅处理未完成镜头。"
                            + "；".join(failures.values())[:800])
@@ -7065,6 +7408,9 @@ async def execute_shot_video_task(task_id: str, gateway_factory: GatewayFactory)
         )
         if continuity:
             effective_video_prompt += continuation_prompt(continuity)
+        else:
+            from app.services.first_frame_policy import independent_video_contract
+            effective_video_prompt += independent_video_contract(shot)
         technique_references = [r for r in reference_media if r.get("role") == "technique_reference"]
         if technique_references:
             effective_video_prompt = ensure_video_prompt_reference_locks(
@@ -7972,7 +8318,10 @@ async def fail_task(
             progress=100,
             message=message,
         )
-        await refund_task_cost(session, task, reason="AI 任务失败退款")
+        # A batch that already returned the share it never delivered must not
+        # also refund the prompts it did produce.
+        if not result.get("partial_refund_applied"):
+            await refund_task_cost(session, task, reason="AI 任务失败退款")
         await session.commit()
         await publish_task_event(task, event)
 

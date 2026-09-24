@@ -33,6 +33,12 @@ const action = ref('')
 const feedback = ref('')
 let pollTimer: ReturnType<typeof setTimeout> | undefined
 
+const feedbackPlaceholder = computed(() => (
+  detail.value?.pending_decision?.decision_type === 'storyboard_review'
+    ? '可选：写清镜号与要改的字段，例如「镜头 7 的台词太长，缩短到 6 秒能念完」，平台只会修复这一镜'
+    : '可选：补充你希望保留或调整的具体内容'
+))
+
 const stages = [
   { id: 'script', label: '剧本', icon: Clapperboard },
   { id: 'review', label: '审核', icon: ShieldCheck },
@@ -234,7 +240,7 @@ function findings(child: DirectorChildRun): Array<Record<string, string>> {
       <section v-if="detail.pending_decision" class="director-decision">
         <header><MessageSquareWarning :size="17" /><strong>需要你的决定</strong></header>
         <p>{{ detail.pending_decision.prompt }}</p>
-        <textarea v-model="feedback" rows="3" placeholder="可选：补充你希望保留或调整的具体内容"></textarea>
+        <textarea v-model="feedback" rows="3" :placeholder="feedbackPlaceholder"></textarea>
         <div>
           <button
             v-for="option in detail.pending_decision.options"

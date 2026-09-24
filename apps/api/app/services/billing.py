@@ -270,14 +270,24 @@ async def refund_task_cost(
     )
     if account is None:
         raise RuntimeError("credit account missing while refunding task")
-    account.balance += task.cost
+    # ``task.cost`` stays the nominal charge for the task so a retry can debit it
+    # again; ``refunded_amount`` tracks what has already been handed back, which
+    # lets a partial refund (failed shots) and a later full refund coexist.
+    already = Decimal(str(result.get("refunded_amount") or "0"))
+    amount = task.cost - already
+    if amount <= 0:
+        result["credit_refunded"] = True
+        task.result_payload = result
+        return False
+    account.balance += amount
     result["credit_refunded"] = True
+    result["refunded_amount"] = str(task.cost)
     task.result_payload = result
     session.add(
         CreditLedger(
             tenant_id=task.tenant_id,
             user_id=task.user_id,
-            amount=task.cost,
+            amount=amount,
             balance_after=account.balance,
             reason=reason,
             reference_type="ai_task",
@@ -285,3 +295,50 @@ async def refund_task_cost(
         )
     )
     return True
+
+
+async def refund_task_amount(
+    session: AsyncSession,
+    task: AITask,
+    amount: Decimal,
+    *,
+    reason: str,
+) -> Decimal:
+    """Refund part of a task's charge, e.g. only the shots that never ran.
+
+    A batch that saves most of its shots and then fails must not refund work the
+    user already received. ``task.cost`` stays the nominal charge and
+    ``refunded_amount`` accumulates what was returned, so a partial refund and a
+    later full refund can never together exceed the original charge.
+    """
+    if amount <= 0 or task.cost <= Decimal("0"):
+        return Decimal("0")
+    result = dict(task.result_payload or {})
+    already = Decimal(str(result.get("refunded_amount") or "0"))
+    refundable = task.cost - already
+    if refundable <= 0:
+        return Decimal("0")
+    amount = min(amount, refundable)
+    account = await session.scalar(
+        select(CreditAccount)
+        .where(CreditAccount.tenant_id == task.tenant_id, CreditAccount.user_id == task.user_id)
+        .with_for_update()
+    )
+    if account is None:
+        raise RuntimeError("credit account missing while refunding task")
+    account.balance += amount
+    result["refunded_amount"] = str(already + amount)
+    result["credit_refunded"] = (already + amount) >= task.cost
+    task.result_payload = result
+    session.add(
+        CreditLedger(
+            tenant_id=task.tenant_id,
+            user_id=task.user_id,
+            amount=amount,
+            balance_after=account.balance,
+            reason=reason,
+            reference_type="ai_task",
+            reference_id=task.id,
+        )
+    )
+    return amount

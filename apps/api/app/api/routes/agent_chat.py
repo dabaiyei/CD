@@ -13,12 +13,14 @@ from fastapi import APIRouter, Depends, File, HTTPException, UploadFile, status
 from pydantic import BaseModel, Field, ValidationError
 from sqlalchemy import delete, func, select
 from sqlalchemy.ext.asyncio import AsyncSession
+from sqlalchemy.orm import defer
 from starlette.concurrency import run_in_threadpool
 
 from app.api.deps import get_current_user
 from app.api.routes.projects import project_for_user
 from app.core.config import get_settings
 from app.core.security import SecretBox
+from app.services.chat_documents import DOCUMENT_TYPES, supported_attachment
 from app.db.models import (
     AgentChatMessage,
     AgentChatSession,
@@ -443,6 +445,40 @@ def personal_attachment_public(attachment: PersonalAgentAttachment) -> AgentChat
     )
 
 
+async def store_chat_document(db, user, data, name, project_id=None):
+    from app.services.chat_documents import save_document, MAX_DOCUMENT_BYTES
+    if len(data) > MAX_DOCUMENT_BYTES:
+        raise HTTPException(413, "单份文档不能超过32MB")
+    stored_path = None
+    storage_key = None
+    try:
+        stored_path, mime = await run_in_threadpool(save_document, data, filename=name,
+            root=settings.uploads_root, owner=user.id)
+        storage_key, media_url = await persist_media_file(stored_path, mime)
+        if project_id:
+            attachment = ProjectFile(tenant_id=user.tenant_id, user_id=user.id, project_id=project_id,
+                name=name, kind=ProjectFileKind.OTHER, mime_type=mime, size_bytes=len(data),
+                storage_path=storage_key, editable=False,
+                file_metadata={"role": "agent_chat_attachment", "media_url": media_url, "uploaded_by": "user"})
+        else:
+            attachment = PersonalAgentAttachment(tenant_id=user.tenant_id, user_id=user.id,
+                name=name, mime_type=mime, size_bytes=len(data), storage_path=storage_key, media_url=media_url)
+        db.add(attachment)
+        await db.commit()
+        await db.refresh(attachment)
+        return attachment_public(attachment) if project_id else personal_attachment_public(attachment)
+    except Exception as exc:
+        await db.rollback()
+        if storage_key:
+            with suppress(Exception):
+                await delete_media_file(storage_key, stored_path)
+        elif stored_path:
+            stored_path.unlink(missing_ok=True)
+        if isinstance(exc, (ValueError, UnicodeError)):
+            raise HTTPException(422, str(exc)) from exc
+        raise
+
+
 async def message_attachments(
     db: AsyncSession,
     *,
@@ -473,7 +509,7 @@ async def message_attachments(
             or item.file_metadata.get("role") != "agent_chat_attachment"
             or item.file_metadata.get("agent_chat_message_id")
             or not item.storage_path
-            or not item.mime_type.startswith("image/")
+            or not supported_attachment(item.mime_type)
         ):
             raise HTTPException(status_code=422, detail="图片附件不存在、已被使用或不属于当前项目")
         attachments.append(item)
@@ -496,6 +532,10 @@ async def upload_attachment(
     await file.close()
     if len(data) > MAX_COVER_BYTES:
         raise HTTPException(status_code=413, detail="单张图片不能超过 100MB")
+
+    original_name = Path(file.filename or "图片").name
+    if Path(original_name).suffix.lower() in DOCUMENT_TYPES:
+        return await store_chat_document(db, user, data, original_name, project_id)
 
     stored_path: Path | None = None
     storage_key: str | None = None
@@ -806,37 +846,52 @@ async def project_file_snapshots(
     db: AsyncSession,
     user: User,
     project_id: str,
+    *,
+    chapter_id: str | None = None,
+    max_files: int = 180,
 ) -> list[AgentRuntimeProjectFileSnapshot]:
+    from app.services.agent_file_context import paged_snapshot
+    from app.services.chapter_prompt_files import ensure_project_prompt_files, visible_prompt_files
+
+    await ensure_project_prompt_files(db, project_id=project_id, user=user, chapter_id=chapter_id)
+
     files = list(
         (
             await db.scalars(
                 select(ProjectFile)
+                .options(defer(ProjectFile.content))
                 .where(
                     ProjectFile.tenant_id == user.tenant_id,
                     ProjectFile.user_id == user.id,
                     ProjectFile.project_id == project_id,
                     ProjectFile.content.is_not(None),
+                    visible_prompt_files(),
                 )
                 .order_by(ProjectFile.updated_at.desc())
             )
         ).all()
     )
-    if len(files) > MAX_PROJECT_FILES:
-        raise HTTPException(status_code=422, detail="项目文本文件数量超过 Agent 运行上限")
-
     snapshots: list[AgentRuntimeProjectFileSnapshot] = []
     total_bytes = 0
+    omitted: list[str] = []
     for item in files:
-        content = item.content or ""
+        metadata = item.file_metadata or {}
+        if chapter_id and (
+            item.kind == ProjectFileKind.SOURCE
+            or (metadata.get("chapter_id") and str(metadata["chapter_id"]) != chapter_id)
+            or item.kind == ProjectFileKind.SCRIPT
+        ):
+            # The authoritative current chapter/script is supplied separately.
+            # A novel source can contain hundreds of OTHER chapters.
+            continue
+        if len(snapshots) >= max_files - 1 or total_bytes + item.size_bytes > MAX_PROJECT_FILES_TOTAL_BYTES:
+            omitted.append(f"- {item.id}：{item.name[:120]}")
+            continue
+        content = await db.scalar(select(ProjectFile.content).where(ProjectFile.id == item.id)) or ""
         content_bytes = len(content.encode("utf-8"))
-        if content_bytes > MAX_PROJECT_FILE_BYTES:
-            raise HTTPException(status_code=422, detail=f"项目文件过大：{item.name}")
-        total_bytes += content_bytes
-        if total_bytes > MAX_PROJECT_FILES_TOTAL_BYTES:
-            raise HTTPException(status_code=422, detail="项目文件总大小超过 Agent 运行上限")
         filename = snapshot_filename(item.name)
         digest = hashlib.sha256(content.encode("utf-8")).hexdigest()
-        snapshots.append(
+        group = paged_snapshot(
             AgentRuntimeProjectFileSnapshot(
                 id=item.id,
                 name=item.name,
@@ -844,9 +899,26 @@ async def project_file_snapshots(
                 path=f"project-files/{item.id}/{filename}",
                 content=content,
                 sha256=digest,
-                editable=item.editable,
+                editable=item.editable and content_bytes <= MAX_PROJECT_FILE_BYTES,
             )
         )
+        if len(snapshots) + len(group) > max_files - 1 or total_bytes + content_bytes > MAX_PROJECT_FILES_TOTAL_BYTES:
+            omitted.append(f"- {item.id}：{item.name[:120]}")
+            continue
+        snapshots.extend(group)
+        total_bytes += content_bytes
+    if omitted and max_files > 0:
+        content = (
+            "# 本轮未加载的项目文件\n\n本轮优先当前章节与近期文件，以下文件因上下文预算未加载，"
+            "不能声称已阅读；如任务需要这些文件，请用户选择对应章节或指定文件。\n"
+            + "\n".join(omitted[:200])
+            + f"\n共 {len(omitted)} 个未加载文件。"
+        )
+        snapshots.append(AgentRuntimeProjectFileSnapshot(
+            id="project-context-index", name="unloaded-files.md", kind="context_index",
+            path="project-files/project-context-index/unloaded-files.md", content=content,
+            sha256=hashlib.sha256(content.encode("utf-8")).hexdigest(), editable=False,
+        ))
     return snapshots
 
 
@@ -1184,6 +1256,27 @@ async def apply_storyboard_version_command(
             f"生成分镜前必须先完成资产图片：{'、'.join(missing[:8])}",
             status_value="conflict",
         )
+    # A board that cannot give every scene a shot is provably incomplete; the
+    # agent must not publish it just because the shots it did return are valid.
+    from app.api.routes.storyboards import project_video_model
+    from app.services.provider_adapters import supported_video_durations
+    from app.services.storyboard_generation import coverage_finding, scenes_for_coverage
+
+    video_model = await project_video_model(db, project_id=project.id, tenant_id=user.tenant_id)
+    gap = coverage_finding(
+        [shot.model_dump(mode="json") for shot in shots],
+        scenes_for_coverage(
+            script.content,
+            supported_video_durations(video_model.capabilities if video_model else None),
+        ),
+    )
+    if gap is not None:
+        return rejected_file_change(
+            "publish_storyboard_version",
+            source_name,
+            f"{gap['issue']} {gap['suggestion']}",
+            status_value="conflict",
+        )
 
     asset_by_name = {asset.name: asset for asset in assets}
     strict_command = source_name == STORYBOARD_VERSION_COMMAND_FILE
@@ -1246,29 +1339,15 @@ async def apply_storyboard_version_command(
             }
         )
     storyboard.content = content
-    serialized = json.dumps({"shots": content}, ensure_ascii=False, indent=2)
-    project_file = ProjectFile(
-        id=new_id(),
-        tenant_id=user.tenant_id,
-        user_id=user.id,
-        project_id=project.id,
-        name=f"{chapter.title[:210]}-分镜表-v{storyboard.version}.json",
-        kind=ProjectFileKind.STORYBOARD,
-        mime_type="application/json",
-        size_bytes=len(serialized.encode("utf-8")),
-        content=serialized,
-        editable=True,
-        file_metadata={
-            "chapter_id": chapter.id,
-            "script_version_id": script.id,
-            "storyboard_version_id": storyboard.id,
+    from app.services.chapter_prompt_files import sync_chapter_prompt_files
+    project_file, _ = await sync_chapter_prompt_files(
+        db, storyboard, metadata={
             "source_task_id": run_id,
             "created_by": "agent",
             "source_name": source_name,
             "unmatched_asset_names": unknown,
         },
     )
-    db.add(project_file)
     chapter.status = ChapterStatus.STORYBOARD
     return {
         "operation": "publish_storyboard_version",
@@ -1466,6 +1545,7 @@ async def apply_project_file_changes(
     chapter: Chapter | None = None,
     task_dispatches: list[tuple[AITask, TaskEvent]] | None = None,
 ) -> list[dict[str, Any]]:
+    from app.services.chapter_prompt_files import visible_prompt_files
     snapshot_by_id = {item.id: item for item in snapshots}
     outcomes: list[dict[str, Any]] = []
     seen_file_ids: set[str] = set()
@@ -1477,6 +1557,7 @@ async def apply_project_file_changes(
                 ProjectFile.user_id == user.id,
                 ProjectFile.project_id == project.id,
                 ProjectFile.content.is_not(None),
+                visible_prompt_files(),
             )
         )
         or 0
@@ -1489,6 +1570,21 @@ async def apply_project_file_changes(
             created_count += 1
             content = change.content
             name = (change.name or "").strip()
+            # Do not let the model sidestep optimistic Edit checks by creating
+            # another numbered copy of an existing chapter prompt document.
+            if (chapter is not None and name != STORYBOARD_VERSION_COMMAND_FILE
+                    and any(token in name.lower() for token in
+                            ("分镜", "视频提示词", "storyboard", "video-prompt", "video_prompt"))):
+                from app.services.chapter_prompt_files import is_prompt_file
+                canonical_files = list((await db.scalars(select(ProjectFile).where(
+                    ProjectFile.project_id == project.id, ProjectFile.user_id == user.id,
+                    ProjectFile.tenant_id == user.tenant_id,
+                    ProjectFile.file_metadata["chapter_id"].as_string() == chapter.id,
+                ))).all())
+                if any(is_prompt_file(item) for item in canonical_files):
+                    outcomes.append(rejected_file_change(operation, display_name,
+                        "该章已有固定分镜/视频提示词文件，请读取并 Edit 原文件，不要创建新版本副本"))
+                    continue
             if created_count > MAX_AGENT_CREATED_FILES_PER_RUN:
                 outcomes.append(rejected_file_change(operation, display_name, "单次新建文件数量超过上限"))
                 continue
@@ -1690,9 +1786,10 @@ async def apply_project_file_changes(
             )
             continue
         if operation == "delete":
-            if current.kind == ProjectFileKind.SOURCE:
+            from app.services.chapter_prompt_files import is_prompt_file
+            if current.kind == ProjectFileKind.SOURCE or is_prompt_file(current):
                 outcomes.append(
-                    rejected_file_change(operation, current.name, "Agent 不允许删除来源文件", file_id=file_id)
+                    rejected_file_change(operation, current.name, "Agent 不允许删除来源文件或固定提示词文件，请原位修改", file_id=file_id)
                 )
                 continue
             await db.delete(current)
@@ -1714,8 +1811,17 @@ async def apply_project_file_changes(
                 rejected_file_change(operation, current.name, "文件内容缺失或超过大小上限", file_id=file_id)
             )
             continue
-        current.content = content
-        current.size_bytes = len(content.encode("utf-8"))
+        from app.services.chapter_prompt_files import apply_prompt_file_edit, is_prompt_file
+        if is_prompt_file(current):
+            try:
+                async with db.begin_nested():
+                    await apply_prompt_file_edit(db, current, content, user)
+            except HTTPException as exc:
+                outcomes.append(rejected_file_change(operation, snapshot.name, str(exc.detail), file_id=file_id))
+                continue
+        else:
+            current.content = content
+            current.size_bytes = len(content.encode("utf-8"))
         metadata = dict(current.file_metadata or {})
         metadata.update(
             {
@@ -2524,7 +2630,7 @@ async def personal_message_attachments(
             item is None
             or item.message_id
             or not item.storage_path
-            or not item.mime_type.startswith("image/")
+            or not supported_attachment(item.mime_type)
         ):
             raise HTTPException(status_code=422, detail="图片附件不存在、已被使用或不属于当前用户")
         attachments.append(item)
@@ -2659,6 +2765,9 @@ async def upload_personal_attachment(
     await file.close()
     if len(data) > MAX_COVER_BYTES:
         raise HTTPException(status_code=413, detail="单张图片不能超过 100MB")
+
+    if Path(original_name).suffix.lower() in DOCUMENT_TYPES:
+        return await store_chat_document(db, user, data, original_name)
 
     stored_path: Path | None = None
     storage_key: str | None = None
@@ -2949,9 +3058,9 @@ async def send_personal_message(
             "media_options": payload.media_options.model_dump(exclude_none=True),
             "media_generation_mode": (
                 "image_to_image"
-                if payload.mode == "image" and attachments
+                if payload.mode == "image" and any(item.mime_type.startswith("image/") for item in attachments)
                 else "image_to_video"
-                if payload.mode == "video" and attachments
+                if payload.mode == "video" and any(item.mime_type.startswith("image/") for item in attachments)
                 else "text_to_image"
                 if payload.mode == "image"
                 else "text_to_video"

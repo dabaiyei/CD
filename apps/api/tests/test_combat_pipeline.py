@@ -426,12 +426,13 @@ def test_combat_prompts_use_assets_without_independent_frames(client, creator_he
             assert (request.system_prompt + request.prompt).count(DESIGN_RULES) == 1
             assert len(request.system_prompt) + len(request.prompt) <= 32000
             assert request.memory_context == []
-            assert "<martial-reference" in request.prompt
-            assert 'name="sword.md"' in request.prompt
-            assert 'name="grappling.md"' not in request.prompt
-            assert owner["media_url"] in request.prompt
-            assert '"role": "asset_reference"' in request.prompt
-            assert '"role": "first_frame"' not in request.prompt
+            source = next((file.content for file in request.project_files if file.id == "retrieval-task-input"), request.prompt)
+            assert "<martial-reference" in source
+            assert 'name="sword.md"' in source
+            assert 'name="grappling.md"' not in source
+            assert owner["media_url"] in source
+            assert '"role": "asset_reference"' in source
+            assert '"role": "first_frame"' not in source
             from test_combat_choreography import design_payload
             assert "-combat-" in request.session_id
             if fail_after_design and self.calls == 1:
@@ -538,23 +539,23 @@ def _runtime_context(**overrides):
     return TaskRuntimeContext(**values)
 
 
-def test_shared_context_assembles_the_original_prompt_order():
-    # The shot loop builds one task-level context and reuses it; the per-shot
-    # request must keep the original section order exactly.
+def test_shared_context_mounts_rules_and_skills_without_inlining_them():
     from app.services.task_worker import assemble_runtime_request
 
     request = assemble_runtime_request(_runtime_context(), prompt="SHOT", prompt_appendix="APPENDIX")
-    assert request.prompt == "TEMPLATE\n\nAPPENDIX\n\nSKILLS\n\nSHOT"
-    assert request.system_prompt == "HEADTAIL"
-    # With no appendix the template must still precede the skills.
-    assert assemble_runtime_request(_runtime_context(), prompt="SHOT").prompt == "TEMPLATE\n\nSKILLS\n\nSHOT"
+    assert request.prompt == "SHOT" and request.tool_mode == "retrieval"
+    rules = next(file.content for file in request.project_files if file.id == "retrieval-task-rules")
+    assert rules == "HEADTAIL\n\nTEMPLATE\n\nAPPENDIX"
+    assert next(file.content for file in request.project_files if file.id == "retrieval-task-references") == "SKILLS"
+    assert all(not file.editable for file in request.project_files)
+    assert "HEADTAIL" in request.system_prompt
 
 
 def test_per_shot_combat_guidance_splices_between_the_task_level_halves():
     from app.services.task_worker import assemble_runtime_request
 
     request = assemble_runtime_request(_runtime_context(), prompt="SHOT", combat_guidance="\nGUIDE")
-    assert request.system_prompt == "HEAD\nGUIDETAIL"
+    assert "HEAD\nGUIDETAIL" in request.system_prompt
 
 
 def test_shot_prompt_parses_both_supported_reply_shapes():
