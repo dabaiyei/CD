@@ -41,8 +41,9 @@ def test_unrelated_chat_and_image_dont_load_video_director():
     assert "ACT视角" in personal_creation_guidance("继续", recent_messages=history)
 
 
+@pytest.mark.parametrize('authoring', ['yes', 'unknown'])
 def test_home_text_prompt_runtime_receives_rules_without_rendering(
-    client, creator_headers, admin_headers, monkeypatch
+    client, creator_headers, admin_headers, monkeypatch, authoring
 ):
     from pydantic import SecretStr
     from test_api import FakePersonalChatMediaActionRuntime
@@ -65,7 +66,7 @@ def test_home_text_prompt_runtime_receives_rules_without_rendering(
 
     async def post(config, payload):
         values = (
-            {"authoring": "yes"}
+            {"authoring": authoring}
             if "authoring" in payload["questions"]
             else {"combat": "exchange", "emotion": "yes", "locomotion": "yes", "speech": "no"}
         )
@@ -89,9 +90,14 @@ def test_home_text_prompt_runtime_receives_rules_without_rendering(
     asyncio.run(process_task(submitted["task"]["id"], runtime_factory=lambda: runtime))
     task = client.get(f"/api/v1/tasks/{submitted['task']['id']}", headers=creator_headers).json()
     assert task["status"] == "succeeded", task.get("error_message")
-    assert "ACT视角" in runtime.requests[0].system_prompt
-    assert "人物行走速度参考" in runtime.requests[0].system_prompt
-    assert "接触点" in runtime.requests[0].system_prompt
+    assert runtime.requests
+    if authoring == 'yes':
+        assert "ACT视角" in runtime.requests[0].system_prompt
+        assert "人物行走速度参考" in runtime.requests[0].system_prompt
+        assert "接触点" in runtime.requests[0].system_prompt
+    else:
+        assert not task['result_payload'].get('jev_pending')
+        assert task['result_payload']['jev_control']['optional_creation_guidance']['status'] == 'skipped'
     assert not task["result_payload"].get("generated_media")
     assert not task["result_payload"].get("media_plan_next_task_id")
 
@@ -142,6 +148,31 @@ def test_home_activation_preserves_history_and_never_falls_back(monkeypatch, aut
             assert "ACT视角" in rules
             assert history[0]["content"] in str(calls[1]["state"]["evidence"])
     assert len(calls) == (2 if authoring == "yes" else 1)
+
+
+@pytest.mark.parametrize('message', ['我们这次对话不用管之前的先', '什么不足'])
+@pytest.mark.parametrize('stage', ['authoring', 'modules', 'configuration'])
+def test_optional_text_guidance_never_blocks_or_enables_modules(monkeypatch, message, stage):
+    from app.services import jev_control
+    from app.services.personal_creation_guidance import controlled_guidance
+
+    class Control:
+        async def choose(self, label, evidence, questions):
+            if stage == 'modules' and 'authoring' in questions:
+                return {'authoring': 'yes'}
+            raise jev_control.JevDecisionPending('confidence insufficient')
+
+    async def controller(*args):
+        if stage == 'configuration':
+            raise jev_control.JevDecisionPending('configuration unavailable')
+        return Control()
+
+    monkeypatch.setattr(jev_control, 'controller', controller)
+    checkpoint = {}
+    assert asyncio.run(controlled_guidance('t', message, optional=True, checkpoint=checkpoint)) == ''
+    assert checkpoint['optional_creation_guidance']['status'] == 'skipped'
+    with pytest.raises(jev_control.JevDecisionPending):
+        asyncio.run(controlled_guidance('t', message, optional=False))
 
 
 def test_home_pending_modules_do_not_call_creative_or_media_models(client, creator_headers, monkeypatch):

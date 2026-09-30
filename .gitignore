@@ -22,4 +22,6 @@ skills/tenants/
 /=
 .DS_Store
 site-backups/
+apps/web/public/canvas-app/
+.logs/infinite-canvas-*.png
 *.cfbackup

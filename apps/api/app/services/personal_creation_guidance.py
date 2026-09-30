@@ -83,7 +83,24 @@ def personal_creation_guidance(message, *, mode="chat", recent_messages=(), sele
     return "\n\n" + "\n".join(rules)
 
 
-async def controlled_guidance(tenant_id, message, *, mode="chat", recent_messages=(), checkpoint=None):
+async def controlled_guidance(tenant_id, message, *, mode="chat", recent_messages=(), checkpoint=None,
+                              optional=False):
+    """Optional writing guidance must not veto an already authorized text reply."""
+    from app.services.jev_control import JevDecisionPending
+    try:
+        return await _controlled_guidance(tenant_id, message, mode=mode,
+            recent_messages=recent_messages, checkpoint=checkpoint)
+    except JevDecisionPending as exc:
+        if not optional:
+            raise
+        if checkpoint is not None:
+            checkpoint['optional_creation_guidance'] = {'status': 'skipped', 'reason': str(exc)}
+        # Do not infer creative modules, rewrite permission or media authority.
+        # The upstream text-only route remains authoritative.
+        return ""
+
+
+async def _controlled_guidance(tenant_id, message, *, mode="chat", recent_messages=(), checkpoint=None):
     """JEV owns activation and modules; history resolves references, never authorizes rendering."""
     from app.services.jev_control import choice, controller, modules
 
@@ -104,6 +121,8 @@ async def controlled_guidance(tenant_id, message, *, mode="chat", recent_message
             "authoring": choice(
                 "用户现在要编写或修改视频/分镜提示词吗？只判断是否委托写作，与画面有没有战斗无关。"
                 "‘写视频提示词’选yes；‘原样提交，不要修改’选no；普通聊天选no。"
+                "询问报错原因、问‘什么不足’、要求本轮不使用之前上下文，都选no。"
+                "当前话题优先于历史，不能因历史曾生成视频就启用。没有委托写视频提示词是no，不是unknown。"
                 "‘继续优化这个方案’承接history中最近的视频写作请求，选yes。",
                 {
                     "yes": "编写或修改视频提示词",

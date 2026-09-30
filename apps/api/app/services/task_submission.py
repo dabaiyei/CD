@@ -55,7 +55,8 @@ async def create_queued_task(
     request_payload: dict,
     message: str,
 ) -> tuple[AITask, TaskEvent]:
-    await require_core_models_ready(session, user.tenant_id)
+    if task_type != "canvas_generation":
+        await require_core_models_ready(session, user.tenant_id)
     if project_id:
         from app.services.ai_creation import require_ai_chapter_unlocked
 

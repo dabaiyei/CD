@@ -15,12 +15,14 @@ from app.api.routes import (
     assets,
     auth,
     branding,
+    canvas_agent,
     jev,
     director,
     director_workflows,
     dubbing,
     finishing,
     invitations,
+    infinite_canvas,
     marketplace,
     memories,
     notifications,
@@ -116,6 +118,8 @@ app.include_router(tasks.router, prefix=settings.api_prefix)
 app.include_router(notifications.router, prefix=settings.api_prefix)
 app.include_router(pricing.router, prefix=settings.api_prefix)
 app.include_router(user_skills.router, prefix=settings.api_prefix)
+app.include_router(infinite_canvas.router, prefix=settings.api_prefix)
+app.include_router(canvas_agent.router, prefix=settings.api_prefix)
 app.include_router(video_replica.router, prefix=settings.api_prefix)
 app.include_router(replica_production.router, prefix=settings.api_prefix)
 app.include_router(replica_studio.router, prefix=settings.api_prefix)

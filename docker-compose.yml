@@ -72,7 +72,8 @@ services:
 
   api:
     build:
-      context: ${CINEFORGE_SOURCE_ROOT:-.}/apps/api
+      context: ${CINEFORGE_SOURCE_ROOT:-.}
+      dockerfile: apps/api/Dockerfile
     restart: unless-stopped
     environment:
       APP_ENV: production
@@ -135,7 +136,8 @@ services:
 
   worker:
     build:
-      context: ${CINEFORGE_SOURCE_ROOT:-.}/apps/api
+      context: ${CINEFORGE_SOURCE_ROOT:-.}
+      dockerfile: apps/api/Dockerfile
     restart: unless-stopped
     command: ["python", "-m", "app.worker"]
     environment:

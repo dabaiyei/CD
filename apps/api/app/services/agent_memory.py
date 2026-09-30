@@ -70,6 +70,7 @@ async def retrieve_project_memories(
     project_id: str | None,
     query: str,
     limit: int = 8,
+    session_id: str | None = None,
 ) -> list[RetrievedMemory]:
     if limit <= 0:
         return []
@@ -78,6 +79,12 @@ async def retrieve_project_memories(
         AgentMemory.user_id == user.id,
         AgentMemory.project_id == project_id,
     )
+    if project_id is None:
+        # NULL project IDs belong to different home conversations, not a
+        # shared personal memory pool. Unattributed memories are not injected.
+        if not session_id:
+            return []
+        scope += (AgentMemory.source_session_id == session_id,)
     query_vector = embed_memory_text(query)
     dialect = session.bind.dialect.name if session.bind is not None else ""
     if query.strip() and dialect == "postgresql":
@@ -119,3 +126,14 @@ def normalize_memory_key(value: str, content: str) -> str:
     normalized = re.sub(r"[^a-z0-9._-]+", "-", value.casefold()).strip("-.")
     digest = hashlib.sha256(content.encode("utf-8")).hexdigest()[:16]
     return (normalized[:140].rstrip("-.") or f"memory-{digest}")[:160]
+
+
+def scoped_conversation_memory_key(value: str, content: str, project_id: str | None, session_id: str) -> str:
+    key = normalize_memory_key(value, content)
+    if project_id is not None:
+        return key
+    # Prevent two home conversations with the same extracted key from
+    # overwriting each other, including on databases where NULL isn't unique.
+    prefix = hashlib.sha256(session_id.encode()).hexdigest()[:24]
+    suffix = hashlib.sha256(key.encode()).hexdigest()[:16]
+    return f"session-{prefix}-{key[:90]}-{suffix}"

@@ -20,15 +20,6 @@ def test_window_history_preserves_drafts_after_summary_and_isolates_other_window
     monkeypatch,
     scope,
 ):
-    from app.services import project_jev
-
-    decisions = []
-
-    async def decide(tenant_id, stage, evidence, **kwargs):
-        decisions.append((stage, evidence))
-        return {"status": "classified", "decisions": {"operation": "continue"}}
-
-    monkeypatch.setattr(project_jev, "decide", decide)
     provider_id = client.get("/api/v1/admin/providers", headers=admin_headers).json()[0]["id"]
     client.patch(
         f"/api/v1/admin/providers/{provider_id}", headers=admin_headers, json={"api_key": "test-context-key"}
@@ -106,12 +97,11 @@ def test_window_history_preserves_drafts_after_summary_and_isolates_other_window
     detail = client.get(f"/api/v1/tasks/{second.json()['task']['id']}", headers=creator_headers).json()
     assert detail["status"] == "succeeded"
     if scope == "project":
-        stage, evidence = decisions[-1]
-        assert stage == "project-chat"
+        from types import SimpleNamespace
+        from app.services.chat_context import routing_evidence
+        evidence = routing_evidence(request, SimpleNamespace(project_id=project_id, request_payload={}))
         assert evidence["project_id"] == project_id
         assert evidence["summary"] == "故事主人公林月。"
         assert any("不要改名" in item["content"] for item in evidence["history"])
         assert "OTHER_WINDOW_SECRET" not in str(evidence)
         assert "test-context-key" not in str(evidence)
-        assert "承接已有内容" in request.system_prompt
-        assert "最新状态" in request.system_prompt

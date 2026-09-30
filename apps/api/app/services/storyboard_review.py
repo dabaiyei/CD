@@ -229,7 +229,7 @@ async def run_review_attempt(runtime, request, progress, label):
     # Review is a bounded evidence comparison, not open-ended creation. Keep
     # this execution policy outside evidence fingerprints: saved verdicts still
     # checked identical facts/rules, and must not be paid for again on restart.
-    if label.startswith(("审核", "修复", "正在定点修复")) and request.tool_mode == "none":
+    if label.startswith(("审核", "修复", "正在修复", "正在定点修复")) and request.tool_mode == "none":
         from app.core.config import get_settings
         settings = get_settings()
         effort = (settings.storyboard_review_reasoning_effort if label.startswith("审核")
@@ -480,7 +480,7 @@ def parse_review(text: str, indices: set[int], all_count: int, *, evidence_indic
 async def review_board(request, runtime_factory, *, shots, script, state, save, progress, concurrency=2):
     """Checkpoint each review immediately; fingerprints include adjacent context and rules."""
     from app.services.task_worker import DirectorReviewPayload
-    from app.services.jev_control import controller, local_review, LOCAL_SCOPE
+    from app.services.jev_control import controller, local_review, local_review_scope, LOCAL_SCOPE
 
     control = await controller(request.tenant_id, state.setdefault('jev_control', {}))
     if control:
@@ -577,6 +577,7 @@ async def review_board(request, runtime_factory, *, shots, script, state, save, 
             except (ValueError, TypeError, RuntimeError):
                 cached.pop(key, None)
         triage_hint = ''
+        deferred = []
         if control:
             if not unit['coverage_only']:
                 await progress(f"第 {number}/{len(units)} 批 · JEV 单镜局部审核")
@@ -584,9 +585,18 @@ async def review_board(request, runtime_factory, *, shots, script, state, save, 
                 try:
                     for index in sorted(indices):
                         original = next(row for row in shots if row['order_index'] == index)
-                        local_findings.extend(await local_review(control, original))
+                        local_findings.extend(await local_review(control, original, deferred=deferred))
                 finally:
                     await persist()
+                if deferred:
+                    handoffs = state.setdefault('jev_deferred_checks', {})
+                    if handoffs.get(key) != deferred:
+                        # A raw verdict produced under the old exclusion scope
+                        # cannot stand in for the newly required pair check.
+                        raw_results.pop(key, None)
+                    handoffs[key] = deferred
+                    await persist()
+                    await progress(f"第 {number}/{len(units)} 批 · JEV 有 {len(deferred)} 项未确定，交由当前镜头审核核验，不重审已确认项")
                 if local_findings:
                     # No second model is called to judge these local contradictions.
                     # Broader review runs after local repair, never silently waived.
@@ -598,7 +608,7 @@ async def review_board(request, runtime_factory, *, shots, script, state, save, 
                         await save(state)
                     await progress(f"第 {number}/{len(units)} 批 · JEV已保存 {len(local_findings)} 项局部问题")
                     return review
-            triage_hint = LOCAL_SCOPE
+            triage_hint = local_review_scope(deferred)
         scoped_request = request
         visible_unit = {**unit, "coverage_candidates": coverage_rows} if unit["coverage_only"] else unit
         if request.tool_mode == "retrieval":
@@ -690,7 +700,8 @@ async def review_board(request, runtime_factory, *, shots, script, state, save, 
                     verdicts = []
                     packet_manifest = manifest
                     for packet_number, packet in enumerate(packets, 1):
-                        packet_key = fingerprint([packet.system_prompt, packet.prompt])
+                        packet_key = fingerprint([packet.system_prompt, packet.prompt, triage_hint] if deferred
+                                                 else [packet.system_prompt, packet.prompt])
                         saved = packet_cache.get(packet_key, {})
                         if "review" in saved:
                             verdicts.append(parse_unit_review(json.dumps(saved["review"], ensure_ascii=False)))
@@ -724,7 +735,7 @@ async def review_board(request, runtime_factory, *, shots, script, state, save, 
                                        + ("（仅修复返回格式）" if repair_format else ""))
                         try:
                             packet_request = packet_request.model_copy(update={
-                                'system_prompt': packet_request.system_prompt + triage_hint})
+                                'system_prompt': packet_request.system_prompt.replace(LOCAL_SCOPE, '') + triage_hint})
                             response = await run_review_attempt(runtime_factory(), packet_request, progress,
                                 f"审核第 {number}/{len(units)} 批 · 核验 {packet_number}/{len(packets)} · 第 {attempt + 1}/3 次尝试")
                         except RuntimeError as error:
@@ -749,7 +760,7 @@ async def review_board(request, runtime_factory, *, shots, script, state, save, 
                         "summary": f"本镜 {len(packets)} 份证据核验完成", "findings": findings,
                     }, ensure_ascii=False), manifest=packet_manifest)
                 else:
-                    current = current.model_copy(update={'system_prompt': current.system_prompt + triage_hint})
+                    current = current.model_copy(update={'system_prompt': current.system_prompt.replace(LOCAL_SCOPE, '') + triage_hint})
                     response = await run_review_attempt(runtime_factory(), current, progress,
                         f"审核第 {number}/{len(units)} 批 · 第 {attempt + 1}/3 次尝试")
                 manifest = response.manifest

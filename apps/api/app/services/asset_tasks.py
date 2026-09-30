@@ -268,6 +268,7 @@ async def queue_asset_image_generation_tasks(
     assets: list[Asset],
     only_missing_image: bool = False,
     source_prompt_task_id: str | None = None,
+    edit_instruction: str = "",
 ) -> list[tuple[AITask, TaskEvent, Asset]]:
     await session.execute(update(Project).where(Project.id == project.id).values(name=Project.name))
     for asset in assets:
@@ -290,7 +291,7 @@ async def queue_asset_image_generation_tasks(
         raise HTTPException(status_code=409, detail="所选资产都已有可用图片")
     if len(selected_assets) > 50:
         raise HTTPException(status_code=422, detail="单次最多生成 50 个资产")
-    if any(not asset.generation_prompt.strip() for asset in selected_assets):
+    if not edit_instruction and any(not asset.generation_prompt.strip() for asset in selected_assets):
         raise HTTPException(status_code=409, detail="只有提示词就绪的资产才能生图")
     if any(asset.asset_type == AssetType.AUDIO for asset in selected_assets):
         raise HTTPException(status_code=409, detail="音频资产不能执行生图任务")
@@ -307,6 +308,13 @@ async def queue_asset_image_generation_tasks(
             status_code=409,
             detail=f"管理员尚未为 {project.image_resolution} 配置可用的图片模型",
         )
+    if edit_instruction:
+        modes = (image_model.capabilities or {}).get("generation_modes")
+        if modes and "image_to_image" not in modes:
+            raise HTTPException(422, "当前图片模型不支持图生图，请更换支持参考图片的模型")
+        for asset in selected_assets:
+            if not await asset_has_ready_image(asset):
+                raise HTTPException(422, "所选资产原图不可用，请先上传或生成图片")
 
     selected_ids = {asset.id for asset in selected_assets}
     for pending in await active_tasks(session, project_id=project.id, task_type="asset_prompt_generation"):
@@ -322,6 +330,8 @@ async def queue_asset_image_generation_tasks(
         if pending.request_payload.get("asset_id") in selected_ids:
             raise HTTPException(status_code=409, detail="部分资产已有生图任务正在处理")
     for asset in selected_assets:
+        if edit_instruction:
+            continue
         if (asset.asset_metadata or {}).get("combat_technique"):
             continue
         if asset.parent_asset_id and asset.parent_asset_id not in selected_ids and asset.parent_asset_id not in pending_by_asset:
@@ -350,6 +360,8 @@ async def queue_asset_image_generation_tasks(
                 "image_resolution": project.image_resolution,
                 "aspect_ratio": project.aspect_ratio,
                 "pricing": pricing.as_payload(),
+                **({"image_edit_instruction": edit_instruction, "image_edit_reference_url": asset.media_url,
+                    "image_edit_original_prompt": asset.generation_prompt} if edit_instruction else {}),
             },
             message=f"资产“{asset.name}”图片生成",
         )
@@ -357,6 +369,8 @@ async def queue_asset_image_generation_tasks(
         queued.append((task, event, asset))
     task_by_asset = {**pending_by_asset, **{asset.id: task for task, _, asset in queued}}
     for task, event, asset in queued:
+        if edit_instruction:
+            continue
         if (asset.asset_metadata or {}).get("combat_technique"):
             continue
         dependency = task_by_asset.get(asset.parent_asset_id)

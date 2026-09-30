@@ -260,7 +260,7 @@ async def cancel_task(
     task = await task_for_user(session, task_id, user, for_update=True)
     if task.status not in {TaskStatus.QUEUED, TaskStatus.RUNNING}:
         raise HTTPException(status_code=409, detail="只有排队中或运行中的任务可以取消")
-    if task.status == TaskStatus.RUNNING and task.task_type not in {"agent_chat_run", "project_ai_creation"}:
+    if task.status == TaskStatus.RUNNING and task.task_type not in {"agent_chat_run", "project_ai_creation", "canvas_generation"}:
         raise HTTPException(status_code=409, detail="当前仅支持停止运行中的 Agent 对话任务")
     was_running = task.status == TaskStatus.RUNNING
     task.status = TaskStatus.CANCELLED

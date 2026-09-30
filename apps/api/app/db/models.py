@@ -273,6 +273,22 @@ class User(Base, TimestampMixin):
     projects: Mapped[list[Project]] = relationship(back_populates="owner")
 
 
+class CanvasStorageItem(Base, TimestampMixin):
+    __tablename__ = "canvas_storage_items"
+    __table_args__ = (UniqueConstraint("tenant_id", "user_id", "namespace", "key", name="uq_canvas_storage_owner_key"),)
+
+    id: Mapped[str] = mapped_column(String(36), primary_key=True, default=new_id)
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[str] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    namespace: Mapped[str] = mapped_column(String(100))
+    key: Mapped[str] = mapped_column(String(250))
+    kind: Mapped[str] = mapped_column(String(20))
+    value: Mapped[str | None] = mapped_column(Text, nullable=True)
+    storage_path: Mapped[str | None] = mapped_column(String(600), nullable=True)
+    mime_type: Mapped[str] = mapped_column(String(120), default="application/json")
+    revision: Mapped[int] = mapped_column(Integer, default=1)
+
+
 class InvitationCode(Base, TimestampMixin):
     __tablename__ = "invitation_codes"
     __table_args__ = (

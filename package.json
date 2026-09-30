@@ -5,7 +5,10 @@
   "packageManager": "pnpm@11.7.0",
   "scripts": {
     "dev:web": "pnpm --filter @cineforge/web dev",
-    "build:web": "pnpm --filter @cineforge/web build",
+    "build:canvas": "pnpm --filter infinite-canvas build",
+    "build:canvas-agent": "pnpm --filter @basketikun/canvas-agent build",
+    "start:canvas-agent": "pnpm --filter @basketikun/canvas-agent start",
+    "build:web": "pnpm build:canvas && pnpm --filter @cineforge/web build",
     "typecheck:web": "pnpm --filter @cineforge/web typecheck",
     "test:api": ".venv\\Scripts\\python.exe -m pytest apps/api/tests -q",
     "lint:api": ".venv\\Scripts\\python.exe -m ruff check apps/api/app apps/api/tests apps/api/migrations",

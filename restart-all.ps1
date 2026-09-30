@@ -76,7 +76,9 @@ if (-not $SkipBuild) {
     Write-Host '=== Building web app ===' -ForegroundColor Cyan
     Push-Location $ProjectRoot
     try {
-        & pnpm --filter @cineforge/web build
+        & pnpm build:canvas-agent
+        if ($LASTEXITCODE -ne 0) { throw "Canvas Agent build failed with exit code $LASTEXITCODE" }
+        & pnpm build:web
         if ($LASTEXITCODE -ne 0) { throw "Web build failed with exit code $LASTEXITCODE" }
 
         Write-Host '=== Validating Python services ===' -ForegroundColor Cyan

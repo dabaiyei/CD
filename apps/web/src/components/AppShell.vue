@@ -8,6 +8,7 @@ import {
   BrainCircuit,
   Camera,
   LayoutGrid,
+  Workflow,
   Boxes,
   MessageSquareText,
   Download,
@@ -86,7 +87,7 @@ const navItems = computed(() => [
   { label: 'Agent', icon: MessageSquareText, to: '/workspace', active: route.path.startsWith('/workspace') },
   { label: '项目', icon: LayoutGrid, to: '/projects', active: route.path === '/projects' || route.name === 'director' },
   { label: '资产库', icon: Boxes, to: '/assets', active: route.name === 'asset-library' },
-  { label: '视频复刻', icon: Clapperboard, to: '/video-replicas', active: route.name === 'video-replicas' },
+  { label: '无限画布', icon: Workflow, to: '/canvas', active: route.name === 'infinite-canvas' },
   { label: 'Skills', icon: BrainCircuit, to: '/skills', active: route.path.startsWith('/skills') },
   { label: '广场', icon: Sparkles, to: '/marketplace/skill', active: route.path.startsWith('/marketplace') },
   ...(auth.isAdmin
@@ -127,7 +128,7 @@ async function installApp(): Promise<void> {
   <div
     class="app-shell app-shell--top-navigation app-shell--glass-system"
     :style="{ '--user-background-blur': `${backgroundBlur}px` }"
-    :class="{ 'app-shell--agent-home': route.name === 'workspace', 'app-shell--glass-workspace': route.name === 'workspace' || route.name === 'projects' }"
+    :class="{ 'app-shell--infinite-canvas': route.name === 'infinite-canvas', 'app-shell--agent-home': route.name === 'workspace', 'app-shell--glass-workspace': route.name === 'workspace' || route.name === 'projects' }"
   >
     <section class="shell-main">
       <LiquidGlass as="header" class="topbar topbar--scene" intensity="subtle">
@@ -253,7 +254,7 @@ async function installApp(): Promise<void> {
       @updated="handleAvatarUpdated"
     />
 
-    <PwaInstallPrompt />
+    <PwaInstallPrompt v-if="route.name !== 'infinite-canvas'" />
 
     <nav class="mobile-nav" aria-label="移动端主导航">
       <RouterLink

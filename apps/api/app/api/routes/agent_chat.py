@@ -162,6 +162,7 @@ class AgentAssetImageCommand(BaseModel):
     asset_names: list[str] = Field(default_factory=list, max_length=50)
     only_missing_image: bool = True
     auto_generate_missing_prompts: bool = True
+    edit_instruction: str = Field(default="", max_length=20_000)
 
 
 def requested_asset_platform_action(content: str) -> Literal["prompt", "image"] | None:
@@ -801,12 +802,14 @@ async def memory_context(
     user: User,
     project_id: str | None,
     query: str = "",
+    session_id: str | None = None,
 ) -> list[str]:
     memories = await retrieve_project_memories(
         db,
         user=user,
         project_id=project_id,
         query=query,
+        session_id=session_id,
     )
     return [item.as_context() for item in memories]
 
@@ -1459,8 +1462,16 @@ async def apply_asset_image_command(
             chapter_id=chapter.id if chapter else None,
         )
         non_audio_assets = [asset for asset in assets if asset.asset_type.value != "audio"]
+        if command.edit_instruction.strip():
+            if command.target != "listed_assets" or not non_audio_assets:
+                raise HTTPException(422, "请明确指定要修改的项目资产名称，不会默认修改全部资产")
+            if any(not asset.media_url for asset in non_audio_assets):
+                raise HTTPException(422, "改图需要所选资产已有图片，请先上传或生成原图")
         missing_prompt_assets = [asset for asset in non_audio_assets if not asset.generation_prompt.strip()]
         ready_for_image = [asset for asset in non_audio_assets if asset.generation_prompt.strip()]
+        if command.edit_instruction.strip():
+            missing_prompt_assets = []
+            ready_for_image = non_audio_assets
         prompt_task: AITask | None = None
         prompt_assets: list[Asset] = []
         image_queue_error: str | None = None
@@ -1491,7 +1502,8 @@ async def apply_asset_image_command(
                     user=user,
                     project=project,
                     assets=ready_for_image,
-                    only_missing_image=command.only_missing_image,
+                    only_missing_image=False if command.edit_instruction.strip() else command.only_missing_image,
+                    **({"edit_instruction": command.edit_instruction.strip()} if command.edit_instruction.strip() else {}),
                 )
             except HTTPException as exc:
                 if prompt_task is None:
@@ -2499,7 +2511,7 @@ async def send_message(
             task=task_public,
         )
 
-    platform_action = (({'asset_prompt': 'prompt', 'asset_image': 'image'}.get(entry['action']) if entry else
+    platform_action = (({'asset_prompt': 'prompt', 'asset_image': 'image', 'asset_edit': 'edit'}.get(entry['action']) if entry else
                        requested_asset_platform_action(payload.content)) if not attachments else None)
     if platform_action is not None:
         dispatches: list[tuple[AITask, TaskEvent]] = []
@@ -2511,6 +2523,10 @@ async def send_message(
             chapter=chapter,
             content=payload.content,
         )
+        if platform_action == "edit":
+            # A named variant must not also select its shorter-named parent.
+            asset_names = [name for name in asset_names if not any(
+                name != other and name in other for other in asset_names)]
         if platform_action == "prompt":
             command = json.dumps(
                 {
@@ -2540,6 +2556,7 @@ async def send_message(
                     "asset_names": asset_names,
                     "only_missing_image": not regenerate,
                     "auto_generate_missing_prompts": True,
+                    "edit_instruction": payload.content if platform_action == "edit" else "",
                 },
                 ensure_ascii=False,
             )
@@ -2562,6 +2579,9 @@ async def send_message(
                 f"已通过资产库【生成提示词】通道为 {outcome.get('asset_count') or 0} 个资产创建任务。"
                 "你可以在通知中心查看排队、进行中、完成或失败状态。"
             )
+        elif platform_action == "edit":
+            assistant_content = (f"已为 {image_count} 个指定资产创建改图任务，使用各自当前版本图片作为参考，"
+                "按本轮要求修改，完成后保存为新的资产版本。你可以在通知中心跟踪进度。")
         elif prompt_count and image_count:
             assistant_content = (
                 f"已通过资产库通道安排：{prompt_count} 个资产先生成提示词，"

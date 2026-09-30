@@ -26,6 +26,7 @@ from app.services.storyboard_generation import (
     segment_offset,
     segment_script,
     split_shot_finding,
+    compact_paged_generation_prompt,
 )
 
 
@@ -56,6 +57,40 @@ def request():
         skill_versions={}, skills=[], memory_context=[])
 
 
+def test_uncertain_jev_repair_scope_reaches_bounded_patch_without_changing_neighbors(monkeypatch):
+    from app.services import jev_control
+    from test_jev_control import config, answers
+    async def controller(*args):
+        return jev_control.Controller(config(), {})
+    async def post(_config, payload):
+        return answers(**{key: 'unknown' if key == 'frame_layout' else 'keep'
+                          for key in payload['questions']})
+    monkeypatch.setattr(jev_control, 'controller', controller)
+    monkeypatch.setattr(jev_control, 'post', post)
+    calls = []
+    class Runtime:
+        async def run(self, req):
+            calls.append(req)
+            assert 'JEV修复范围交接' in req.prompt
+            assert '没有直接矛盾就省略该字段' in req.prompt
+            return SimpleNamespace(final_response='{"fields":{"image_prompt":"修正机位，人物面向窗外"}}', manifest={})
+    async def noop(*args):
+        pass
+    original = [shot(i) for i in range(1, 4)]
+    state = {}
+    result, _ = asyncio.run(generate(request(), Runtime, plan=[], durations=[8], state=state,
+        save=noop, progress=noop, repair_shots=original, findings=[
+            {'shot_indices': [2], 'fields': ['image_prompt'], 'severity': 'major', 'issue': '机位错误'}]))
+    rows = json.loads(result)['shots']
+    assert len(calls) == 1
+    assert state['jev_repair_deferred_fields']['2'] == ['frame_layout']
+    assert rows[1]['image_prompt'] == '修正机位，人物面向窗外'
+    from app.services.task_worker import GeneratedStoryboardShotPayload
+    for i in (0, 2):
+        expected = GeneratedStoryboardShotPayload.model_validate(original[i]).model_dump(mode='json')
+        assert all(rows[i][k] == expected[k] for k in original[i] if k != 'order_index')
+
+
 def test_targeted_repair_sees_adjacent_source_not_just_lexical_match(monkeypatch):
     import app.services.storyboard_generation as module
     segments = [{"key": str(i), "label": f"场{i}", "content": f"场{i}原文"} for i in range(1, 4)]
@@ -76,6 +111,35 @@ def test_targeted_repair_sees_adjacent_source_not_just_lexical_match(monkeypatch
         findings=[{"shot_indices": [2], "fields": ["action_description"], "severity": "major",
                    "issue": "球数与原文不符", "suggestion": "核对原文修复"}]))
     assert "仅剩两颗球" in json.loads(result)["shots"][1]["action_description"]
+
+
+def test_paged_prompt_drops_full_scene_body_but_keeps_continuity_contract():
+    prompt = ('固定约束\n本场正文：\n' + '正文' * 30000
+              + '\n跨批次衔接契约\n前场末尾：保持站位')
+    compact = compact_paged_generation_prompt(prompt)
+    assert len(compact) < 200
+    assert '正文正文' not in compact
+    assert '跨批次衔接契约' in compact and '保持站位' in compact
+
+
+def test_invalid_source_mapping_discards_only_current_raw_page():
+    req = request().model_copy(update={'tool_mode': 'retrieval'})
+    state = {}
+    calls = []
+    class Runtime:
+        async def run(self, current):
+            calls.append(current.prompt)
+            if len(calls) == 1:
+                return SimpleNamespace(final_response=json.dumps({'shots': [
+                    {**shot(1), 'source_ids': []}]}), manifest={})
+            return SimpleNamespace(final_response=json.dumps({'mappings': []}), manifest={})
+    async def noop(*args):
+        pass
+    with pytest.raises(RuntimeError, match='原文关联'):
+        asyncio.run(generate(req, Runtime, plan=[], durations=[8], state=state,
+            save=noop, progress=noop, script='甲开门。', batch_attempts=1))
+    assert calls and '待覆盖原文：' in calls[0]
+    assert not state.get('page_raw', {}).get('1')
 
 
 def test_automatic_repair_skips_minor_and_preserves_previous_patches():
@@ -470,6 +534,113 @@ def test_unparseable_reply_format_repaired_without_repeating_original_prompt():
     assert len(calls) == 2
     assert "仅修复" in calls[1].prompt
     assert "剧本和模型能力" not in calls[1].prompt
+
+
+def test_retrieval_format_repair_is_direct_and_keeps_complete_rows_and_diagnostics():
+    from app.services.retrieval_context import automatic_request
+    calls, state = [], {}
+    req = automatic_request(request().model_copy(update={"model_binding": {
+        "reasoning_effort": "high", "max_tokens": 12000,
+    }}), rules="原有规则", references="本项目画风手册")
+    first = shot(1)
+    changed = {**first, "dialogue": "错误改写完整镜头"}
+
+    class Runtime:
+        async def run(self, current):
+            calls.append(current)
+            if len(calls) == 1:
+                return SimpleNamespace(final_response='{"shots":[' + json.dumps(first)
+                    + ',{"order_index":2,"title":"截断', manifest={}, finish_reason="length")
+            assert current.tool_mode == "none"
+            assert not any((current.project_files, current.skills, current.memory_context,
+                            current.attachments, current.documents, current.recent_messages))
+            assert current.model_binding == {"reasoning_effort": "low", "max_tokens": 12000}
+            assert "本项目画风手册" not in current.prompt + current.system_prompt
+            return SimpleNamespace(final_response=json.dumps({"shots": [changed, shot(2)]}),
+                                   manifest={}, finish_reason="stop")
+
+    async def noop(*args):
+        pass
+
+    result, _ = asyncio.run(generate(req, Runtime, plan=[], durations=[8], state=state,
+                                    save=noop, progress=noop))
+    assert len(calls) == 2
+    assert json.loads(result)["shots"][0]["dialogue"] == first["dialogue"]
+    assert state["call_diagnostics"]["正在生成第 1/1 批分镜"]["finish_reason"] == "length"
+    assert state["call_diagnostics"]["正在修复第 1 批返回格式"]["tool_mode"] == "none"
+
+
+def test_format_repair_cannot_hide_truncation_by_dropping_unfinished_last_shot():
+    state = {"raw": {"0": '{"shots":[' + json.dumps(shot(1)) + ',{"title":"未完成'}}
+
+    class Runtime:
+        async def run(self, current):
+            assert current.tool_mode == "none"
+            return SimpleNamespace(final_response=json.dumps({"shots": [shot(1)]}), manifest={})
+
+    async def noop(*args):
+        pass
+
+    with pytest.raises(RuntimeError, match="格式修复丢失"):
+        asyncio.run(generate(request(), Runtime, plan=[], durations=[8], state=state,
+                             save=noop, progress=noop, batch_attempts=1))
+    assert state["raw"]["0"].endswith('未完成')
+    assert not state.get("completed_batches")
+
+
+def test_generation_files_exclude_whole_chapter_and_keep_contract_and_local_source():
+    from app.services.retrieval_context import automatic_request
+    script = "场1｜开场\n女子开门\n场2｜结尾\n男子关门"
+    req = automatic_request(request().model_copy(update={
+        "prompt": "目标视频模型支持8秒\n剧本正文：" + script,
+    }), rules="不可遗漏的镜头规则", references="本项目导演手册")
+    # Force the production file-backed transport even for this short fixture.
+    from app.services.retrieval_context import evidence_file, mount
+    req = mount(req.model_copy(update={"prompt": "全文在retrieval-task-input"}),
+                evidence_file("task-input", "目标视频模型支持8秒\n剧本正文：" + script),
+                evidence_file("chapter-source", "不应带入的整章原始小说"),
+                evidence_file("chapter-script", script),
+                evidence_file("chapter-shots", "不应带入的整章旧分镜"))
+    calls = []
+
+    class Runtime:
+        async def run(self, current):
+            calls.append(current)
+            files = {f.id: f.content for f in current.project_files}
+            assert not any(k.startswith("retrieval-task-input") for k in files)
+            assert not any(k.startswith("retrieval-chapter-") for k in files)
+            assert current.tool_mode == "none" and not files and not current.skills
+            local = current.prompt
+            assert "目标视频模型支持8秒" in local
+            assert "不可遗漏的镜头规则" in current.system_prompt
+            assert "本项目导演手册" in local
+            if len(calls) == 1:
+                assert "女子开门" in local and "男子关门" not in local
+            spans = json.loads(local.split('待覆盖原文：')[1].split('\n已完成片段数：')[0])
+            row = {**shot(len(calls)), "source_ids": [s['id'] for s in spans]}
+            return SimpleNamespace(final_response=json.dumps({"shots": [row]}), manifest={})
+
+    async def noop(*args):
+        pass
+
+    result, _ = asyncio.run(generate(req, Runtime, script=script, plan=[], durations=[8],
+                                    state={}, save=noop, progress=noop))
+    assert len(json.loads(result)["shots"]) == 2
+
+
+def test_paged_source_is_reassembled_without_index_and_assets_are_scoped():
+    from app.services.agent_file_context import paged_snapshot, SNAPSHOT_PART_CHARS
+    from app.services.retrieval_context import evidence_file
+    from app.services.storyboard_generation import snapshot_text, scope_inline_assets
+    content = "目标模型契约" + "x" * SNAPSHOT_PART_CHARS + "末尾原文"
+    req = request().model_copy(update={"project_files": paged_snapshot(evidence_file("task-input", content))})
+    assert snapshot_text(req, "retrieval-task-input") == content
+    assets = [{"name": "甲", "description": "女性，红衣", "image_prompt": "甲的完整提示词"},
+              {"name": "乙", "description": "男性，蓝衣", "image_prompt": "无关巨大提示词"}]
+    base = "模型契约\n资产清单：" + json.dumps(assets, ensure_ascii=False) + "\n后续约束"
+    scoped = scope_inline_assets(base, "甲开门")
+    assert "甲的完整提示词" in scoped and "无关巨大提示词" not in scoped
+    assert "男性，蓝衣" in scoped and "后续约束" in scoped
 
 
 def test_transport_failure_resumes_previous_batch_without_regeneration():

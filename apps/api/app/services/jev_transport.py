@@ -7,15 +7,45 @@ import time
 import httpx
 
 _zen_address: tuple[str, float] | None = None
+_request_lock: asyncio.Lock | None = None
+_request_lock_loop = None
+_last_request_at = 0.0
+_MIN_INTERVAL_SECONDS = 0.35
+_RATE_LIMIT_RETRIES = 3
+
+
+def _lock():
+    global _request_lock, _request_lock_loop
+    loop = asyncio.get_running_loop()
+    if _request_lock is None or _request_lock_loop is not loop:
+        _request_lock = asyncio.Lock()
+        _request_lock_loop = loop
+    return _request_lock
 
 
 async def post(config, payload, *, timeout=None):
     seconds = timeout if timeout is not None else config.timeout_seconds
-    try:
-        async with asyncio.timeout(seconds):
-            return await _post(config, payload, seconds)
-    except TimeoutError as exc:
-        raise httpx.ReadTimeout("JEV request timed out") from exc
+    global _last_request_at
+    async with _lock():
+        for attempt in range(_RATE_LIMIT_RETRIES + 1):
+            wait = _MIN_INTERVAL_SECONDS - (time.monotonic() - _last_request_at)
+            if wait > 0:
+                await asyncio.sleep(wait)
+            _last_request_at = time.monotonic()
+            try:
+                async with asyncio.timeout(seconds):
+                    return await _post(config, payload, seconds)
+            except httpx.HTTPStatusError as exc:
+                if exc.response.status_code != 429 or attempt >= _RATE_LIMIT_RETRIES:
+                    raise
+                retry_after = exc.response.headers.get("retry-after", "")
+                try:
+                    delay = float(retry_after)
+                except (TypeError, ValueError):
+                    delay = 0.75 * (2 ** attempt)
+                await asyncio.sleep(max(0.35, min(delay, 12.0)))
+            except TimeoutError as exc:
+                raise httpx.ReadTimeout("JEV request timed out") from exc
 
 
 async def _post(config, payload, seconds):

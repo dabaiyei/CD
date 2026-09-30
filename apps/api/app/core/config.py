@@ -75,6 +75,9 @@ class Settings(BaseSettings):
     require_signed_media_urls: bool = False
     provider_test_timeout_seconds: float = 15.0
     agent_runtime_url: str = "http://127.0.0.1:8010"
+    canvas_agent_entry: Path = PROJECT_ROOT / "services/infinite-canvas/canvas-agent/dist/index.js"
+    canvas_agent_node: str = "node"
+    canvas_agent_codex_bin: str = ""
     agent_runtime_internal_token: str = "development-agent-runtime-token"
     agent_runtime_timeout_seconds: float = 900.0
     storyboard_review_concurrency: int = Field(default=4, ge=1, le=8)

@@ -23,6 +23,10 @@ class JevDecisionPending(RuntimeError):
         super().__init__(PENDING_PREFIX + message)
 
 
+class JevRateLimitPending(JevDecisionPending):
+    """The provider is throttling us; the task should be delayed and resumed."""
+
+
 def pending(value):
     return PENDING_PREFIX in str(value)
 
@@ -51,7 +55,7 @@ class Controller:
             ).encode()
         ).hexdigest()
 
-    async def choose(self, stage, evidence, questions, *, threshold=None):
+    async def choose(self, stage, evidence, questions, *, threshold=None, partial=False):
         evidence = safe_evidence(evidence)
         serialized = json.dumps(evidence, ensure_ascii=False, sort_keys=True)
         if len(serialized) > MAX_CHARS:
@@ -68,6 +72,8 @@ class Controller:
             evidence,
             questions,
         ]
+        if partial:
+            identity.append("partial-local-review")
         key = hashlib.sha256(json.dumps(identity, ensure_ascii=False, sort_keys=True).encode()).hexdigest()
         if key in self.checkpoint:
             return self.checkpoint[key]
@@ -100,10 +106,21 @@ class Controller:
                     or not math.isfinite(confidence)
                     or not required <= confidence <= 1
                 ):
+                    if partial:
+                        decisions[name] = "unresolved"
+                        continue
                     raise JevDecisionPending(f"{stage} / {name} 的证据或置信度不足，请补充说明后继续")
                 decisions[name] = value
         except JevDecisionPending:
             raise
+        except httpx.HTTPStatusError as exc:
+            if exc.response.status_code == 429:
+                raise JevRateLimitPending(
+                    "单镜修复范围接口被供应商限流，已保留断点，稍后自动重试"
+                ) from exc
+            raise JevDecisionPending(
+                f"{stage}接口暂不可用，检查 JEV 配置后重试；未转交其它模型"
+            ) from exc
         except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError) as exc:
             raise JevDecisionPending(f"{stage}接口暂不可用，检查 JEV 配置后重试；未转交其它模型") from exc
         self.checkpoint[key] = decisions
@@ -198,6 +215,17 @@ async def _chat_operation(control, evidence):
 
 
 async def project_entry(tenant_id, message, history, *, checkpoint=None):
+    try:
+        return await _project_entry(tenant_id, message, history, checkpoint=checkpoint)
+    except JevDecisionPending as exc:
+        if exc.__cause__ is not None:
+            raise
+        # A semantic tie grants no mutation authority, but must not prevent
+        # conversation. The assistant may answer or ask a concrete question.
+        return {"operation": "discuss", "action": "assistant", "clarification_needed": True}
+
+
+async def _project_entry(tenant_id, message, history, *, checkpoint=None):
     """Authorize HTTP shortcuts before they can enqueue paid work."""
     control = await controller(tenant_id, checkpoint)
     if control is None:
@@ -211,11 +239,13 @@ async def project_entry(tenant_id, message, history, *, checkpoint=None):
                 "action": choice(
                     "当前明确要求执行哪一种项目操作？普通文字草稿、讨论、修改文件或未列出的操作选assistant。"
                     "只有明确提交项目资产任务才选asset开头；视频提示词任务与资产生图提示词任务不同。"
+                    "要求暂时忽略之前对话、切换话题、追问‘什么不足’属于assistant，不是unknown。"
                     "不能因为出现提示词三个字就创建资产任务。继续请求需参考用户确认的历史。",
                     {
                         "assistant": "只回答、写文字草稿、修改文件或其它助手操作",
                         "asset_prompt": "为项目已有资产生成或补全生图提示词",
-                        "asset_image": "为项目资产实际生成图片",
+                        "asset_image": "按现有设定生成或补齐资产图片，没有新的画面修改要求",
+                        "asset_edit": "修改已有资产图片的背景、服装等并重新出图，如把五台山背景改为峨眉山；不是仅改提示词",
                         "storyboard": "为当前章节启动分镜制作流程",
                         "video_prompt": "为当前章节已有镜头生成视频提示词任务",
                         "video": "为当前章节已有镜头实际生成视频",
@@ -225,16 +255,26 @@ async def project_entry(tenant_id, message, history, *, checkpoint=None):
             },
         )
     except JevDecisionPending as exc:
-        # Ambiguous shortcut labels must not block a confidently read-only
-        # answer. A second, narrower JEV authorization question may only
-        # downgrade to discuss, never authorize any mutation or media task.
-        if exc.__cause__ is None and await chat_intent(control, evidence) == "discuss":
-            return {"operation": "discuss", "action": "assistant"}
+        # Separate operation authorization from overlapping shortcut labels.
+        # An edit needs both execution authorization and a confident, narrower
+        # edit decision; transport failures never grant permission.
+        if exc.__cause__ is None:
+            operation = await chat_intent(control, evidence)
+            if operation == "discuss":
+                return {"operation": "discuss", "action": "assistant"}
+            if operation in {"create", "revise", "execute", "continue"}:
+                edit = await control.choose("项目资产改图确认", evidence, {
+                    "image_edit": choice("本轮是否明确要求修改已有资产图片并实际重新生成？"
+                        "修改背景后重新生成属于edit；只讨论、只写提示词、否定生成、指代不明属于other。",
+                        {"edit": "明确指定已有资产及画面修改要求，并要求实际出图", "other": "不是明确的资产改图任务"})})
+                if edit["image_edit"] == "edit":
+                    return {"operation": "revise", "action": "asset_edit"}
         raise
     action = result["action"]
     # A selected shortcut already authorizes that exact task. Do not ask a
     # second model question whether filling a missing prompt is create/revise.
-    operation = await chat_intent(control, evidence) if action == "assistant" else "create"
+    operation = await chat_intent(control, evidence) if action == "assistant" else (
+        "revise" if action == "asset_edit" else "create")
     return {"operation": operation, "action": action}
 
 
@@ -311,7 +351,21 @@ LOCAL_SCOPE = (
 )
 
 
-async def local_review(control, shot):
+def local_review_scope(deferred):
+    if not deferred:
+        return LOCAL_SCOPE
+    targets = [{"shot_index": item["shot_index"], "check": item["check"], "fields": item["fields"]}
+               for item in deferred]
+    return ("\n【JEV局部审核交接】下列字段对经定向复核仍未确定，必须由你核验，不代表通过或存在问题："
+        + json.dumps(targets, ensure_ascii=False)
+        + "\n仅接管这些镜号的这些字段对；其余JEV已确认的内部一致性不重复审核或推翻。"
+        "原文覆盖、剧情逻辑、邻镜衔接、手册、时长和模型能力继续按原范围审核。"
+        "首帧只代表片段开头，后续动作不必同时入画；未明确同一对象，不推定是同一物体。"
+        "发现实际矛盾须定位真实字段、引用证据并给最小修复建议；无矛盾则通过该项，"
+        "不能把JEV置信度不足本身当成分镜错误或要求用户确认。\n")
+
+
+async def local_review(control, shot, *, deferred=None):
     findings, checks, evidence = [], {}, {"shot_index": shot["order_index"]}
     for left, right, check, label in LOCAL_PAIRS:
         if not shot.get(left) or not shot.get(right):
@@ -321,6 +375,8 @@ async def local_review(control, shot):
             f"只比较{left}和{right}中的{label}。同一人物在同一时间被明确写成互斥状态才选conflict。"
             "先坐后站、交代换手、表情变化、镜头变化、画面左右与世界左右不同，都不是矛盾。"
             "未提及某细节也不是矛盾；没有直接矛盾就选clear，不做美学、剧情覆盖或物理推测。"
+            "image_prompt是片段第0秒的静态画面，scene_description可描述整个场景；"
+            "不能把片段后续运动、切镜、站位变化要求同时出现在首帧中。"
             "只有文字损坏、指代无法辨认而确实无法比较时选unknown。",
             {
                 "clear": "No explicit same-time contradiction",
@@ -331,7 +387,7 @@ async def local_review(control, shot):
     if not checks:
         return []
     if len(json.dumps(evidence, ensure_ascii=False)) <= MAX_CHARS:
-        result = await control.choose("单镜局部审核", evidence, checks)
+        result = await control.choose("单镜局部审核", evidence, checks, partial=True)
     else:
         # Preserve complete field pairs instead of cropping a long shot or chapter.
         result = {}
@@ -342,8 +398,29 @@ async def local_review(control, shot):
                         "单镜局部审核",
                         {"shot_index": shot["order_index"], left: shot[left], right: shot[right]},
                         {check: checks[check]},
+                        partial=True,
                     )
                 )
+    # Keep all confident answers; ambiguity in one pair must not discard the
+    # others or repeat the whole shot. Only this pair gets temporal context.
+    for left, right, check, label in LOCAL_PAIRS:
+        if result.get(check) != "unresolved":
+            continue
+        context = {"shot_index": shot["order_index"], left: shot[left], right: shot[right],
+            "duration_seconds": shot.get("duration_seconds"),
+            "temporal_context": {k: shot[k] for k in ("action_description", "internal_shots")
+                                 if k not in (left, right) and shot.get(k)}}
+        focused = choice(
+            f"{left}和{right}是否明确自相矛盾？只比较同时刻的同一个对象。"
+            "未明确为同一物体，不擅自合并为同一物体；特写不展示全景全部物体属正常。"
+            "首帧是动作开始前，后续动作不算矛盾；细节省略不算矛盾。"
+            "clear表示没有直接矛盾证据，不代表整个分镜审核通过。",
+            {"clear": "没有明确自相矛盾", "conflict": "同一对象同时刻被明确写成互斥状态",
+             "unknown": "文字损坏无法比较"})
+        result.update(await control.choose("单镜局部审核定向复核", context, {check: focused},
+                                          partial=deferred is not None))
+        if result.get(check) == "unresolved" and deferred is not None:
+            deferred.append({"shot_index": shot["order_index"], "check": check, "fields": [left, right]})
     for left, right, check, label in LOCAL_PAIRS:
         if check not in result:
             continue
@@ -371,7 +448,7 @@ async def local_review(control, shot):
     return findings
 
 
-async def repair_fields(control, shot, findings, allowed, named, *, neighbors=None):
+async def repair_fields(control, shot, findings, allowed, named, *, neighbors=None, deferred=None):
     questions = {
         field: choice(
             f"For the ALREADY REPORTED issues, must field '{field}' be edited to fix the same fact? "
@@ -397,5 +474,10 @@ async def repair_fields(control, shot, findings, allowed, named, *, neighbors=No
             "neighbors": neighbors or {},
         },
         questions,
+        partial=deferred is not None,
     )
-    return sorted((set(named) | {field for field, value in result.items() if value == "edit"}) & set(allowed))
+    uncertain = {field for field, value in result.items() if value == 'unresolved'} & set(questions)
+    if deferred is not None:
+        deferred.extend(sorted(uncertain))
+    return sorted((set(named) | {field for field, value in result.items() if value == "edit"}
+                   | (uncertain if deferred is not None else set())) & set(allowed))

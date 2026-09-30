@@ -79,6 +79,7 @@ const statusCopy: Record<TaskStatus, { label: string; icon: typeof Clock3 }> = {
 }
 
 const taskMeta: Record<string, { title: string; category: string; icon: typeof Sparkles }> = {
+  canvas_generation: { title: '无限画布生成', category: '画布', icon: WandSparkles },
   video_replica_analysis: { title: '参考视频分析', category: '视频复刻', icon: FileSearch },
   video_replica_render: { title: '视频复刻', category: '视频复刻', icon: Video },
   video_replica_image: { title: '复刻参考图', category: '视频复刻', icon: FileSearch },

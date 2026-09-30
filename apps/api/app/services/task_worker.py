@@ -195,7 +195,7 @@ logger = logging.getLogger(__name__)
 _SQLITE_LOCK_MARKERS = re.compile(r"database is locked|database table is locked", re.IGNORECASE)
 WORKER_ID = os.environ.get("CINEFORGE_WORKER_ID") or f"{socket.gethostname()}:{os.getpid()}"
 RESTART_UNSAFE_IMAGE_TASKS = {"project_cover_generation", "asset_image_generation", "shot_first_frame_generation"}
-PROVIDER_JOB_TASKS = {"shot_video_generation", "dialogue_tts_generation"}
+PROVIDER_JOB_TASKS = {"shot_video_generation", "dialogue_tts_generation", "canvas_generation"}
 AGENT_HISTORY_MESSAGE_LIMIT = 10
 AGENT_HISTORY_CHARACTER_LIMIT = 16_000
 AGENT_HISTORY_MESSAGE_CHARACTER_LIMIT = 6_000
@@ -1861,6 +1861,11 @@ async def run_claimed_task(
         with suppress(Exception):
             await on_director_task_terminal(task_id)
     except Exception as exc:
+        from app.services.jev_control import JevRateLimitPending
+        if isinstance(exc, JevRateLimitPending):
+            logger.warning("Task %s paused for JEV rate limiting; preserving checkpoint", task_id)
+            await requeue_after_jev_rate_limit(task_id, str(exc))
+            return
         logger.exception("Task %s failed", task_id)
         await fail_task(task_id, _safe_error_message(exc))
         with suppress(Exception):
@@ -1870,6 +1875,36 @@ async def run_claimed_task(
             _task_activity_events.pop(task_id, None)
         watcher_stop.set()
         await asyncio.gather(heartbeat, cancellation_watch, return_exceptions=True)
+
+
+async def requeue_after_jev_rate_limit(task_id: str, message: str, delay_seconds: float = 45) -> None:
+    """Wait out provider throttling without turning a resumable task into failure."""
+    await record_progress(task_id, 35, f"JEV 供应商限流，已保存进度，{delay_seconds:g} 秒后自动重试")
+    await asyncio.sleep(delay_seconds)
+    async with SessionLocal() as session:
+        task = await owned_task_for_update(session, task_id)
+        if not owns_running_task(task):
+            return
+        task.status = TaskStatus.QUEUED
+        task.worker_id = None
+        task.lease_expires_at = None
+        task.heartbeat_at = None
+        task.error_message = None
+        task.result_payload = {
+            **(task.result_payload or {}),
+            "jev_rate_limit_waiting": False,
+            "jev_rate_limit_message": message,
+        }
+        event = record_task_event(
+            session,
+            task,
+            status=TaskStatus.QUEUED,
+            progress=35,
+            message="JEV 限流等待结束，已自动重新入队并复用已保存断点",
+        )
+        await session.commit()
+    await enqueue_task(task_id)
+    await publish_task_event(task, event)
 
 
 async def task_is_cancelled(task_id: str) -> bool:
@@ -1991,7 +2026,12 @@ async def recover_stale_tasks() -> int:
             )
             restart_unsafe = (
                 task.task_type in RESTART_UNSAFE_IMAGE_TASKS
-                or (task.task_type in PROVIDER_JOB_TASKS and not provider_job_id)
+                or (
+                    task.task_type in PROVIDER_JOB_TASKS and not provider_job_id
+                    and not (task.task_type == "canvas_generation" and (
+                        task.request_payload.get("kind") == "text" or result.get("media_url")
+                    ))
+                )
                 or (personal_media_mode == "image" and not result.get("generated_media_draft"))
                 or (
                     personal_media_mode == "video"
@@ -2083,7 +2123,11 @@ async def execute_task(
             chapter = await session.get(Chapter, chapter_id)
             if chapter is not None and chapter.project_id == task.project_id:
                 await require_ai_chapter_unlocked(session, chapter)
-    if task_type in {"video_replica_analysis", "video_replica_render", "video_replica_image",
+    if task_type == 'canvas_generation':
+        from app.services.infinite_canvas import execute
+
+        await execute(task_id, gateway_factory, runtime_factory)
+    elif task_type in {"video_replica_analysis", "video_replica_render", "video_replica_image",
                      "video_replica_export", "video_replica_edit", "video_replica_speech"}:
         from app.services.video_replica import execute
 
@@ -3522,6 +3566,7 @@ async def agent_chat_runtime_request(
                 user=user,
                 project_id=task.project_id,
                 query=prompt,
+                session_id=chat_session.id,
             )
             if agent.memory_enabled
             else []
@@ -3592,6 +3637,7 @@ async def agent_chat_runtime_request(
                     system_prompt += await controlled_guidance(
                         task.tenant_id, user_message.content, mode=mode,
                         recent_messages=recent_messages, checkpoint=checkpoint,
+                        optional=route.get('output') == 'text',
                     )
             except JevDecisionPending as exc:
                 if mode != 'chat':
@@ -3910,7 +3956,9 @@ async def persist_conversation_maintenance(
     memory_ids: list[str] = []
     for candidate in payload.memories:
         namespace = normalize_memory_namespace(candidate.namespace)
-        memory_key = normalize_memory_key(candidate.key, candidate.content)
+        from app.services.agent_memory import scoped_conversation_memory_key
+        memory_key = scoped_conversation_memory_key(candidate.key, candidate.content,
+                                                    task.project_id, chat_session.id)
         memory = await session.scalar(
             select(AgentMemory).where(
                 AgentMemory.tenant_id == task.tenant_id,
@@ -3918,6 +3966,7 @@ async def persist_conversation_maintenance(
                 AgentMemory.project_id == task.project_id,
                 AgentMemory.namespace == namespace,
                 AgentMemory.memory_key == memory_key,
+                *([AgentMemory.source_session_id == chat_session.id] if task.project_id is None else []),
             )
         )
         if memory is not None and not memory.is_automatic:
@@ -4509,10 +4558,14 @@ async def execute_agent_chat_task(
                 if project_operation == 'discuss':
                     request = request.model_copy(update={'tool_mode': 'retrieval', 'state_mode': 'ephemeral'})
                     request.system_prompt += '\n本轮只回答用户，不修改项目文件、不提交生成任务。'
+                    if entry and entry.get('clarification_needed'):
+                        request.system_prompt += ('\n平台未确认本轮有执行操作的授权。普通问题直接回答；'
+                            '若确实缺少执行对象，只问具体缺少的信息，不复述置信度、JEV或要求检查配置。')
                     from app.services.personal_creation_guidance import controlled_guidance
                     request.system_prompt += await controlled_guidance(
                         task.tenant_id, evidence['message'], recent_messages=request.recent_messages,
                         checkpoint=checkpoint,
+                        optional=True,
                     )
         except JevDecisionPending as exc:
             project_pending = str(exc)
@@ -6670,7 +6723,7 @@ async def execute_asset_image_task(
             asset is None
             or asset.project_id != task.project_id
             or asset.tenant_id != task.tenant_id
-            or not asset.generation_prompt.strip()
+            or (not asset.generation_prompt.strip() and not task.request_payload.get("image_edit_instruction"))
         ):
             raise RuntimeError("待生成图片的资产不可用")
         if project is None or project.tenant_id != task.tenant_id:
@@ -6678,7 +6731,8 @@ async def execute_asset_image_task(
         if asset.asset_type == AssetType.AUDIO:
             raise RuntimeError("音频资产不能执行生图任务")
         from app.services.asset_dependencies import prepare_asset_parent
-        if not await prepare_asset_parent(session, task, asset):
+        editing = bool(task.request_payload.get("image_edit_instruction"))
+        if not editing and not await prepare_asset_parent(session, task, asset):
             return
         if asset.version != int(task.request_payload.get("asset_version") or -1):
             raise RuntimeError("资产已被编辑，请用最新提示词重新生成图片")
@@ -6708,15 +6762,22 @@ async def execute_asset_image_task(
             capabilities=model.capabilities,
             idempotency_key=task.idempotency_key or task.id,
         )
-        if (asset.asset_metadata or {}).get("combat_technique"):
+        if editing:
+            if asset.media_url != task.request_payload.get("image_edit_reference_url"):
+                raise RuntimeError("待修改资产图片版本已变化，请基于最新图片重新提交修改")
+            request.prompt = (f"编辑参考图中的当前资产：{asset.name}。只修改本轮明确指定的内容，"
+                "未提及的人物五官、服装、姿态、构图与其它细节保持原图一致。"
+                "本轮涉及多个资产时，仅执行针对当前资产的要求，不把其它资产人物添加进来。\n本轮要求："
+                + str(task.request_payload["image_edit_instruction"]))
+        if not editing and (asset.asset_metadata or {}).get("combat_technique"):
             from app.services.combat_techniques import TECHNIQUE_IMAGE_RULES
             request.prompt += TECHNIQUE_IMAGE_RULES
             request.generation_mode = "text_to_image"
-        elif asset.parent_asset_id or asset.media_url:
+        elif editing or asset.parent_asset_id or asset.media_url:
             configured_modes = model.capabilities.get("generation_modes")
             if isinstance(configured_modes, list) and configured_modes and "image_to_image" not in configured_modes:
                 raise RuntimeError("当前图片模型不支持图生图，无法保持资产身份，请选择支持参考图片的模型")
-            parent = await session.get(Asset, asset.parent_asset_id) if asset.parent_asset_id else asset
+            parent = asset if editing else (await session.get(Asset, asset.parent_asset_id) if asset.parent_asset_id else asset)
             if parent is None or parent.user_id != task.user_id or parent.project_id != task.project_id or not parent.media_url:
                 raise RuntimeError("主资产参考图不可用，请先完成主图")
             key = object_key_from_media_url(parent.media_url)
@@ -6729,7 +6790,7 @@ async def execute_asset_image_task(
             request.reference_image_urls = [reference]
             request.generation_mode = "image_to_image"
             parent_snapshot = (parent.id, parent.version, parent.media_url)
-            identity_suffix = (
+            identity_suffix = "" if editing else (
                 image_identity_lock(character=True, keep_identity=True)
                 if asset.asset_type == AssetType.CHARACTER
                 else "\n主图为同一资产参考，保留结构、材质、配色和识别特征，仅改变本次衍生说明要求的部分。"
@@ -6775,6 +6836,10 @@ async def execute_asset_image_task(
             stored_path.unlink(missing_ok=True)
             raise
         asset.media_url = media_url
+        if task.request_payload.get("image_edit_instruction"):
+            asset.generation_prompt = (str(task.request_payload.get("image_edit_original_prompt") or "")
+                + "\n最新资产修改要求（与旧设定冲突时以此为准）："
+                + str(task.request_payload["image_edit_instruction"]))
         asset.status = AssetStatus.READY
         asset.version += 1
         from app.services.asset_propagation import mark_asset_image_version, propagate_asset_change

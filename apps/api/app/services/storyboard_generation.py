@@ -295,6 +295,19 @@ def source_evidence_window(segments: list[dict], key: str) -> list[dict]:
             for segment in segments[max(0, position - 1):position + 2]]
 
 
+def compact_paged_generation_prompt(prompt: str) -> str:
+    """Remove the full scene body before attaching the current source window."""
+    marker = "\n本场正文：\n"
+    start = prompt.find(marker)
+    if start < 0:
+        return prompt
+    end_markers = ("\n跨批次衔接契约", "\n原分镜中本场", "\n本场必须")
+    ends = [prompt.find(item, start + len(marker)) for item in end_markers]
+    ends = [item for item in ends if item >= 0]
+    end = min(ends) if ends else len(prompt)
+    return prompt[:start] + "\n本场完整正文已拆分为下方 source_ids 分页窗口。" + prompt[end:]
+
+
 SOURCE_EVIDENCE_RULES = (
     "候选源段来自文本相似度检索，不是已确认的镜头归属。source_context 为按原文顺序提供的邻近源段。"
     "先按具体动作、目标、发生顺序与结果定位本镜实际节拍；重复场景/角色/道具不构成归属证据。"
@@ -464,6 +477,24 @@ def complete_output(text: str) -> bool:
         except ValueError:
             continue
         if isinstance(value, list) or (isinstance(value, dict) and isinstance(value.get('shots'), list)):
+            return True
+    return False
+
+
+def unfinished_shot(text: str) -> bool:
+    """Distinguish an unfinished row from merely missing outer brackets."""
+    start = re.search(r'"shots"\s*:\s*\[', text)
+    if not start:
+        return False
+    offset, decoder = start.end(), json.JSONDecoder()
+    while offset < len(text):
+        while offset < len(text) and text[offset] in " \r\n\t,":
+            offset += 1
+        if offset >= len(text) or text[offset] != "{":
+            return False
+        try:
+            _, offset = decoder.raw_decode(text, offset)
+        except ValueError:
             return True
     return False
 
@@ -783,6 +814,89 @@ def patch_format_request(request, saved, candidate, fields):
         "state_mode": "ephemeral"})
 
 
+def snapshot_text(request, identifier):
+    """Reassemble paged snapshots without treating the index as source text."""
+    parts = sorted((f for f in request.project_files if f.id.startswith(identifier + "-part-")),
+                   key=lambda f: f.id)
+    if parts:
+        return "".join(f.content for f in parts)
+    return next((f.content for f in request.project_files if f.id == identifier), "")
+
+
+def scoped_generation_request(request, prompt):
+    """Only expose this batch's source; keep selected stage rules/handbooks."""
+    from app.services.retrieval_context import evidence_file, mount
+
+    files = [f for f in request.project_files
+             if not f.id.startswith(("retrieval-task-input", "retrieval-local-operation",
+                                     "retrieval-chapter-source", "retrieval-chapter-script",
+                                     "retrieval-chapter-shots",
+                                     "retrieval-project-assets"))]
+    catalog = snapshot_text(request, "retrieval-project-assets")
+    if catalog:
+        assets = json.loads(catalog)
+        selected = {a["id"] for a in assets if a.get("name") and a["name"] in prompt}
+        while True:
+            expanded = selected | {a.get("parent_asset_id") for a in assets if a["id"] in selected}
+            if expanded == selected:
+                break
+            selected = expanded
+        # Full relevant identities plus a compact index for aliases/implicit
+        # references. Never repeat unrelated image prompts or whole boards.
+        scoped_assets = [a if a["id"] in selected else {
+            k: a[k] for k in ("id", "name", "asset_type", "parent_asset_id", "aliases") if k in a
+        } for a in assets]
+        files.append(evidence_file("project-assets", json.dumps(scoped_assets, ensure_ascii=False), suffix="json"))
+    current = request.model_copy(update={
+        "project_files": files,
+        "system_prompt": request.system_prompt + "\n本批正文、时间槽和必要衔接信息已完整提供在本次局部操作中。"
+            "整章原稿、整章剧本和旧分镜刻意不挂载，不要寻找或重读它们。"
+            "只按本批人物、动作和字段检索适用规则，资料已足够时直接输出完整JSON，不反复检索同一证据。",
+    })
+    current = mount(current, evidence_file("local-operation", prompt))
+    return current
+
+
+def scope_inline_assets(base, local_text):
+    """Keep identity descriptions for alias resolution, not unrelated image prompts."""
+    marker = "资产清单："
+    start = base.find(marker)
+    if start < 0:
+        return base
+    offset = start + len(marker)
+    while offset < len(base) and base[offset].isspace():
+        offset += 1
+    try:
+        assets, end = json.JSONDecoder().raw_decode(base, offset)
+    except ValueError:
+        return base
+    if not isinstance(assets, list) or not all(isinstance(a, dict) for a in assets):
+        return base
+    scoped = [a if a.get("name") and a["name"] in local_text else {
+        k: a[k] for k in ("name", "type", "description", "parent_asset_id") if k in a
+    } for a in assets]
+    return base[:offset] + json.dumps(scoped, ensure_ascii=False) + base[end:]
+
+
+def storyboard_format_request(request, raw, schema, group, source=""):
+    """Formatting is one bounded inference, not an agent researching a story."""
+    contract = schema.split('\n输出JSON Schema：', 1)[-1]
+    prompt = ('输出JSON Schema：' + contract + '\n仅修复下列已有输出的JSON结构，不重写故事。'
+              + '\n本批时间槽：' + json.dumps(group, ensure_ascii=False)
+              + ('\n仅用于补齐截断末镜的本批原文：\n' + source if source else '')
+              + '\n已有输出：\n' + raw)
+    return request.model_copy(update={
+        "prompt": prompt,
+        "system_prompt": "你是分镜JSON格式校正器，不是创作或审核Agent。仅处理已提供的本批输出。"
+            "禁止搜索、读取文件或技能，不输出计划。保留全部完整镜头、字段和原文值，不缩写台词或动作。"
+            "截断末镜只能依据已有输出和本批原文补齐；不能通过删除末镜、删除字段或提前结束剧情来凑合法JSON。"
+            "缺少恢复依据时返回JSON错误说明，不能编造或谎称完成。只返回完整JSON对象。",
+        "tool_mode": "none", "state_mode": "ephemeral", "project_files": [], "skills": [],
+        "attachments": [], "documents": [], "memory_context": [], "recent_messages": [],
+        "conversation_summary": None,
+    })
+
+
 async def generate(request, runtime_factory, *, plan, durations, state, save, progress,
                    script: str = "", budget: int | None = None,
                    repair_shots: list[dict] | None = None,
@@ -819,8 +933,12 @@ async def generate(request, runtime_factory, *, plan, durations, state, save, pr
         "properties": {"shots": {"type": "array", "minItems": 1, "maxItems": 200,
             "items": {"type": "object", "required": ["title", "duration_seconds", "image_prompt"],
                 "properties": {**{k: properties[k] for k in basic_fields},
+                    "source_ids": {"type": "array", "items": {"type": "string"},
+                        "description": "原文分页时必填，精确引用本页实际呈现的原文id"},
                     "duration_seconds": {"type": "number", "enum": durations},
                     "order_index": {"type": "integer", "minimum": 1}}}}}}, ensure_ascii=False)
+    from app.services.storyboard_preparation import prepare, direct_request
+    preparation = prepare(request, state) if request.tool_mode == "retrieval" else None
     allowed = {Decimal(str(d)) for d in durations}
     state.setdefault("valid", {})
     state.setdefault("raw", {})
@@ -897,8 +1015,47 @@ async def generate(request, runtime_factory, *, plan, durations, state, save, pr
             updates["continuity_group"] = ""
         return shot.model_copy(update=updates).model_dump(mode="json")
 
-    async def call(prompt, label, evidence_files=()):
+    async def execute_call(current, label):
+        from app.services.storyboard_review import run_review_attempt
+        result = await run_review_attempt(runtime_factory(), current, progress, label)
+        state["manifest"] = result.manifest
+        finish = getattr(result, "finish_reason", None)
+        state.setdefault("call_diagnostics", {})[label] = {
+            "finish_reason": finish, "response_chars": len(result.final_response),
+            "tool_mode": current.tool_mode, "max_tokens": current.model_binding.get("max_tokens"),
+            "input_chars": len(current.system_prompt) + len(current.prompt),
+            "model_calls": sum(e.get("type") == "MODEL_CALL_START" for e in getattr(result, "events", []) or []),
+            "tool_calls": sum(e.get("type") == "TOOL_CALL_START" for e in getattr(result, "events", []) or []),
+        }
+        await save(state)
+        if finish in {"length", "max_tokens", "max_output_tokens", "incomplete"}:
+            await progress(f"{label}：模型返回未完整结束（{finish}），保留已返回内容，仅处理本批")
+        return result.final_response
+
+    async def call(prompt, label, evidence_files=(), *, reference_query=""):
         await progress(label)
+        if preparation is not None:
+            # Retrieval is performed once by the host. Neither generation nor
+            # a malformed field should start another open-ended agent loop.
+            requested = []
+            for supplement in range(3):
+                current = direct_request(request, prompt + CLIP_RULES, preparation,
+                                         reference_query or prompt, requested=requested)
+                raw = await execute_call(current, label + (f" · 补充资料 {supplement}" if supplement else ""))
+                try:
+                    reply = json.loads(raw)
+                except (ValueError, TypeError):
+                    return raw
+                if not isinstance(reply, dict) or "needs_context" not in reply:
+                    return raw
+                ids = reply["needs_context"]
+                if (not isinstance(ids, list) or not ids or
+                        any(not isinstance(i, str) for i in ids) or
+                        set(ids).issubset(requested)):
+                    raise ValueError("资料补充请求无效或重复；已保留本批结果")
+                requested = list(dict.fromkeys([*requested, *ids]))
+            raise ValueError("本批定向资料补充仍未收敛；已保留其它批次")
+        original_prompt = prompt
         scoped_request = request
         if evidence_files:
             from app.services.retrieval_context import mount
@@ -916,15 +1073,19 @@ async def generate(request, runtime_factory, *, plan, durations, state, save, pr
                 '当请求 fields 补丁时，只返回该镜头待修改字段，平台合并其余内容。'
                 '仅在明确要求 insert_after 时允许返回待插入的新镜头。',
             "state_mode": "ephemeral", "recent_messages": [], "conversation_summary": None})
-        from app.services.storyboard_review import run_review_attempt
-        result = await run_review_attempt(runtime_factory(), current, progress, label)
-        state["manifest"] = result.manifest
-        return result.final_response
+        if label.startswith("正在生成") and current.tool_mode == "retrieval":
+            current = scoped_generation_request(current, original_prompt)
+        return await execute_call(current, label)
 
     # Fixed timing allows small batches; un-timed scripts retain model-directed pacing.
     if plan:
-        units = [(str(number), plan[i:i + 4], None)
-                 for number, i in enumerate(range(0, len(plan), 4))]
+        from app.services.storyboard_preparation import output_capacity
+        # Existing checkpoints used four slots. Preserve their batch identities;
+        # only new allocations adapt to the configured output capacity.
+        size = state.setdefault("timed_batch_size", 4 if state.get("raw") or state.get("valid")
+            or state.get("generation_plan") or preparation is None else output_capacity(request.model_binding))
+        units = [(str(number), plan[i:i + size], None)
+                 for number, i in enumerate(range(0, len(plan), size))]
     elif segments:
         units = [(segment["key"], [], segment) for segment in segments]
     else:
@@ -942,6 +1103,8 @@ async def generate(request, runtime_factory, *, plan, durations, state, save, pr
         stays checkpointed.
         """
         state["raw"].pop(batch_key, None)
+        state.get("generation_pages", {}).pop(batch_key, None)
+        state.get("source_coverage", {}).pop(batch_key, None)
         state["segment_shots"].pop(batch_key, None)
         candidates.pop(batch_key, None)
         await save(state)
@@ -1037,12 +1200,14 @@ async def generate(request, runtime_factory, *, plan, durations, state, save, pr
                          for i in (index - 1, index + 1)}
             if insertions.get(str(index - 1)):
                 neighbors[str(index - 1)] = insertions[str(index - 1)][-1]
+            deferred_fields = []
             if repair_control:
                 try:
                     mandatory = sorted(set(named_fields) | ({'duration_seconds', 'action_description',
                         'dialogue', 'emotion_plan', 'combat_plan', 'internal_shots'} if allow_split else set()))
                     fields = await repair_fields(repair_control, candidate, issues, fields, mandatory,
-                                                 neighbors=neighbors)
+                                                 neighbors=neighbors, deferred=deferred_fields)
+                    state.setdefault('jev_repair_deferred_fields', {})[str(index)] = deferred_fields
                 finally:
                     await save(state)
                 if not fields:
@@ -1061,6 +1226,12 @@ async def generate(request, runtime_factory, *, plan, durations, state, save, pr
                 f"\n本镜审核意见：{json.dumps(named.get(index) or [], ensure_ascii=False)}"
                 f"\n直接点名字段：{json.dumps(named_fields, ensure_ascii=False)}"
                 f"\n同一事实的关联同步字段：{json.dumps(sorted(set(fields) - set(named_fields)), ensure_ascii=False)}"
+                + ("\n【JEV修复范围交接】以下关联字段尚未确定是否需要改动："
+                   + json.dumps(deferred_fields, ensure_ascii=False)
+                   + "。请根据本镜现有内容与具体审核意见核验，仅当修复点名问题必须同步同一事实时提交补丁；"
+                     "不确定本身不是错误，没有直接矛盾就省略该字段。JEV已确定保留的字段不能改动，不扩大到其它镜头。"
+                   if deferred_fields else '')
+                +
                 "\n先修复点名问题，再检查同一人物姿势、机位、持物、造型和时间在本镜各字段中的表述。"
                 "只在存在直接矛盾时同步关联字段中的相应句子，其余有效内容必须保留；不要另起一套机位或姿势。"
                 "表情、战斗与内部镜头中的同一持物、视线和伤势也须同步；仅同步该事实，不改变未被点名的时间点和编排。"
@@ -1122,7 +1293,7 @@ async def generate(request, runtime_factory, *, plan, durations, state, save, pr
                     "先搜索再读取相关内容，不读取全章分镜。")
             error_hint = ""
             if repair_control:
-                constraint = ('\n【JEV已确定修复范围】唯一允许写入的字段：' + json.dumps(fields, ensure_ascii=False)
+                constraint = ('\n【单镜修复写入边界】唯一允许写入的字段：' + json.dumps(fields, ensure_ascii=False)
                     + '。不得自行扩大范围或重新选择字段；生成补丁只负责修改这些字段的内容。')
                 request_prompt += constraint
                 direct_instructions += constraint
@@ -1284,7 +1455,8 @@ async def generate(request, runtime_factory, *, plan, durations, state, save, pr
     ])
 
     def generation_prompt(unit_no, key, group, segment, ceiling=None):
-        base = _scene_prompt_base(request.prompt, script)
+        full_input = snapshot_text(request, "retrieval-task-input") or request.prompt
+        base = _scene_prompt_base(full_input, script)
         if group:
             base = base.partition("\n原始剧本时间轴约束（")[0]
         previous_key = units[unit_no - 2][0] if unit_no > 1 else None
@@ -1292,6 +1464,8 @@ async def generate(request, runtime_factory, *, plan, durations, state, save, pr
         if group and group[0]["order_index"] > 1:
             previous = [state["valid"].get(str(group[0]["order_index"] - 1))]
             previous = [row for row in previous if row]
+        base = scope_inline_assets(base, (segment["content"] if segment else json.dumps(group, ensure_ascii=False))
+                                   + json.dumps(previous, ensure_ascii=False))
         prompt = base + '\n' + schema
         if ceiling is not None:
             prompt += f'\n已为其它批次保留时长，本批 duration_seconds 总和上限 {ceiling:g} 秒，不得改动其它批次。'
@@ -1324,6 +1498,95 @@ async def generate(request, runtime_factory, *, plan, durations, state, save, pr
             ) if concurrency > 1 else ''
         return prompt
 
+    async def generate_unit(unit_no, key, group, segment, ceiling=None):
+        prompt = generation_prompt(unit_no, key, group, segment, ceiling)
+        label = f"正在生成第 {unit_no}/{total_units} 批分镜"
+        if preparation is None or segment is None or repair:
+            return await call(prompt, label)
+        from app.services.storyboard_preparation import source_units, source_window, coverage, output_capacity
+        spans = source_units(key, segment["content"])
+        if not spans:
+            raise ValueError("本批原文为空，不能发布空分镜")
+        pages = state.setdefault("generation_pages", {}).setdefault(key, [])
+        capacity = output_capacity(request.model_binding)
+        missing = coverage(pages, spans) if pages else {s["id"] for s in spans}
+        # Each accepted page must cover new source evidence. A failed call can
+        # never erase previous pages; restarts continue with the missing spans.
+        while missing:
+            remaining = source_window(spans, missing)
+            # One source copy per request. Coverage is tracked against all spans,
+            # but a small output page does not need the entire scene twice.
+            page_prompt = compact_paged_generation_prompt(prompt) + (
+                f'\n分页输出：本次最多{capacity}个完整视频片段，宁可分页，不截断JSON。'
+                '每个shots项额外提供source_ids数组，精确引用下面实际呈现的原文编号。'
+                '按原文顺序覆盖；可以多镜覆盖同一段，但不得虚报覆盖、跳过台词或压缩剧情来塞满一页。'
+                '本批正文仅供背景，本次只生成以下未覆盖原文；已完成内容不得重复生成。'
+                '\n待覆盖原文：' + json.dumps(remaining, ensure_ascii=False)
+                + '\n已完成片段数：' + str(len(pages))
+                + '\n上一片段仅供衔接：' + json.dumps(pages[-1:], ensure_ascii=False))
+            saved_page = state.setdefault("page_raw", {}).get(key, {})
+            raw = saved_page.get("raw") if saved_page.get("offset") == len(pages) else None
+            if not raw:
+                raw = await call(page_prompt, label + f" · 第 {len(pages) + 1} 起片段",
+                                 reference_query=json.dumps(remaining, ensure_ascii=False))
+            state["page_raw"][key] = {"offset": len(pages), "raw": raw}
+            await save(state)
+            rows = decode_shots(raw)
+            if not rows:
+                raw = await execute_call(storyboard_format_request(request, raw, schema, [],
+                    segment["content"]), f"正在修复第 {unit_no} 批分页格式")
+                rows = decode_shots(raw)
+            if not rows or len(rows) > capacity:
+                state["page_raw"].pop(key, None)
+                await save(state)
+                raise ValueError("本页缺少完整镜头或超过输出容量，已保留之前分页")
+            # A truncated object can represent an additional shot of the same
+            # source span. Do not mark that span complete from its earlier shot.
+            if not complete_output(raw):
+                fixed = await execute_call(storyboard_format_request(request, raw, schema, [],
+                    segment["content"]), f"正在修复第 {unit_no} 批分页尾部")
+                repaired = decode_shots(fixed)
+                if not complete_output(fixed) or len(repaired) < len(rows) + int(unfinished_shot(raw)):
+                    raise ValueError("分页尾部未完整，已保存原始输出，不将截断内容标记为覆盖")
+                repaired[:len(rows)] = rows
+                rows = repaired
+            try:
+                pending = coverage(rows, remaining)
+            except ValueError:
+                from app.services.storyboard_preparation import mapping_request, merge_mapping
+                mapped = await execute_call(mapping_request(request, rows, remaining),
+                    f"正在修复第 {unit_no} 批原文关联（不重写镜头）")
+                try:
+                    rows = merge_mapping(rows, remaining, mapped)
+                except (ValueError, TypeError, json.JSONDecodeError) as mapping_error:
+                    # A malformed mapping must never keep the same bad page in
+                    # the checkpoint. Preserve accepted pages, then regenerate
+                    # only this page against the same missing source window.
+                    state["page_raw"].pop(key, None)
+                    await save(state)
+                    raise ValueError(
+                        f"本页原文关联修复未收敛，已丢弃当前坏分页并仅重试本页：{mapping_error}"
+                    ) from mapping_error
+                pending = coverage(rows, remaining)
+            gained = {s['id'] for s in remaining} - pending
+            if not gained:
+                raise ValueError("本页没有覆盖新的原文，已保留完成片段")
+            # Enforce sequential coverage, so later missing-only pages cannot
+            # be appended after a future event generated out of order.
+            ordered = [s["id"] for s in remaining]
+            if gained != set(ordered[:len(gained)]):
+                state["page_raw"].pop(key, None)
+                await save(state)
+                raise ValueError("本页跳过前段原文；仅重试当前页，已完成分页保留")
+            pages.extend(rows)
+            state["page_raw"].pop(key, None)
+            missing = coverage(pages, spans)
+            state.setdefault("source_coverage", {})[key] = {
+                "total": len(spans), "covered": len(spans) - len(missing), "missing": sorted(missing)}
+            await save(state)
+            await progress(f"第 {unit_no}/{total_units} 批已保存 {len(pages)} 个片段，原文覆盖 {len(spans) - len(missing)}/{len(spans)}")
+        return json.dumps({"shots": pages}, ensure_ascii=False)
+
     prefetches = {}
 
     def start_prefetch(position):
@@ -1337,8 +1600,7 @@ async def generate(request, runtime_factory, *, plan, durations, state, save, pr
 
         async def fetch():
             try:
-                state["raw"][key] = await call(generation_prompt(position + 1, key, group, segment),
-                                              f"正在生成第 {position + 1}/{total_units} 批分镜")
+                state["raw"][key] = await generate_unit(position + 1, key, group, segment)
                 await save(state)
                 return None
             except Exception as error:
@@ -1355,6 +1617,8 @@ async def generate(request, runtime_factory, *, plan, durations, state, save, pr
         _, right, right_scene = units[position + 1]
         if left_scene and right_scene:
             if left_scene.get("parts", 1) > 1 and left_scene["label"] == right_scene["label"]:
+                return False
+            if re.search(r"接上|紧接|继续|话音未落|与此同时|接过|递给|追上", right_scene["content"][:300]):
                 return False
             return not (contains_combat(left_scene["content"]) and contains_combat(right_scene["content"]))
         return not (contains_combat(json.dumps(left, ensure_ascii=False)) and
@@ -1428,9 +1692,8 @@ async def generate(request, runtime_factory, *, plan, durations, state, save, pr
             completed_batches.pop(key, None)
         # Built even when the reply is already checkpointed: a batch whose
         # stored reply cannot be validated is re-asked with this exact prompt.
-        prompt = generation_prompt(unit_no, key, group, segment, ceiling)
         if key not in state["raw"]:
-            state["raw"][key] = await call(prompt, f"正在生成第 {unit_no}/{total_units} 批分镜")
+            state["raw"][key] = await generate_unit(unit_no, key, group, segment, ceiling)
             await save(state)
         raw = state["raw"][key]
         rows = decode_shots(raw)
@@ -1439,10 +1702,23 @@ async def generate(request, runtime_factory, *, plan, durations, state, save, pr
             if len(raw) > 40_000:
                 await discard_batch(key)
                 raise RuntimeError("分镜返回格式错误且内容过长，已保留其它批次；请缩小生成范围")
-            fixed = await call(schema + '\n仅修复下列已有输出的JSON结构，不重写故事。'
-                + '\n本批时间槽：' + json.dumps(group, ensure_ascii=False)
-                + '\n已有输出：\n' + raw, f"正在修复第 {unit_no} 批返回格式")
+            label = f"正在修复第 {unit_no} 批返回格式"
+            await progress(label + " · 定向校正，不调用检索工具")
+            fixed = await execute_call(storyboard_format_request(
+                request, raw, schema, group, segment["content"] if segment else ""), label)
+            original_rows = rows
             rows = decode_shots(fixed)
+            minimum_rows = len(original_rows) + int(unfinished_shot(raw))
+            if len(rows) < minimum_rows:
+                raise RuntimeError("格式修复丢失完整镜头，已保留本批原始输出，不能发布减少的镜头")
+            # Formatting must not rewrite previously complete, parseable rows.
+            if original_rows:
+                if any(old.get("order_index") != new.get("order_index")
+                       for old, new in zip(original_rows, rows[:len(original_rows)], strict=True)):
+                    raise RuntimeError("格式修复改变已有镜号顺序，已保留本批原始输出")
+                rows[:len(original_rows)] = original_rows
+                if complete_output(fixed):
+                    fixed = json.dumps({"shots": rows}, ensure_ascii=False)
             state["raw"][key] = fixed
             await save(state)
             if not group and not complete_output(fixed):
@@ -1578,7 +1854,8 @@ async def generate(request, runtime_factory, *, plan, durations, state, save, pr
                     runtime_factory.invalid_output()
                 failures[key] = str(error)[:1500]
                 await save(state)
-                if isinstance(error, ShotRepairExhausted) or attempt + 1 == batch_attempts:
+                from app.services.storyboard_preparation import budget_blocked
+                if budget_blocked(error) or isinstance(error, ShotRepairExhausted) or attempt + 1 == batch_attempts:
                     raise RuntimeError(
                         f"第 {unit_no}/{total_units} 批暂未完成，已保存其他批次；"
                         f"继续将只重试本批：{str(error)[:1000]}"

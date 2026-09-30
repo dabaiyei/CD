@@ -683,6 +683,10 @@ class FakeWorkflowRuntime:
                     },
                 ]
             }
+            if "待覆盖原文：" in request.prompt:
+                spans = json.loads(request.prompt.split("待覆盖原文：", 1)[1].split("\n已完成片段数：", 1)[0])
+                for row in response["shots"]:
+                    row["source_ids"] = [s["id"] for s in spans]
         elif "视频提示词生成任务快照" in request.prompt:
             rows = json.loads(request.prompt.split("镜头数据：\n", 1)[1])
             response = {

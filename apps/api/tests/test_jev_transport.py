@@ -54,7 +54,7 @@ def test_zen_dns_fallback_keeps_tls_identity_and_never_sends_key_to_dns(monkeypa
     assert len(calls) == 4  # DNS resolution reused within its bounded TTL.
 
 
-@pytest.mark.parametrize("failure", [httpx.ReadTimeout("slow inference"), 429, 503])
+@pytest.mark.parametrize("failure", [httpx.ReadTimeout("slow inference"), 503])
 def test_never_retries_sent_inference(monkeypatch, failure):
     calls = []
 
@@ -68,6 +68,34 @@ def test_never_retries_sent_inference(monkeypatch, failure):
     with pytest.raises(httpx.HTTPError):
         asyncio.run(jev_transport.post(JevSettings(True, "secret", provider="opencode_zen"), {}))
     assert len(calls) == 1
+
+
+def test_rate_limit_is_serialized_and_retried(monkeypatch):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        if len(calls) < 3:
+            return httpx.Response(429, headers={"retry-after": "0"}, json={"error": "rate limited"})
+        return httpx.Response(200, json={"answers": {}})
+
+    mock_client(monkeypatch, handler)
+    asyncio.run(jev_transport.post(JevSettings(True, "secret", provider="opencode_zen"), {}))
+    assert len(calls) == 3
+
+
+def test_rate_limit_exhaustion_is_reported(monkeypatch):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(429, headers={"retry-after": "0"}, json={"error": "rate limited"})
+
+    mock_client(monkeypatch, handler)
+    with pytest.raises(httpx.HTTPStatusError) as error:
+        asyncio.run(jev_transport.post(JevSettings(True, "secret", provider="opencode_zen"), {}))
+    assert error.value.response.status_code == 429
+    assert len(calls) == 4
 
 
 def test_dns_rejects_nonpublic_answers(monkeypatch):

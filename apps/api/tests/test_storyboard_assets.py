@@ -155,7 +155,8 @@ def test_automatic_pipeline_creates_derivative_only_after_storyboard(client, cre
                 finish_reason="completed", events=[], manifest={})
 
     monkeypatch.setattr(test_api, "FakeAutomaticDirectorRuntime", Runtime)
-    test_api.test_automatic_director_workflow_completes_chapter_to_ready_videos(client, creator_headers, admin_headers)
+    test_api.test_automatic_director_workflow_completes_chapter_to_ready_videos(
+        client, creator_headers, admin_headers, monkeypatch, False)
     assert state["extracted"]
 
     async def verify():

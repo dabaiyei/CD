@@ -1,4 +1,7 @@
 packages:
   - apps/web
+  - services/infinite-canvas/web
+  - services/infinite-canvas/canvas-agent
 allowBuilds:
+  esbuild: true
   vue-demi: true

@@ -1737,7 +1737,7 @@ async def submit_decision(
 ) -> None:
     if decision.resolved:
         raise ValueError("该审核选择已处理")
-    if decision.decision_type == 'jev_control':
+    if decision.decision_type in {'jev_control', 'storyboard_input_budget'}:
         if option != 'partial_repair':
             raise ValueError('JEV待确认只能重新判断，不能跳过或批准未完成的检查')
         parent = await session.get(DirectorChildRun, decision.child_run_id)
@@ -1750,7 +1750,8 @@ async def submit_decision(
         decision.selected_option = option
         decision.resolved = True
         workflow.last_error = None
-        workflow.last_message = '已重新提交JEV判断，复用已保存成果'
+        workflow.last_message = ('已重新准备分镜输入，复用已保存成果'
+            if decision.decision_type == 'storyboard_input_budget' else '已重新提交JEV判断，复用已保存成果')
         await _commit_and_dispatch(session, [(retry, event)])
         return
     if option not in {item["value"] for item in REVIEW_OPTIONS}:
@@ -2123,7 +2124,9 @@ async def _advance_director_task_terminal(task_id: str) -> None:
             child.summary = task.error_message or "子智能体执行未完成"
             child.details = {**child.details, "error": task.error_message or ""}
             from app.services.jev_control import pending as jev_pending
-            if jev_pending(task.error_message):
+            from app.services.storyboard_preparation import budget_blocked
+            input_blocked = budget_blocked(task.error_message)
+            if input_blocked or jev_pending(task.error_message):
                 # This is an unresolved decision, not another generation attempt.
                 # A user can continue after clarifying evidence or fixing the provider.
                 workflow.status = DirectorWorkflowStatus.WAITING_USER
@@ -2133,11 +2136,12 @@ async def _advance_director_task_terminal(task_id: str) -> None:
                 child.details = {**child.details, 'decision_pending': True}
                 session.add(DirectorDecisionRequest(tenant_id=workflow.tenant_id, user_id=workflow.user_id,
                     project_id=workflow.project_id, workflow_id=workflow.id, child_run_id=child.id,
-                    decision_type='jev_control', prompt=workflow.last_message,
-                    options=[{'value': 'partial_repair', 'label': '重新判断',
-                              'description': '补充相关内容或修复JEV配置后，只继续未完成步骤，不跳过检查'}]))
+                    decision_type='storyboard_input_budget' if input_blocked else 'jev_control', prompt=workflow.last_message,
+                    options=[{'value': 'partial_repair', 'label': '调整输入后继续' if input_blocked else '重新判断',
+                              'description': '调整输入或配置后，只继续未完成步骤，不跳过检查'}]))
                 session.add(Notification(tenant_id=workflow.tenant_id, user_id=workflow.user_id,
-                    project_id=workflow.project_id, task_id=task.id, title='JEV 判断需要确认',
+                    project_id=workflow.project_id, task_id=task.id,
+                    title='分镜输入需要调整' if input_blocked else 'JEV 判断需要确认',
                     message=workflow.last_message))
                 await session.commit()
                 return

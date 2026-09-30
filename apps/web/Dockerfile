@@ -5,10 +5,13 @@ RUN corepack enable && corepack prepare pnpm@11.7.0 --activate
 
 COPY package.json pnpm-lock.yaml pnpm-workspace.yaml ./
 COPY apps/web/package.json ./apps/web/package.json
-RUN pnpm install --frozen-lockfile --filter @cineforge/web...
+COPY services/infinite-canvas/web/package.json ./services/infinite-canvas/web/package.json
+COPY services/infinite-canvas/canvas-agent/package.json ./services/infinite-canvas/canvas-agent/package.json
+RUN pnpm install --frozen-lockfile --filter @cineforge/web... --filter infinite-canvas...
 
 COPY apps/web ./apps/web
-RUN pnpm --filter @cineforge/web build
+COPY services/infinite-canvas ./services/infinite-canvas
+RUN pnpm build:web
 
 FROM nginx:1.27-alpine
 
