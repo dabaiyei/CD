@@ -4,7 +4,7 @@ import asyncio
 import logging
 import os
 from collections.abc import Awaitable, Callable
-from contextlib import suppress
+from contextlib import aclosing, suppress
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Any, Protocol
@@ -22,6 +22,7 @@ from runtime.context import (
     scoped_workspace_path,
 )
 from runtime.contracts import AgentRunRequest, AgentRunResponse, ExecutionManifest
+from runtime.response_stream import IncompleteModelResponse
 
 CINEFORGE_WORKSPACE_INSTRUCTIONS = """<workspace>
 This CineForge task has an isolated {backend} workspace at {workdir}.
@@ -37,6 +38,24 @@ Do not create repositories, dependency files, scratch projects or unrelated docu
 
 RESPONSE_INPUT_PARSE_ATTEMPTS = 3
 logger = logging.getLogger(__name__)
+
+
+def response_model_parameters(parameters: dict[str, Any]) -> dict[str, Any]:
+    # The SDK flag controls serialization, not the requested reasoning level.
+    return {**parameters, **({"thinking_enable": True}
+                            if parameters.get("reasoning_effort") == "none" else {})}
+
+
+async def bounded_reply_stream(stream, tool_mode):
+    """One direct request is one inference; its caller owns bounded retries."""
+    rounds = 0
+    async with aclosing(stream):
+        async for item in stream:
+            if tool_mode == "none" and getattr(item, "type", None) == "MODEL_CALL_START":
+                rounds += 1
+                if rounds > 1:
+                    raise IncompleteModelResponse("模型只返回思考或未完成结果，未返回正文；未发起内部重复调用，请重试本次请求")
+            yield item
 
 
 class _ToolCallIdNormalizingStream:
@@ -156,6 +175,15 @@ class AgentScopeAdapter:
         request: AgentRunRequest,
         on_event: Callable[[dict[str, Any]], Awaitable[None]] | None = None,
     ) -> AgentRunResponse:
+        from runtime import direct_response
+        if direct_response.eligible(request):
+            try:
+                return await direct_response.run(request, self.settings.request_timeout_seconds, on_event)
+            except Exception as error:
+                if not is_transient_response_input_parse_error(error):
+                    raise
+                # Preserve the existing Responses-to-Chat compatibility path
+                # for relays that reject this input protocol.
         if not self.available:
             raise RuntimeError("AgentScope SDK is not installed in this runtime image")
 
@@ -196,6 +224,13 @@ class AgentScopeAdapter:
             return AgentRunResponse.model_validate(receipt["response"])
         parameters: dict[str, Any] = {}
         binding = request.model_binding
+        from runtime.relay_formatter import GrokRelayChatFormatter
+
+        relay_formatter = (
+            GrokRelayChatFormatter()
+            if "grok" in binding.model.lower() or binding.provider.lower() in {"grok", "xai"}
+            else None
+        )
         if binding.max_tokens is not None:
             parameters["max_tokens"] = binding.max_tokens
         if binding.reasoning_effort in {"none", "minimal", "low", "medium", "high", "xhigh"}:
@@ -232,6 +267,7 @@ class AgentScopeAdapter:
                 "default_headers": binding.extra_headers or None,
             }
             chat_fallback = CineForgeOpenAIChatModel(
+                formatter=relay_formatter,
                 credential=credential,
                 model=binding.model,
                 parameters=CineForgeOpenAIChatModel.Parameters(**parameters),
@@ -256,7 +292,10 @@ class AgentScopeAdapter:
             model = CineForgeOpenAIResponseModel(
                 credential=credential,
                 model=binding.model,
-                parameters=CineForgeOpenAIResponseModel.Parameters(**parameters),
+                # In this SDK thinking_enable gates serialization of the
+                # reasoning object. Explicit effort=none must reach Responses;
+                # omitting it can restore the relay's high-reasoning default.
+                parameters=CineForgeOpenAIResponseModel.Parameters(**response_model_parameters(parameters)),
                 stream=True,
                 context_size=self.settings.model_context_size,
                 client_kwargs=client_kwargs,
@@ -267,6 +306,7 @@ class AgentScopeAdapter:
                 base_url=str(binding.base_url).rstrip("/") if binding.base_url else None,
             )
             model = CineForgeOpenAIChatModel(
+                formatter=relay_formatter,
                 credential=credential,
                 model=binding.model,
                 parameters=CineForgeOpenAIChatModel.Parameters(**parameters),
@@ -334,10 +374,10 @@ class AgentScopeAdapter:
                 )
                 for attachment in request.attachments
             )
-            async for item in agent.reply_stream(
+            async for item in bounded_reply_stream(agent.reply_stream(
                 UserMsg(name="User", content=user_content),
                 yield_final_msg=True,
-            ):
+            ), request.tool_mode):
                 if isinstance(item, Msg):
                     final_message = item
                 else:

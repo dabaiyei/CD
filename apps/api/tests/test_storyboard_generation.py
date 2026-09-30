@@ -6,8 +6,11 @@ from types import SimpleNamespace
 
 import pytest
 
+pytestmark = pytest.mark.usefixtures('jev_disabled')
+
 from app.services.agent_runtime import AgentRuntimeRequest
 from app.services.storyboard_generation import (
+    assemble_repaired_board,
     allocate_timeline,
     complete_output,
     coverage_finding,
@@ -22,6 +25,7 @@ from app.services.storyboard_generation import (
     scenes_for_coverage,
     segment_offset,
     segment_script,
+    split_shot_finding,
 )
 
 
@@ -31,10 +35,179 @@ def shot(index, duration=8):
             "dialogue": "别走", "asset_names": []}
 
 
+def test_insertions_remap_planning_references_without_mutating_checkpoint_or_dialogue():
+    valid = {str(i): shot(i) for i in range(1, 4)}
+    valid["3"].update(action_description="承接镜2，转至镜头 3；镜99未知",
+        dialogue="他说镜2很好", frame_layout={"notes": "接镜头2"})
+    original = copy.deepcopy(valid)
+    inserted = {"1": [{**shot(1), "action_description": "后接镜2"}]}
+    rows = assemble_repaired_board([1, 2, 3], valid, inserted)
+    assert rows[3]["action_description"] == "承接镜3，转至镜头 4；镜99未知"
+    assert rows[3]["frame_layout"]["notes"] == "接镜头3"
+    assert rows[1]["action_description"] == "后接镜3"
+    assert rows[3]["dialogue"] == "他说镜2很好"
+    assert valid == original
+    assert assemble_repaired_board([1, 2, 3], valid, inserted) == rows
+
+
 def request():
     return AgentRuntimeRequest(tenant_id="t", project_id="p", task_id="task", session_id="s",
         prompt="剧本和模型能力", system_prompt="导演约束", model_binding={}, prompt_versions={},
         skill_versions={}, skills=[], memory_context=[])
+
+
+def test_targeted_repair_sees_adjacent_source_not_just_lexical_match(monkeypatch):
+    import app.services.storyboard_generation as module
+    segments = [{"key": str(i), "label": f"场{i}", "content": f"场{i}原文"} for i in range(1, 4)]
+    segments[1]["content"] = "五颗球，白球回弹"
+    segments[2]["content"] = "远距离击球，红球落袋，仅剩两颗球"
+    monkeypatch.setattr(module, "segment_script", lambda _: segments)
+    monkeypatch.setattr(module, "match_existing_shots", lambda _, rows: {"1": rows[:1], "2": rows[1:2], "3": rows[2:]})
+    class Runtime:
+        async def run(self, req):
+            assert "source_context" in req.prompt
+            assert "仅剩两颗球" in req.prompt
+            assert "不是已确认" in req.prompt
+            return SimpleNamespace(final_response='{"fields":{"action_description":"远距离击球，红球落袋，仅剩两颗球"}}', manifest={})
+    async def noop(*args):
+        pass
+    result, _ = asyncio.run(generate(request(), Runtime, plan=[], durations=[8], state={},
+        save=noop, progress=noop, script="剧本", repair_shots=[shot(i) for i in range(1, 4)],
+        findings=[{"shot_indices": [2], "fields": ["action_description"], "severity": "major",
+                   "issue": "球数与原文不符", "suggestion": "核对原文修复"}]))
+    assert "仅剩两颗球" in json.loads(result)["shots"][1]["action_description"]
+
+
+def test_automatic_repair_skips_minor_and_preserves_previous_patches():
+    rows = [shot(i) for i in range(1, 4)]
+    state = {"valid": {"1": {**rows[0], "dialogue": "已保存的修复"}}, "repaired_indices": [1]}
+    calls = []
+
+    class Runtime:
+        async def run(self, req):
+            calls.append(req.prompt)
+            assert "只修复第 3 镜" in req.prompt
+            return SimpleNamespace(final_response='{"fields":{"dialogue":"主要问题已修复"}}', manifest={})
+
+    async def noop(*args):
+        pass
+
+    result, _ = asyncio.run(generate(request(), Runtime, plan=[], durations=[8], state=state,
+        save=noop, progress=noop, repair_shots=rows, repair_blocking_only=True,
+        findings=[{"shot_indices": [i], "fields": ["dialogue"], "severity": severity, "issue": "问题"}
+                  for i, severity in [(1, "major"), (2, "minor"), (3, "major")]]))
+    output = json.loads(result)["shots"]
+    assert len(calls) == 1
+    assert output[0]["dialogue"] == "已保存的修复"
+    assert output[1]["dialogue"] == rows[1]["dialogue"]
+    assert output[2]["dialogue"] == "主要问题已修复"
+
+
+def test_spatial_patch_updates_matching_action_without_overwriting_dialogue():
+    original = [shot(1), shot(2)]
+    class Runtime:
+        async def run(self, req):
+            assert "同一事实的关联同步字段" in req.prompt
+            return SimpleNamespace(final_response=json.dumps({"fields": {
+                "image_prompt": "同一机位0.9米平视", "action_description": "从0.9米平视机位开始跟拍",
+                "dialogue": "不得改写的台词", "title": "不得改写的标题"}}), manifest={})
+    async def noop(*args):
+        pass
+    output, _ = asyncio.run(generate(request(), Runtime, plan=[], durations=[8], state={},
+        save=noop, progress=noop, repair_shots=original, findings=[{"shot_indices": [1],
+        "fields": ["image_prompt"], "severity": "major", "issue": "同一机位高度矛盾"}]))
+    rows = json.loads(output)["shots"]
+    assert rows[0]["action_description"] == "从0.9米平视机位开始跟拍"
+    assert rows[0]["dialogue"] == original[0]["dialogue"]
+    assert rows[0]["title"] == original[0]["title"]
+    assert rows[1]["image_prompt"] == original[1]["image_prompt"]
+
+
+def test_exact_sentence_patch_preserves_other_actions_and_rejects_ambiguous_edits():
+    original = {**shot(6), "action_description": "0–3秒：机位0.9米平视，推门。3–8秒：停下说话。"}
+    output = merge_shot_patch(original, [{"order_index": "006", "edits": [{
+        "field": "action_description", "old": "机位0.9米平视", "new": "机位0.6米仰视"}]}],
+        6, ["action_description"])
+    assert output["action_description"] == "0–3秒：机位0.6米仰视，推门。3–8秒：停下说话。"
+    assert original["action_description"] == "0–3秒：机位0.9米平视，推门。3–8秒：停下说话。"
+    assert output["dialogue"] == original["dialogue"]
+    for edits in ([{"field": "action_description", "old": "不存在", "new": "新词"}],
+                  [{"field": "action_description", "old": "秒", "new": "时"}],
+                  [{"field": "dialogue", "old": "别走", "new": "改词"}]):
+        with pytest.raises(ValueError):
+            merge_shot_patch(original, [{"edits": edits}], 6, ["action_description"])
+
+
+def test_obsolete_neighbor_finding_can_preserve_shot_without_approving_review():
+    original = shot(1)
+    output = merge_shot_patch(original, [{"unchanged": True, "reason": "邻镜已移除重复反应"}], 1, ["action_description"])
+    assert output == original and output is not original
+    assert "approved" not in output
+    with pytest.raises(ValueError):
+        merge_shot_patch(original, [{"unchanged": True, "reason": "", "fields": {"dialogue": "改词"}}], 1, ["dialogue"])
+
+
+def test_action_patch_cannot_silently_extend_clip_timing():
+    original = shot(1, 6)
+    with pytest.raises(ValueError, match="时间轴超过"):
+        merge_shot_patch(original, [{"fields": {"action_description": "0–6秒：推门。6–10秒：转身。"}}],
+                         1, ["action_description"])
+    output = merge_shot_patch(original, [{"fields": {
+        "action_description": "0–6秒：推门。6–10秒：转身。", "duration_seconds": 10}}],
+        1, ["action_description", "duration_seconds"])
+    assert output["duration_seconds"] == 10
+
+
+def test_invalid_sentence_patch_repairs_saved_output_with_only_field_evidence():
+    calls, saved = [], []
+    state = {}
+    original = [shot(1), {**shot(2), "dialogue": "邻镜内容不应重复发送"}]
+    class Runtime:
+        async def run(self, req):
+            calls.append(req)
+            if len(calls) == 1:
+                return SimpleNamespace(final_response=json.dumps({"edits": [{
+                    "field": "image_prompt", "old": "自行改写的原句", "new": "正确机位"}]}), manifest={})
+            assert "邻镜内容不应重复发送" not in req.prompt
+            assert "自行改写的原句" in req.prompt
+            assert original[0]["image_prompt"] in req.prompt
+            assert req.tool_mode == "none"
+            return SimpleNamespace(final_response=json.dumps({"edits": [{
+                "field": "image_prompt", "old": original[0]["image_prompt"], "new": "正确机位"}]}), manifest={})
+    async def save(value):
+        saved.append(copy.deepcopy(value))
+    async def noop(*args):
+        pass
+    result, _ = asyncio.run(generate(request(), Runtime, plan=[], durations=[8], state=state,
+        save=save, progress=noop, repair_shots=original,
+        findings=[{"shot_indices": [1], "fields": ["image_prompt"], "issue": "机位错误"}]))
+    assert len(calls) == 2
+    assert any(value.get("repair_outputs", {}).get("1", {}).get("error") for value in saved)
+    assert not state["repair_outputs"]
+    assert json.loads(result)["shots"][0]["image_prompt"] == "正确机位"
+
+
+def test_incomplete_response_does_not_masquerade_as_user_cancellation():
+    calls = []
+    efforts = []
+    class Runtime:
+        async def run(self, req):
+            calls.append(req.prompt)
+            efforts.append(req.model_binding.get("reasoning_effort"))
+            if len(calls) == 1:
+                raise RuntimeError("模型未返回正文；已停止内部重复调用，请重试本次请求")
+            return SimpleNamespace(final_response='{"fields":{"dialogue":"修正台词"}}', manifest={})
+    async def noop(*args):
+        pass
+    from app.services.retrieval_context import automatic_request
+    req = automatic_request(request().model_copy(update={"model_binding": {
+        "api_mode": "responses", "reasoning_effort": "high"}}), rules="只修正错误台词")
+    result, _ = asyncio.run(generate(req, Runtime, plan=[], durations=[8], state={},
+        save=noop, progress=noop, repair_shots=[shot(1)],
+        findings=[{"shot_indices": [1], "fields": ["dialogue"], "issue": "错误台词"}]))
+    assert len(calls) == 2
+    assert efforts == ["low", "none"]
+    assert json.loads(result)["shots"][0]["dialogue"] == "修正台词"
 
 
 def test_independent_repairs_overlap_and_keep_success_on_failure():
@@ -60,6 +233,63 @@ def test_independent_repairs_overlap_and_keep_success_on_failure():
     asyncio.run(scenario())
 
 
+def test_fast_repair_slot_continues_without_waiting_for_slow_sibling():
+    async def scenario():
+        fifth_started = asyncio.Event()
+        class Runtime:
+            async def run(self, req):
+                if "只修复第 1 镜" in req.prompt:
+                    await asyncio.wait_for(fifth_started.wait(), 2)
+                if "只修复第 5 镜" in req.prompt:
+                    fifth_started.set()
+                return SimpleNamespace(final_response='{"fields":{"dialogue":"修好"}}', manifest={})
+        async def noop(*args):
+            pass
+        result, _ = await generate(request(), Runtime, plan=[], durations=[8], state={},
+            save=noop, progress=noop, concurrency=2, batch_attempts=1,
+            repair_shots=[shot(i) for i in range(1, 6)], findings=[
+                {"shot_indices": [i], "fields": ["dialogue"], "issue": f"修正{i}"} for i in [1, 3, 5]])
+        assert fifth_started.is_set()
+        assert [row["dialogue"] for row in json.loads(result)["shots"]] == ["修好", "别走", "修好", "别走", "修好"]
+    asyncio.run(scenario())
+
+
+def test_adjacent_repair_chain_cannot_overtake_pending_predecessor():
+    calls = []
+    class Runtime:
+        async def run(self, req):
+            index = int(re.search(r"只修复第 (\d+) 镜", req.prompt)[1])
+            calls.append(index)
+            if index > 1:
+                assert f"已修复{index - 1}" in req.prompt
+            await asyncio.sleep(.01)
+            return SimpleNamespace(final_response=json.dumps({"fields": {"dialogue": f"已修复{index}"}}), manifest={})
+    async def noop(*args):
+        pass
+    asyncio.run(generate(request(), Runtime, plan=[], durations=[8], state={}, save=noop, progress=noop,
+        concurrency=3, repair_shots=[shot(i) for i in range(1, 4)],
+        findings=[{"shot_indices": [i], "fields": ["dialogue"], "issue": "修正对白"} for i in range(1, 4)]))
+    assert calls == [1, 2, 3]
+
+
+def test_chinese_duration_suggestion_permits_timeline_extension():
+    fields = finding_fields([{"fields": ["action_description"],
+        "suggestion": "将动作链纳入本镜并改用能容纳它的合法档位（如9—10秒）重新分配时间轴"}])
+    assert "duration_seconds" in fields
+    assert "duration_seconds" not in finding_fields([{"fields": ["action_description"],
+        "suggestion": "不得延长时长，保留原来的4秒"}])
+
+
+def test_missing_action_cannot_be_fixed_only_in_scene_text():
+    from app.services.storyboard_generation import validate_action_repair
+    original = shot(1)
+    issue = {"severity": "major", "fields": ["action_description"],
+        "issue": "关键动作链缺失", "suggestion": "补入动作链"}
+    with pytest.raises(ValueError, match="action_description"):
+        validate_action_repair(original, {**original, "scene_description": "完成动作"}, [issue], {"fields": {}})
+    validate_action_repair(original, {**original, "action_description": "补齐动作"}, [issue], {"fields": {}})
+
+
 def test_missing_beat_is_inserted_once_and_untouched_shots_survive_resume():
     state, calls = {}, []
     class Runtime:
@@ -82,6 +312,36 @@ def test_missing_beat_is_inserted_once_and_untouched_shots_survive_resume():
     resumed, _ = asyncio.run(generate(request(), Runtime, **kwargs))
     assert json.loads(resumed) == json.loads(result)
     assert len(calls) == 1
+
+
+def test_overloaded_shot_can_split_without_rewriting_other_shots():
+    state = {}
+    class Runtime:
+        async def run(self, req):
+            assert "本镜因时长过载允许局部拆镜" in req.prompt
+            return SimpleNamespace(final_response=json.dumps({
+                "fields": {"dialogue": "第一句", "action_description": "前半段"},
+                "insert_after": [{**shot(1), "dialogue": "第二句", "action_description": "后半段"}]}), manifest={})
+    async def noop(*args):
+        pass
+    rows = [{**shot(1), "dialogue": "第一句\n第二句"}, shot(2)]
+    output, _ = asyncio.run(generate(request(), Runtime, plan=[], durations=[8], state=state,
+        save=noop, progress=noop, repair_shots=rows, findings=[{"shot_indices": [1],
+        "fields": ["duration_seconds"], "severity": "blocking", "issue": "台词时长过载，12秒装不进",
+        "suggestion": "按自然语义拆为两条独立镜头"}]))
+    result = json.loads(output)["shots"]
+    assert [row["dialogue"] for row in result] == ["第一句", "第二句", "别走"]
+    assert result[0]["action_description"] == "前半段"
+    assert result[2]["action_description"] == rows[1]["action_description"]
+    assert not split_shot_finding({"issue": "时长不够", "suggestion": "无需拆镜，提高合法时长即可"})
+
+
+def test_missing_dialogue_with_explicit_time_and_insertion_authorization():
+    finding = {"fields": ["dialogue"], "issue": "两句OS遗漏",
+        "suggestion": "安排足够时长，本镜已达12秒上限，紧邻其后新增一段承接镜"}
+    assert split_shot_finding(finding)
+    assert "duration_seconds" in finding_fields([finding])
+    assert not split_shot_finding({"issue": "时长不足", "suggestion": "不要拆为连续小段落"})
 
 
 def test_parallel_batches_finish_out_of_order_and_resume_only_failed_scene():
@@ -914,6 +1174,8 @@ def test_finding_fields_reads_what_is_actually_being_asked_for():
     assert "frame_layout" in finding_fields([{"issue": "缺少 frame_layout", "suggestion": "补齐"}])
     assert "dialogue" in finding_fields([{"issue": "台词语速偏紧", "suggestion": "放慢"}])
     assert finding_fields([{"issue": "整体节奏偏慢", "suggestion": "收紧"}]) == []
+    assert finding_fields([{"fields": ["frame_layout"],
+        "suggestion": "统一frame_layout，同步修改image_prompt中的同一机位表述，保持dialogue不变"}]) == ["frame_layout", "image_prompt"]
 
 
 def test_a_partial_patch_only_overwrites_the_named_fields():

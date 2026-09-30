@@ -1534,6 +1534,7 @@ class AgentChatMediaOptions(BaseModel):
 
 
 class AgentChatMessageCreate(BaseModel):
+    edit_message_id: str | None = Field(default=None, min_length=1, max_length=36)
     content: str = Field(default="", max_length=200_000)
     attachment_ids: list[str] = Field(default_factory=list, max_length=4)
     chapter_id: str | None = Field(default=None, min_length=1, max_length=36)

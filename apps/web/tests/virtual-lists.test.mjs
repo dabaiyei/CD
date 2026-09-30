@@ -90,3 +90,29 @@ test('column reflow preserves the visible item and recalculates offsets', () => 
     view.cleanup()
   }
 })
+
+test('long task timelines keep a bounded range with wrapped messages and reach the oldest event', () => {
+  // The detail header scrolls in the same viewport; event rows have real,
+  // variable heights and must not be clipped to the estimated 84px.
+  for (const width of [320, 540]) {
+    const count = 2000
+    const margin = 410
+    const view = viewport({ count, size: 84, margin, width, height: 560 })
+    const heights = Array.from({ length: count }, (_, i) => i % 3 === 0 ? (width === 320 ? 180 : 120) : 60)
+    heights.forEach((height, index) => view.instance.resizeItem(index, height))
+    let offset = margin
+    for (let index = 0; index < count; index++) {
+      if (index % 199 === 0 || index === count - 1) {
+        view.scroll(offset)
+        const rows = view.instance.getVirtualItems()
+        assert.ok(rows.some(row => row.index === index), `missing event ${index} at ${width}px`)
+        assert.ok(rows.length < 16, 'offscreen task events should not be mounted')
+        for (let i = 1; i < rows.length; i++) assert.equal(rows[i].start, rows[i - 1].end)
+      }
+      offset += heights[index]
+    }
+    assert.equal(view.instance.getTotalSize(), heights.reduce((sum, value) => sum + value, 0))
+    assert.equal(view.instance.getVirtualItems().at(-1).index, count - 1)
+    view.cleanup()
+  }
+})

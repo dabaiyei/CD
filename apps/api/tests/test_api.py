@@ -751,8 +751,11 @@ class FakeWorkflowRuntime:
 
 class FakeDirectorOrchestrationRuntime(FakeWorkflowRuntime):
     async def run(self, request: AgentRuntimeRequest) -> AgentRuntimeResponse:
-        if not any(
-            marker in request.prompt
+        # Long requests mount the review template as a retrieval rules file.
+        review_instructions = request.prompt + request.system_prompt + ''.join(
+            file.content for file in request.project_files if file.id.startswith('retrieval-task-rules'))
+        if '-script-review-' not in request.session_id and not any(
+            marker in review_instructions
             for marker in ("独立的短剧导演审核子智能体", "独立的导演分镜审核子智能体")
         ):
             return await super().run(request)
@@ -5228,11 +5231,23 @@ def test_automatic_director_workflow_retries_failed_child_with_new_task(
     assert stopped.json()["workflow"]["status"] == "cancelled"
 
 
+@pytest.mark.parametrize("concat_fails_once", [False, True])
 def test_automatic_director_workflow_completes_chapter_to_ready_videos(
     client: TestClient,
     creator_headers: dict[str, str],
     admin_headers: dict[str, str],
+    monkeypatch: pytest.MonkeyPatch,
+    concat_fails_once: bool,
 ) -> None:
+    concat_calls = []
+    async def fake_concat(paths, output, **kwargs):
+        concat_calls.append(paths)
+        if concat_fails_once and len(concat_calls) == 1:
+            raise RuntimeError("temporary concat failure")
+        output.parent.mkdir(parents=True, exist_ok=True)
+        output.write_bytes(b"automatic-concatenated-video")
+        return {"duration_seconds": 16, "width": 1920, "height": 1080}
+    monkeypatch.setattr("app.services.video_concat.concatenate_videos", fake_concat)
     grant_creator_test_credits(client, creator_headers, admin_headers)
     provider_id = client.get("/api/v1/admin/providers", headers=admin_headers).json()[0]["id"]
     assert client.patch(
@@ -5336,6 +5351,7 @@ def test_automatic_director_workflow_completes_chapter_to_ready_videos(
         "storyboard_review",
         "video_prompt",
         "video_generation",
+        "video_concat",
     } <= {child["kind"] for child in detail["child_runs"]}
 
     project_assets = client.get(
@@ -5367,6 +5383,11 @@ def test_automatic_director_workflow_completes_chapter_to_ready_videos(
         f"/api/v1/projects/{project_id}/chapters", headers=creator_headers
     ).json()
     assert next(chapter for chapter in chapters if chapter["id"] == chapter_id)["status"] == "completed"
+    assert len(concat_calls) == (2 if concat_fails_once else 1)
+    concat_id = detail["workflow"]["context_snapshot"]["video_concat_task_id"]
+    concat_path = f"/api/v1/projects/{project_id}/chapters/{chapter_id}/storyboards/{storyboards[0]['id']}/videos/concat"
+    assert client.post(concat_path, headers=creator_headers).json()["id"] == concat_id
+    assert client.get(f"{concat_path}/{concat_id}/download", headers=creator_headers).content == b"automatic-concatenated-video"
 
     resumed = client.post(
         f"{workflow_path}/automatic",
@@ -5782,7 +5803,7 @@ def test_automatic_director_workflow_recovers_after_worker_restart(
 @pytest.mark.parametrize(
     ("blocking", "expected_script_versions", "expected_repair_mode"),
     [
-        (False, 5, "partial"),
+        (False, 6, "partial"),
         (True, 6, "full"),
     ],
 )
@@ -5855,12 +5876,8 @@ def test_automatic_director_review_version_limit_and_blocking_exception(
         task["request_payload"]["repair_mode"] == expected_repair_mode
         for task in repair_tasks
     )
-    if blocking:
-        assert runtime.script_review_calls == 6
-        assert detail["workflow"]["context_snapshot"]["script_version_count"] == 6
-    else:
-        assert runtime.script_review_calls == 5
-        assert detail["workflow"]["context_snapshot"]["script_version_count"] == 5
+    assert runtime.script_review_calls == 6
+    assert detail["workflow"]["context_snapshot"]["script_version_count"] == 6
 
 
 def test_director_storyboard_start_continues_ready_asset_workflow(
@@ -8582,10 +8599,11 @@ def test_agent_chat_second_turn_reuses_stable_state_with_summary_recovery_contex
     assert chat_requests[0].state_mode == chat_requests[1].state_mode == "ephemeral"
     assert chat_requests[1].prompt == "第二轮：基于上一轮继续拆成三幕"
     assert chat_requests[1].conversation_summary
-    assert chat_requests[1].recent_messages == []
+    assert any(item['role'] == 'user' and item['content'] == '第一轮：先确定主角的核心困境'
+               for item in chat_requests[1].recent_messages)
     assert any("narrative-structure" in item for item in chat_requests[1].memory_context)
     assert (
-        chat_requests[1].model_dump()["recent_messages"] == []
+        chat_requests[1].model_dump()["recent_messages"] == chat_requests[1].recent_messages
     )
 
 
@@ -9128,10 +9146,12 @@ def test_personal_video_mode_follow_up_receives_previous_video_prompt(
     assert gateway.requests[-1].prompt == second_runtime.prompt
 
 
+@pytest.mark.parametrize("historical_video_count", [0, 12])
 def test_personal_chat_reuses_historical_image_when_model_omits_action_marker(
     client: TestClient,
     creator_headers: dict[str, str],
     admin_headers: dict[str, str],
+    historical_video_count: int,
 ) -> None:
     provider_id = client.get("/api/v1/admin/providers", headers=admin_headers).json()[0]["id"]
     client.patch(
@@ -9167,6 +9187,23 @@ def test_personal_chat_reuses_historical_image_when_model_omits_action_marker(
     fallback_runtime = FakePersonalChatMediaActionRuntime(
         response="可以，我会保留刚才图片的主体、光线和构图，再做一张同类画面。"
     )
+    # Generated MP4 results coexist with images in this table. They must not
+    # enter the runtime image inputs or consume the historical image limit.
+    async def add_generated_videos():
+        from app.db.models import PersonalAgentAttachment
+
+        async with SessionLocal() as db:
+            original = await db.get(PersonalAgentAttachment, attachment["id"])
+            for index in range(historical_video_count):
+                db.add(PersonalAgentAttachment(
+                    tenant_id=original.tenant_id, user_id=original.user_id,
+                    session_id=session_id, message_id=original.message_id,
+                    name=f"generated-{index}.mp4", mime_type="video/mp4", size_bytes=100,
+                    storage_path=f"not-an-image-{index}.mp4", media_url=f"/media/{index}.mp4",
+                ))
+            await db.commit()
+
+    asyncio.run(add_generated_videos())
     gateway = FakeAssetImageGateway()
     second = client.post(
         f"/api/v1/agent/sessions/{session_id}/messages",

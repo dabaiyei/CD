@@ -86,6 +86,7 @@ const navItems = computed(() => [
   { label: 'Agent', icon: MessageSquareText, to: '/workspace', active: route.path.startsWith('/workspace') },
   { label: '项目', icon: LayoutGrid, to: '/projects', active: route.path === '/projects' || route.name === 'director' },
   { label: '资产库', icon: Boxes, to: '/assets', active: route.name === 'asset-library' },
+  { label: '视频复刻', icon: Clapperboard, to: '/video-replicas', active: route.name === 'video-replicas' },
   { label: 'Skills', icon: BrainCircuit, to: '/skills', active: route.path.startsWith('/skills') },
   { label: '广场', icon: Sparkles, to: '/marketplace/skill', active: route.path.startsWith('/marketplace') },
   ...(auth.isAdmin

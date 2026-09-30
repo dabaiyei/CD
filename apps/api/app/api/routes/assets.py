@@ -217,6 +217,18 @@ async def same_name_asset(
     for candidate in candidates:
         if asset_name_key(candidate.name) == key and candidate.parent_asset_id == parent_id:
             return candidate
+    # Uploaded library photos are often MATERIAL even when replacing a named
+    # character. Preserve the project's identity/type instead of creating a new ID.
+    if asset_type == AssetType.MATERIAL and scope == AssetScope.PROJECT:
+        matches = [candidate for candidate in (await session.scalars(select(Asset).where(
+            Asset.tenant_id == user.tenant_id, Asset.user_id == user.id,
+            Asset.scope == scope, Asset.project_id == project_id,
+            Asset.asset_type != AssetType.AUDIO,
+        ))).all() if asset_name_key(candidate.name) == key and candidate.parent_asset_id == parent_id]
+        if len(matches) == 1:
+            return matches[0]
+        if len(matches) > 1:
+            raise HTTPException(409, "项目内有多个同名资产，请先明确需要替换的资产")
     return None
 
 
@@ -934,6 +946,9 @@ async def delete_asset(
         and isinstance((value := metadata.get("reference_audio_url")), str)
         and value
     }
+    from app.services.storyboard_reference_sync import remember_deleted_asset
+
+    await remember_deleted_asset(session, asset)
     await session.delete(asset)
     await session.commit()
     if candidate_audio_urls:

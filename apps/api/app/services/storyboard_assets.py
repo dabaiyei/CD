@@ -128,6 +128,7 @@ async def storyboard_response(task_id, prompt_code, prompt, runtime_factory, *, 
             raise RuntimeError("分镜任务已停止")
         project = await session.get(Project, task.project_id) if getattr(task, "project_id", None) else None
         first_frame_mode = bool(project and project.first_frame_mode)
+        repair_blocking_only = bool(task.request_payload.get("automatic_review"))
         cached = task.request_payload.get("storyboard_draft", {})
         checkpoint = task.request_payload.get("storyboard_generation", {})
         if cached.get("key") == key or _legacy_complete_draft(cached, checkpoint, durations):
@@ -198,7 +199,8 @@ async def storyboard_response(task_id, prompt_code, prompt, runtime_factory, *, 
         text, manifest = await generate(request, runtime_factory, plan=timing_plan or [],
             durations=durations, state=state, save=save, progress=progress, script=script,
             budget=budget, repair_shots=repair_shots, findings=findings, feedback=feedback, partial=partial,
-            concurrency=concurrency, isolate_failures=True, first_frame_mode=first_frame_mode)
+            concurrency=concurrency, isolate_failures=True, first_frame_mode=first_frame_mode,
+            repair_blocking_only=repair_blocking_only and not draft_repair)
         if validator:
             validator(text)
         result = SimpleNamespace(final_response=text, manifest=manifest)
@@ -258,7 +260,7 @@ def repair_asset_rows(shots, previous_shots):
     return changed, preserved
 
 
-async def plan(task_id, shots, runtime_factory, *, previous_shots=None):
+async def plan(task_id, shots, runtime_factory, *, previous_shots=None, reviewed_bindings=False):
     from app.services import task_worker as worker
     from app.services.combat_techniques import CombatTechnique
 
@@ -276,6 +278,21 @@ async def plan(task_id, shots, runtime_factory, *, previous_shots=None):
             raise RuntimeError("分镜资产提取任务已停止")
         catalog = await extraction_asset_catalog(session, task.project_id, task.tenant_id, task.user_id)
         names = {a.id: a.name for a in catalog}
+        if reviewed_bindings and previous_shots is not None:
+            # A review patch corrects the shot to the existing catalog; it is
+            # not a request to redesign its assets. Re-extraction here could
+            # undo an explicit variant selection or re-add a pruned parent.
+            available = set(names.values())
+            unresolved = []
+            for row in rows:
+                if set(row.get("asset_names") or []).issubset(available):
+                    preserved[row["order_index"]] = list(row.get("asset_names") or [])
+                else:
+                    unresolved.append(row)
+            rows = unresolved
+            if not rows:
+                return [], preserved
+            fingerprint = hashlib.sha256(json.dumps(rows, ensure_ascii=False).encode()).hexdigest()
         known = [{"asset_type": a.asset_type.value, "name": a.name,
                   "parent_name": names.get(a.parent_asset_id), "description": a.description[:160]}
                  for a in catalog]

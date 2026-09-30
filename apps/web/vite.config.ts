@@ -70,7 +70,7 @@ export default defineConfig({
     port: 5173,
     strictPort: true,
     proxy: {
-      '/api': apiProxy,
+      '/api': { target: apiProxy, ws: true },
       '/health': apiProxy,
       '/uploads': apiProxy,
     },

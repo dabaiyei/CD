@@ -417,7 +417,16 @@ async def generate(task_id: str, row: dict, contract: dict, protocol: dict, runt
     snapshot = {"shot": shot, "model": contract, "protocol": protocol}
     snapshot_json = json.dumps(snapshot, ensure_ascii=False)
     schema = json.dumps(CombatDesign.model_json_schema(), ensure_ascii=False)
-    trailer = CLIP_RULES + effect_context(row)
+    from app.services.creation_context import COMBAT_ACTION_QUALITY
+    from app.services.locomotion import locomotion_guidance
+    from app.services.speech_pacing import speech_guidance
+    from app.services.cinematography import scene_guidance as camera_scene_guidance
+    selected_modules = row.get('jev_modules')
+    trailer = (CLIP_RULES + COMBAT_ACTION_QUALITY + effect_context(row)
+        + camera_scene_guidance(row)
+        + str(row.get('jev_direction') or '')
+        + (locomotion_guidance(row.get("action_description", "")) if not selected_modules or selected_modules['locomotion'] == 'yes' else '')
+        + (speech_guidance(row.get("dialogue", ""), row.get("action_description", ""), audio_enabled=row.get("audio_enabled", True)) if not selected_modules or selected_modules['speech'] == 'yes' else ''))
     # The schema and rules are parsed against, so they are never dropped; the
     # retrieved guidance is optional and shrinks when the shot data is large.
     base_request = await worker.runtime_request(

@@ -65,7 +65,7 @@ async def reserve_task_slots(task_id: str, desired: int) -> int:
 
 
 def task_stopped(error: BaseException) -> bool:
-    return "已停止" in str(error) or "上下文已失效" in str(error)
+    return "任务已停止" in str(error) or "上下文已失效" in str(error)
 
 
 async def bounded_each(items: Iterable, handler: Callable[..., Awaitable], limit: int) -> None:

@@ -8,7 +8,7 @@ from app.domain.schemas import StoryboardShotCreate
 
 
 def layout():
-    return dict(camera_position="女子身后偏右，轴线南侧", camera_height="腰部高度，微仰",
+    return dict(camera_position="女子身后偏右，轴线南侧，标准视角，清晰范围覆盖人物与神龙", camera_height="腰部高度，微仰",
         viewing_direction="朝向远处神龙", shot_size="全景", axis_side="对峙轴线南侧",
         subjects=[dict(asset_name="女子", screen_position="左", depth="前景", facing="背对镜头面向右后方神龙",
             gaze_target="神龙头部", pose="左脚前踏，剑尚未抬起", held_items="自身右手握剑")],
@@ -24,6 +24,8 @@ def assets():
 
 
 def test_structured_layout_overrides_conflicting_free_prompt_and_excludes_asset_actions():
+    from app.services.cinematography import IMAGING_RULES, VISUAL_RULES
+
     shot = SimpleNamespace(image_prompt="正面特写，女子击中神龙后落地")
     prompt = build_frame_prompt(shot, assets(), layout())
     assert "女子身后偏右" in prompt and "自身右手握剑" in prompt
@@ -31,6 +33,12 @@ def test_structured_layout_overrides_conflicting_free_prompt_and_excludes_asset_
     assert "正面特写" not in prompt and "已经击中神龙" not in prompt
     assert "图1：女子" in prompt and "图2：女子·剑诀" in prompt
     assert "同一主体而非另一个人物" in prompt
+    assert '取景边界为准' in prompt
+    assert '【镜头语言】' not in prompt  # Static image must not receive motion recipes.
+    assert VISUAL_RULES in prompt and IMAGING_RULES not in prompt
+    assert "光线：左后方暖光" in prompt and "画风：项目日式赛璐璐画风" in prompt
+    assert "标准视角，清晰范围覆盖人物与神龙" in prompt
+    assert "跟焦" not in prompt and "快门" not in prompt
 
 
 def test_unknown_layout_asset_is_rejected_before_image_request():
@@ -49,7 +57,10 @@ def test_spatial_contract_survives_generated_to_create_payload():
 
 
 def test_legacy_prompt_keeps_user_content_but_not_motion_from_asset_descriptions():
+    from app.services.cinematography import VISUAL_RULES
+
     prompt = build_frame_prompt(SimpleNamespace(image_prompt="女子背对镜头立于前景"), assets())
     assert "女子背对镜头立于前景" in prompt
     assert "已经击中神龙" not in prompt
     assert "不能都朝镜头摆拍" in prompt
+    assert VISUAL_RULES in prompt

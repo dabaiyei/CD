@@ -1,0 +1,1123 @@
+{
+  "timestamp": "2026-09-30T02:10:26.819287+00:00",
+  "language": "English",
+  "jev_model": "jev-1.13.0",
+  "laya_gates": {
+    "output": [
+      0.95,
+      0.5
+    ],
+    "continuation": [
+      0.95,
+      0.5
+    ],
+    "plan_action": [
+      0.95,
+      0.5
+    ],
+    "chain": [
+      0.95,
+      0.5
+    ],
+    "rewrite": [
+      0.95,
+      0.5
+    ]
+  },
+  "summary": {
+    "n": 40,
+    "laya_raw_correct": 28,
+    "laya_accepted": 18,
+    "laya_accepted_correct": 15,
+    "laya_mean_seconds": 0.195,
+    "laya_max_seconds": 0.485,
+    "jev_raw_correct": 40,
+    "jev_mean_seconds": 0.645,
+    "jev_max_seconds": 0.712,
+    "output": {
+      "n": 30,
+      "laya_correct": 21,
+      "laya_accepted": 13,
+      "jev_correct": 30
+    },
+    "plan_action": {
+      "n": 10,
+      "laya_correct": 7,
+      "laya_accepted": 5,
+      "jev_correct": 10
+    }
+  },
+  "rows": [
+    {
+      "message": "Write a video prompt for a heroine chasing someone at night; don't render the video yet.",
+      "key": "output",
+      "expected": "text",
+      "expected_output": "text",
+      "laya_choice": "clarify",
+      "laya_correct": false,
+      "laya_accepted": false,
+      "laya_accepted_correct": false,
+      "laya_probabilities": {
+        "text": 0.3061,
+        "image": 0.0346,
+        "video": 0.2451,
+        "clarify": 0.4142
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.371,
+      "laya_usage": {
+        "input_tokens": 100,
+        "output_tokens": 0
+      },
+      "jev_choice": "text",
+      "jev_correct": true,
+      "jev_confidence": 1.0,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.644
+    },
+    {
+      "message": "Expand this movie premise into a 300-word synopsis.",
+      "key": "output",
+      "expected": "text",
+      "expected_output": "text",
+      "laya_choice": "text",
+      "laya_correct": true,
+      "laya_accepted": false,
+      "laya_accepted_correct": false,
+      "laya_probabilities": {
+        "text": 0.6571,
+        "image": 0.0225,
+        "video": 0.0137,
+        "clarify": 0.3067
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.143,
+      "laya_usage": {
+        "input_tokens": 94,
+        "output_tokens": 0
+      },
+      "jev_choice": "text",
+      "jev_correct": true,
+      "jev_confidence": 1.0,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.621
+    },
+    {
+      "message": "Analyze the visual style in this image; no image generation.",
+      "key": "output",
+      "expected": "text",
+      "expected_output": "text",
+      "laya_choice": "text",
+      "laya_correct": true,
+      "laya_accepted": false,
+      "laya_accepted_correct": false,
+      "laya_probabilities": {
+        "text": 0.8366,
+        "image": 0.039,
+        "video": 0.0105,
+        "clarify": 0.1138
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.171,
+      "laya_usage": {
+        "input_tokens": 92,
+        "output_tokens": 0
+      },
+      "jev_choice": "text",
+      "jev_correct": true,
+      "jev_confidence": 1.0,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.615
+    },
+    {
+      "message": "What does the image model cost?",
+      "key": "output",
+      "expected": "text",
+      "expected_output": "text",
+      "laya_choice": "image",
+      "laya_correct": false,
+      "laya_accepted": false,
+      "laya_accepted_correct": false,
+      "laya_probabilities": {
+        "text": 0.0398,
+        "image": 0.8799,
+        "video": 0.0023,
+        "clarify": 0.0779
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.139,
+      "laya_usage": {
+        "input_tokens": 87,
+        "output_tokens": 0
+      },
+      "jev_choice": "text",
+      "jev_correct": true,
+      "jev_confidence": 0.99,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.666
+    },
+    {
+      "message": "Did the video generation fail? Check its progress.",
+      "key": "output",
+      "expected": "text",
+      "expected_output": "text",
+      "laya_choice": "video",
+      "laya_correct": false,
+      "laya_accepted": false,
+      "laya_accepted_correct": false,
+      "laya_probabilities": {
+        "text": 0.1899,
+        "image": 0.0309,
+        "video": 0.4451,
+        "clarify": 0.3341
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.16,
+      "laya_usage": {
+        "input_tokens": 90,
+        "output_tokens": 0
+      },
+      "jev_choice": "text",
+      "jev_correct": true,
+      "jev_confidence": 0.99,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.655
+    },
+    {
+      "message": "Translate this image prompt for me.",
+      "key": "output",
+      "expected": "text",
+      "expected_output": "text",
+      "laya_choice": "image",
+      "laya_correct": false,
+      "laya_accepted": true,
+      "laya_accepted_correct": false,
+      "laya_probabilities": {
+        "text": 0.0129,
+        "image": 0.9564,
+        "video": 0.0014,
+        "clarify": 0.0292
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.125,
+      "laya_usage": {
+        "input_tokens": 87,
+        "output_tokens": 0
+      },
+      "jev_choice": "text",
+      "jev_correct": true,
+      "jev_confidence": 0.96,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.642
+    },
+    {
+      "message": "How many people are in this photo?",
+      "key": "output",
+      "expected": "text",
+      "expected_output": "text",
+      "laya_choice": "image",
+      "laya_correct": false,
+      "laya_accepted": false,
+      "laya_accepted_correct": false,
+      "laya_probabilities": {
+        "text": 0.0186,
+        "image": 0.5372,
+        "video": 0.007,
+        "clarify": 0.4371
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.485,
+      "laya_usage": {
+        "input_tokens": 88,
+        "output_tokens": 0
+      },
+      "jev_choice": "text",
+      "jev_correct": true,
+      "jev_confidence": 0.98,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.619
+    },
+    {
+      "message": "Use the third photo as a character reference from now on.",
+      "key": "output",
+      "expected": "text",
+      "expected_output": "text",
+      "laya_choice": "image",
+      "laya_correct": false,
+      "laya_accepted": true,
+      "laya_accepted_correct": false,
+      "laya_probabilities": {
+        "text": 0.0086,
+        "image": 0.9542,
+        "video": 0.0023,
+        "clarify": 0.0349
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.17,
+      "laya_usage": {
+        "input_tokens": 92,
+        "output_tokens": 0
+      },
+      "jev_choice": "text",
+      "jev_correct": true,
+      "jev_confidence": 1.0,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.64
+    },
+    {
+      "message": "How can I turn an image into a video?",
+      "key": "output",
+      "expected": "text",
+      "expected_output": "text",
+      "laya_choice": "image",
+      "laya_correct": false,
+      "laya_accepted": false,
+      "laya_accepted_correct": false,
+      "laya_probabilities": {
+        "text": 0.095,
+        "image": 0.4205,
+        "video": 0.3681,
+        "clarify": 0.1164
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.125,
+      "laya_usage": {
+        "input_tokens": 90,
+        "output_tokens": 0
+      },
+      "jev_choice": "text",
+      "jev_correct": true,
+      "jev_confidence": 0.85,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.683
+    },
+    {
+      "message": "List a few themes suitable for image generation.",
+      "key": "output",
+      "expected": "text",
+      "expected_output": "text",
+      "laya_choice": "text",
+      "laya_correct": true,
+      "laya_accepted": false,
+      "laya_accepted_correct": false,
+      "laya_probabilities": {
+        "text": 0.6885,
+        "image": 0.1058,
+        "video": 0.0119,
+        "clarify": 0.1938
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.134,
+      "laya_usage": {
+        "input_tokens": 89,
+        "output_tokens": 0
+      },
+      "jev_choice": "text",
+      "jev_correct": true,
+      "jev_confidence": 1.0,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.712
+    },
+    {
+      "message": "Don't make an image; just write the prompt.",
+      "key": "output",
+      "expected": "text",
+      "expected_output": "text",
+      "laya_choice": "text",
+      "laya_correct": true,
+      "laya_accepted": false,
+      "laya_accepted_correct": false,
+      "laya_probabilities": {
+        "text": 0.8292,
+        "image": 0.0147,
+        "video": 0.0062,
+        "clarify": 0.1498
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.14,
+      "laya_usage": {
+        "input_tokens": 92,
+        "output_tokens": 0
+      },
+      "jev_choice": "text",
+      "jev_correct": true,
+      "jev_confidence": 1.0,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.633
+    },
+    {
+      "message": "Hi, what can you do?",
+      "key": "output",
+      "expected": "text",
+      "expected_output": "text",
+      "laya_choice": "text",
+      "laya_correct": true,
+      "laya_accepted": false,
+      "laya_accepted_correct": false,
+      "laya_probabilities": {
+        "text": 0.8258,
+        "image": 0.0024,
+        "video": 0.0023,
+        "clarify": 0.1696
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.118,
+      "laya_usage": {
+        "input_tokens": 87,
+        "output_tokens": 0
+      },
+      "jev_choice": "text",
+      "jev_correct": true,
+      "jev_confidence": 0.99,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.636
+    },
+    {
+      "message": "Generate a 4K image of sunrise over snowy mountains.",
+      "key": "output",
+      "expected": "image",
+      "expected_output": "image",
+      "laya_choice": "video",
+      "laya_correct": false,
+      "laya_accepted": false,
+      "laya_accepted_correct": false,
+      "laya_probabilities": {
+        "text": 0.0006,
+        "image": 0.3717,
+        "video": 0.6263,
+        "clarify": 0.0015
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.112,
+      "laya_usage": {
+        "input_tokens": 92,
+        "output_tokens": 0
+      },
+      "jev_choice": "image",
+      "jev_correct": true,
+      "jev_confidence": 0.99,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.646
+    },
+    {
+      "message": "Draw a watercolor cottage beside a lake.",
+      "key": "output",
+      "expected": "image",
+      "expected_output": "image",
+      "laya_choice": "image",
+      "laya_correct": true,
+      "laya_accepted": true,
+      "laya_accepted_correct": true,
+      "laya_probabilities": {
+        "text": 0.0038,
+        "image": 0.9611,
+        "video": 0.0019,
+        "clarify": 0.0332
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.138,
+      "laya_usage": {
+        "input_tokens": 88,
+        "output_tokens": 0
+      },
+      "jev_choice": "image",
+      "jev_correct": true,
+      "jev_confidence": 0.97,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.613
+    },
+    {
+      "message": "Make a clean product image of white sneakers.",
+      "key": "output",
+      "expected": "image",
+      "expected_output": "image",
+      "laya_choice": "image",
+      "laya_correct": true,
+      "laya_accepted": true,
+      "laya_accepted_correct": true,
+      "laya_probabilities": {
+        "text": 0.0079,
+        "image": 0.9841,
+        "video": 0.0005,
+        "clarify": 0.0075
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.11,
+      "laya_usage": {
+        "input_tokens": 89,
+        "output_tokens": 0
+      },
+      "jev_choice": "image",
+      "jev_correct": true,
+      "jev_confidence": 0.98,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.659
+    },
+    {
+      "message": "Create a 16:9 sci-fi city poster.",
+      "key": "output",
+      "expected": "image",
+      "expected_output": "image",
+      "laya_choice": "image",
+      "laya_correct": true,
+      "laya_accepted": true,
+      "laya_accepted_correct": true,
+      "laya_probabilities": {
+        "text": 0.0125,
+        "image": 0.9629,
+        "video": 0.0017,
+        "clarify": 0.0229
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.133,
+      "laya_usage": {
+        "input_tokens": 93,
+        "output_tokens": 0
+      },
+      "jev_choice": "image",
+      "jev_correct": true,
+      "jev_confidence": 0.91,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.623
+    },
+    {
+      "message": "Generate a photo of a puppy wearing sunglasses.",
+      "key": "output",
+      "expected": "image",
+      "expected_output": "image",
+      "laya_choice": "image",
+      "laya_correct": true,
+      "laya_accepted": true,
+      "laya_accepted_correct": true,
+      "laya_probabilities": {
+        "text": 0.0067,
+        "image": 0.9866,
+        "video": 0.0028,
+        "clarify": 0.0039
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.132,
+      "laya_usage": {
+        "input_tokens": 89,
+        "output_tokens": 0
+      },
+      "jev_choice": "image",
+      "jev_correct": true,
+      "jev_confidence": 0.99,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.644
+    },
+    {
+      "message": "Please generate an image of a wooden bridge in a forest.",
+      "key": "output",
+      "expected": "image",
+      "expected_output": "image",
+      "laya_choice": "image",
+      "laya_correct": true,
+      "laya_accepted": true,
+      "laya_accepted_correct": true,
+      "laya_probabilities": {
+        "text": 0.0002,
+        "image": 0.9991,
+        "video": 0.0004,
+        "clarify": 0.0003
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.158,
+      "laya_usage": {
+        "input_tokens": 92,
+        "output_tokens": 0
+      },
+      "jev_choice": "image",
+      "jev_correct": true,
+      "jev_confidence": 1.0,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.659
+    },
+    {
+      "message": "Generate an 8-second video of an astronaut walking.",
+      "key": "output",
+      "expected": "video",
+      "expected_output": "video",
+      "laya_choice": "video",
+      "laya_correct": true,
+      "laya_accepted": true,
+      "laya_accepted_correct": true,
+      "laya_probabilities": {
+        "text": 0.0006,
+        "image": 0.0344,
+        "video": 0.9624,
+        "clarify": 0.0026
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.145,
+      "laya_usage": {
+        "input_tokens": 92,
+        "output_tokens": 0
+      },
+      "jev_choice": "video",
+      "jev_correct": true,
+      "jev_confidence": 1.0,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.642
+    },
+    {
+      "message": "Make a 12-second video of a waterfall.",
+      "key": "output",
+      "expected": "video",
+      "expected_output": "video",
+      "laya_choice": "video",
+      "laya_correct": true,
+      "laya_accepted": true,
+      "laya_accepted_correct": true,
+      "laya_probabilities": {
+        "text": 0.0003,
+        "image": 0.0203,
+        "video": 0.9784,
+        "clarify": 0.0011
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.139,
+      "laya_usage": {
+        "input_tokens": 92,
+        "output_tokens": 0
+      },
+      "jev_choice": "video",
+      "jev_correct": true,
+      "jev_confidence": 1.0,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.628
+    },
+    {
+      "message": "Generate a video of a small boat gliding across a lake.",
+      "key": "output",
+      "expected": "video",
+      "expected_output": "video",
+      "laya_choice": "video",
+      "laya_correct": true,
+      "laya_accepted": true,
+      "laya_accepted_correct": true,
+      "laya_probabilities": {
+        "text": 0.0003,
+        "image": 0.0029,
+        "video": 0.9966,
+        "clarify": 0.0002
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.172,
+      "laya_usage": {
+        "input_tokens": 92,
+        "output_tokens": 0
+      },
+      "jev_choice": "video",
+      "jev_correct": true,
+      "jev_confidence": 1.0,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.643
+    },
+    {
+      "message": "Create a short clip of fireworks bursting in the sky.",
+      "key": "output",
+      "expected": "video",
+      "expected_output": "video",
+      "laya_choice": "video",
+      "laya_correct": true,
+      "laya_accepted": false,
+      "laya_accepted_correct": false,
+      "laya_probabilities": {
+        "text": 0.0015,
+        "image": 0.1203,
+        "video": 0.8767,
+        "clarify": 0.0014
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.137,
+      "laya_usage": {
+        "input_tokens": 91,
+        "output_tokens": 0
+      },
+      "jev_choice": "video",
+      "jev_correct": true,
+      "jev_confidence": 0.99,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.632
+    },
+    {
+      "message": "Generate a video of two people exchanging rapid sword strikes.",
+      "key": "output",
+      "expected": "video",
+      "expected_output": "video",
+      "laya_choice": "video",
+      "laya_correct": true,
+      "laya_accepted": true,
+      "laya_accepted_correct": true,
+      "laya_probabilities": {
+        "text": 0.0002,
+        "image": 0.0108,
+        "video": 0.9881,
+        "clarify": 0.0008
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.144,
+      "laya_usage": {
+        "input_tokens": 91,
+        "output_tokens": 0
+      },
+      "jev_choice": "video",
+      "jev_correct": true,
+      "jev_confidence": 1.0,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.656
+    },
+    {
+      "message": "Make a 5-second video of a cat stretching.",
+      "key": "output",
+      "expected": "video",
+      "expected_output": "video",
+      "laya_choice": "video",
+      "laya_correct": true,
+      "laya_accepted": true,
+      "laya_accepted_correct": true,
+      "laya_probabilities": {
+        "text": 0.0001,
+        "image": 0.0179,
+        "video": 0.9813,
+        "clarify": 0.0006
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.138,
+      "laya_usage": {
+        "input_tokens": 92,
+        "output_tokens": 0
+      },
+      "jev_choice": "video",
+      "jev_correct": true,
+      "jev_confidence": 1.0,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.643
+    },
+    {
+      "message": "Write the prompt and generate an image of a city in the rain.",
+      "key": "output",
+      "expected": "image",
+      "expected_output": "image",
+      "laya_choice": "image",
+      "laya_correct": true,
+      "laya_accepted": false,
+      "laya_accepted_correct": false,
+      "laya_probabilities": {
+        "text": 0.0506,
+        "image": 0.919,
+        "video": 0.008,
+        "clarify": 0.0223
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.12,
+      "laya_usage": {
+        "input_tokens": 94,
+        "output_tokens": 0
+      },
+      "jev_choice": "image",
+      "jev_correct": true,
+      "jev_confidence": 0.98,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.616
+    },
+    {
+      "message": "Design the action, then generate a martial arts video.",
+      "key": "output",
+      "expected": "video",
+      "expected_output": "video",
+      "laya_choice": "video",
+      "laya_correct": true,
+      "laya_accepted": false,
+      "laya_accepted_correct": false,
+      "laya_probabilities": {
+        "text": 0.043,
+        "image": 0.0067,
+        "video": 0.8914,
+        "clarify": 0.0588
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.112,
+      "laya_usage": {
+        "input_tokens": 91,
+        "output_tokens": 0
+      },
+      "jev_choice": "video",
+      "jev_correct": true,
+      "jev_confidence": 0.91,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.636
+    },
+    {
+      "message": "If I asked for an image, which model would you use?",
+      "key": "output",
+      "expected": "text",
+      "expected_output": "text",
+      "laya_choice": "image",
+      "laya_correct": false,
+      "laya_accepted": false,
+      "laya_accepted_correct": false,
+      "laya_probabilities": {
+        "text": 0.006,
+        "image": 0.9321,
+        "video": 0.0014,
+        "clarify": 0.0605
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.146,
+      "laya_usage": {
+        "input_tokens": 93,
+        "output_tokens": 0
+      },
+      "jev_choice": "text",
+      "jev_correct": true,
+      "jev_confidence": 0.99,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.688
+    },
+    {
+      "message": "Don't generate an image; instead, make a video of ocean waves.",
+      "key": "output",
+      "expected": "video",
+      "expected_output": "video",
+      "laya_choice": "video",
+      "laya_correct": true,
+      "laya_accepted": false,
+      "laya_accepted_correct": false,
+      "laya_probabilities": {
+        "text": 0.0069,
+        "image": 0.0914,
+        "video": 0.8699,
+        "clarify": 0.0318
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.111,
+      "laya_usage": {
+        "input_tokens": 96,
+        "output_tokens": 0
+      },
+      "jev_choice": "video",
+      "jev_correct": true,
+      "jev_confidence": 0.98,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.628
+    },
+    {
+      "message": "I'm not asking for a story; generate an image of a fox.",
+      "key": "output",
+      "expected": "image",
+      "expected_output": "image",
+      "laya_choice": "image",
+      "laya_correct": true,
+      "laya_accepted": true,
+      "laya_accepted_correct": true,
+      "laya_probabilities": {
+        "text": 0.0012,
+        "image": 0.9847,
+        "video": 0.0078,
+        "clarify": 0.0063
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.161,
+      "laya_usage": {
+        "input_tokens": 96,
+        "output_tokens": 0
+      },
+      "jev_choice": "image",
+      "jev_correct": true,
+      "jev_confidence": 1.0,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.624
+    },
+    {
+      "message": "Only analyze the video you made earlier for visual glitches.",
+      "key": "output",
+      "expected": "text",
+      "expected_output": "text",
+      "laya_choice": "text",
+      "laya_correct": true,
+      "laya_accepted": false,
+      "laya_accepted_correct": false,
+      "laya_probabilities": {
+        "text": 0.7291,
+        "image": 0.0041,
+        "video": 0.1706,
+        "clarify": 0.0961
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.152,
+      "laya_usage": {
+        "input_tokens": 91,
+        "output_tokens": 0
+      },
+      "jev_choice": "text",
+      "jev_correct": true,
+      "jev_confidence": 0.97,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.676
+    },
+    {
+      "message": "Run every step in the plan.",
+      "key": "plan_action",
+      "expected": "execute",
+      "expected_output": "image",
+      "laya_choice": "execute",
+      "laya_correct": true,
+      "laya_accepted": true,
+      "laya_accepted_correct": true,
+      "laya_probabilities": {
+        "execute": 0.9972,
+        "wait": 0.0015,
+        "cancel": 0.0013
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.33,
+      "laya_usage": {
+        "input_tokens": 249,
+        "output_tokens": 0
+      },
+      "jev_choice": "execute",
+      "jev_correct": true,
+      "jev_confidence": 0.99,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.654
+    },
+    {
+      "message": "Okay, start now.",
+      "key": "plan_action",
+      "expected": "execute",
+      "expected_output": "image",
+      "laya_choice": "execute",
+      "laya_correct": true,
+      "laya_accepted": true,
+      "laya_accepted_correct": true,
+      "laya_probabilities": {
+        "execute": 0.997,
+        "wait": 0.0024,
+        "cancel": 0.0007
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.33,
+      "laya_usage": {
+        "input_tokens": 243,
+        "output_tokens": 0
+      },
+      "jev_choice": "execute",
+      "jev_correct": true,
+      "jev_confidence": 1.0,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.669
+    },
+    {
+      "message": "Continue with the next step.",
+      "key": "plan_action",
+      "expected": "execute",
+      "expected_output": "video",
+      "laya_choice": "execute",
+      "laya_correct": true,
+      "laya_accepted": true,
+      "laya_accepted_correct": true,
+      "laya_probabilities": {
+        "execute": 0.9828,
+        "wait": 0.0127,
+        "cancel": 0.0046
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.34,
+      "laya_usage": {
+        "input_tokens": 246,
+        "output_tokens": 0
+      },
+      "jev_choice": "execute",
+      "jev_correct": true,
+      "jev_confidence": 0.92,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.624
+    },
+    {
+      "message": "Cancel the current task.",
+      "key": "plan_action",
+      "expected": "cancel",
+      "expected_output": "text",
+      "laya_choice": "cancel",
+      "laya_correct": true,
+      "laya_accepted": false,
+      "laya_accepted_correct": false,
+      "laya_probabilities": {
+        "execute": 0.3386,
+        "wait": 0.0167,
+        "cancel": 0.6447
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.299,
+      "laya_usage": {
+        "input_tokens": 243,
+        "output_tokens": 0
+      },
+      "jev_choice": "cancel",
+      "jev_correct": true,
+      "jev_confidence": 0.99,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.656
+    },
+    {
+      "message": "Cancel the task; don't keep generating.",
+      "key": "plan_action",
+      "expected": "cancel",
+      "expected_output": "text",
+      "laya_choice": "cancel",
+      "laya_correct": true,
+      "laya_accepted": false,
+      "laya_accepted_correct": false,
+      "laya_probabilities": {
+        "execute": 0.1899,
+        "wait": 0.0086,
+        "cancel": 0.8016
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.303,
+      "laya_usage": {
+        "input_tokens": 258,
+        "output_tokens": 0
+      },
+      "jev_choice": "cancel",
+      "jev_correct": true,
+      "jev_confidence": 1.0,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.674
+    },
+    {
+      "message": "Don't start yet; I need to change the plan.",
+      "key": "plan_action",
+      "expected": "wait",
+      "expected_output": "text",
+      "laya_choice": "execute",
+      "laya_correct": false,
+      "laya_accepted": false,
+      "laya_accepted_correct": false,
+      "laya_probabilities": {
+        "execute": 0.8418,
+        "wait": 0.0224,
+        "cancel": 0.1358
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.32,
+      "laya_usage": {
+        "input_tokens": 267,
+        "output_tokens": 0
+      },
+      "jev_choice": "wait",
+      "jev_correct": true,
+      "jev_confidence": 0.97,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.649
+    },
+    {
+      "message": "What does cancel mean? Explain it first.",
+      "key": "plan_action",
+      "expected": "wait",
+      "expected_output": "text",
+      "laya_choice": "execute",
+      "laya_correct": false,
+      "laya_accepted": false,
+      "laya_accepted_correct": false,
+      "laya_probabilities": {
+        "execute": 0.8335,
+        "wait": 0.0749,
+        "cancel": 0.0915
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.303,
+      "laya_usage": {
+        "input_tokens": 255,
+        "output_tokens": 0
+      },
+      "jev_choice": "wait",
+      "jev_correct": true,
+      "jev_confidence": 0.83,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.612
+    },
+    {
+      "message": "Execute every step in the plan.",
+      "key": "plan_action",
+      "expected": "execute",
+      "expected_output": "image",
+      "laya_choice": "execute",
+      "laya_correct": true,
+      "laya_accepted": true,
+      "laya_accepted_correct": true,
+      "laya_probabilities": {
+        "execute": 1.0,
+        "wait": 0.0,
+        "cancel": 0.0
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.277,
+      "laya_usage": {
+        "input_tokens": 249,
+        "output_tokens": 0
+      },
+      "jev_choice": "execute",
+      "jev_correct": true,
+      "jev_confidence": 0.98,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.626
+    },
+    {
+      "message": "Don't auto-continue; wait for my confirmation.",
+      "key": "plan_action",
+      "expected": "wait",
+      "expected_output": "text",
+      "laya_choice": "wait",
+      "laya_correct": true,
+      "laya_accepted": false,
+      "laya_accepted_correct": false,
+      "laya_probabilities": {
+        "execute": 0.0584,
+        "wait": 0.935,
+        "cancel": 0.0065
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.291,
+      "laya_usage": {
+        "input_tokens": 264,
+        "output_tokens": 0
+      },
+      "jev_choice": "wait",
+      "jev_correct": true,
+      "jev_confidence": 1.0,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.637
+    },
+    {
+      "message": "Just write the video prompt for now.",
+      "key": "plan_action",
+      "expected": "wait",
+      "expected_output": "text",
+      "laya_choice": "execute",
+      "laya_correct": false,
+      "laya_accepted": true,
+      "laya_accepted_correct": false,
+      "laya_probabilities": {
+        "execute": 0.9559,
+        "wait": 0.03,
+        "cancel": 0.0141
+      },
+      "laya_model": "laya-rl-agent",
+      "laya_seconds": 0.285,
+      "laya_usage": {
+        "input_tokens": 252,
+        "output_tokens": 0
+      },
+      "jev_choice": "wait",
+      "jev_correct": true,
+      "jev_confidence": 0.59,
+      "jev_output": "jev-1.13.0",
+      "jev_seconds": 0.668
+    }
+  ],
+  "note": "Same 40 translated intent cases; model classification only, no media tasks submitted."
+}

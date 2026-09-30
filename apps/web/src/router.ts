@@ -21,6 +21,7 @@ export const router = createRouter({
     { path: '/workspace', name: 'workspace', component: () => import('@/views/WorkspaceView.vue') },
     { path: '/projects', name: 'projects', component: () => import('@/views/WorkspaceView.vue') },
     { path: '/assets', name: 'asset-library', component: () => import('@/views/AssetLibraryView.vue') },
+    { path: '/video-replicas', name: 'video-replicas', component: () => import('@/views/VideoReplicaView.vue') },
     { path: '/skills', name: 'user-skills', component: () => import('@/views/UserSkillsView.vue') },
     {
       path: '/marketplace/:kind(skill|template|material)',

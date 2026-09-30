@@ -28,7 +28,38 @@ def combat_stage_guidance(prompt_code: str, source: str) -> str:
                 "不得二次总结删减。用户明确的静止与固定机位仍优先。")
     return ""
 
+COMBAT_ACTION_QUALITY = (
+    "【动作流畅度与攻击意图】普通交锋高速实时，连续变招、格挡、闪避与反击衔接，"
+    "前一招收势顺势成为下一招起势，重心、步法、肢体、武器轨迹和惯性连续；"
+    "不瞬移、不跳帧、不反复复位，不把每招拆成停顿摆拍。"
+    "每次攻击明确攻击者、目标、攻击方向、距离、命中部位或破防目的，"
+    "对手及时防守或受击，不空挥、不无目的互抡。"
+    "强化杀伤威胁与打击力度：发力、加速、接触、受力反馈和追击形成因果链，"
+    "用武器回弹、身体失衡、后退及符合招式的环境破坏体现力量；"
+    "命中瞬间短促顿挫后立即恢复连贯运动，特效不能代替接触或遮挡动作。"
+    "势均力敌时攻防密集，实力碾压时短促果断；慢镜头仅用于明确的大招或关键重击。"
+    "运镜跟随攻防主体及位移，切镜保持动作、空间轴线和运动方向连续。"
+    "保持原剧情、胜负、人物身份、画风、时长与用户明确的静止或机位要求，"
+    "不凭空增加死亡、伤势或破坏结果。"
+)
+
+
+def ensure_combat_video_prefix(prompt: str, *, combat: bool | None = None) -> str:
+    """Shared project/home video guidance; preserve the original prompt body."""
+    existing_prefix = re.match(r"^\s*ACT视角[，,\s]*", prompt, re.I)
+    if combat is None:
+        combat = bool(existing_prefix) or contains_combat(prompt)
+    if not combat:
+        return prompt
+    body = prompt[existing_prefix.end():] if existing_prefix else prompt
+    if COMBAT_ACTION_QUALITY not in body:
+        body = COMBAT_ACTION_QUALITY + body
+    return "ACT视角，" + body
+
+
 def contains_combat(text: str) -> bool:
+    # Example scenarios in a gait reference do not turn ordinary running into combat.
+    text = re.sub(r"【人物行走速度参考】.*?【人物行走速度参考结束】", "", text, flags=re.S)
     return bool(re.search(r"战斗|打斗|搏斗|格斗|交锋|对抗|厮杀|追逐|追击|袭击|攻击|闪避|格挡|挥剑|挥刀|挥砍|突刺|劈砍|横斩|枪刺|连斩|变招|拆招|反击|大招|龙爪|剑气|对决|交手|追杀|连招|破招|终结技|法天象地|宝术|神诀|combat|fight|battle|duel", text, re.I))
 
 SCRIPT_OUTPUT_BOUNDARY = (

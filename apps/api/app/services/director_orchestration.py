@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import json
+
 import hashlib
 import copy
 import logging
@@ -143,6 +145,7 @@ CHILD_TITLES = {
     "storyboard_repair": "修复分镜审核问题",
     "video_prompt": "生成镜头视频提示词",
     "video_generation": "生成镜头视频",
+    "video_concat": "拼接章节视频",
 }
 
 
@@ -829,13 +832,8 @@ async def start_automatic_workflow_from_progress(
         ).all()
     )
     if all(shot.id in ready_video_shot_ids for shot in shots):
-        chapter.status = ChapterStatus.COMPLETED
-        workflow.stage = DirectorWorkflowStage.READY_FOR_VIDEO
-        workflow.status = DirectorWorkflowStatus.COMPLETED
-        workflow.current_task_id = None
-        workflow.last_error = None
-        workflow.last_message = f"检测到 {len(shots)} 个镜头视频均已完成，无需重复生成"
-        await session.commit()
+        queued.extend(await _queue_automatic_concat(session, workflow))
+        await _commit_and_dispatch(session, queued)
         await session.refresh(workflow)
         return workflow
 
@@ -915,6 +913,45 @@ async def _activate_script(
     chapter.status = ChapterStatus.REVIEWING
     await invalidate_compositions(session, chapter_id=chapter.id, reason="导演 Agent 已生成新的生效剧本")
     workflow.script_version_id = script.id
+
+
+async def _queue_automatic_concat(session, workflow):
+    from app.api.routes.storyboards import prepare_video_concat
+    user = await session.get(User, workflow.user_id)
+    task, event = await prepare_video_concat(session, project_id=workflow.project_id,
+        chapter_id=workflow.chapter_id, storyboard_id=workflow.storyboard_version_id, user=user)
+    chapter = await session.get(Chapter, workflow.chapter_id)
+    snapshot = dict(workflow.context_snapshot or {})
+    snapshot["video_concat_task_id"] = task.id
+    workflow.context_snapshot = snapshot
+    if task.status == TaskStatus.SUCCEEDED:
+        chapter.status = ChapterStatus.COMPLETED
+        workflow.status = DirectorWorkflowStatus.COMPLETED
+        workflow.stage = DirectorWorkflowStage.READY_FOR_VIDEO
+        workflow.current_task_id = None
+        workflow.last_message = "AI 全自动制作完成，拼接视频已就绪，可一键下载"
+        return []
+    child = await session.scalar(select(DirectorChildRun).where(DirectorChildRun.task_id == task.id))
+    if child is None:
+        child = DirectorChildRun(tenant_id=workflow.tenant_id, user_id=workflow.user_id,
+            project_id=workflow.project_id, workflow_id=workflow.id, task_id=task.id,
+            kind="video_concat", title=CHILD_TITLES["video_concat"],
+            attempt=1, max_attempts=5,
+            status=DirectorChildStatus.RUNNING if task.status == TaskStatus.RUNNING else DirectorChildStatus.QUEUED,
+            input_refs={"storyboard_version_id": workflow.storyboard_version_id})
+        session.add(child)
+        await session.flush()
+    elif child.workflow_id != workflow.id:
+        # A continued workflow takes over the identical pending render.
+        child.workflow_id = workflow.id
+    task.request_payload = {**task.request_payload, "workflow_id": workflow.id, "child_run_id": child.id}
+    chapter.status = ChapterStatus.VIDEO
+    workflow.stage = DirectorWorkflowStage.VIDEO_GENERATING
+    workflow.status = DirectorWorkflowStatus.RUNNING
+    workflow.current_task_id = task.id
+    workflow.last_error = None
+    workflow.last_message = "全部镜头视频已完成，正在拼接章节视频"
+    return [(task, event)] if event is not None else []
 
 
 async def _queue_review(
@@ -1630,9 +1667,22 @@ def storyboard_review_stalled(snapshot, result):
     score = [sum(item.get("severity") == "blocking" for item in issues), len(issues)]
     history = list(snapshot.get("storyboard_review_progress") or [])
     history.append(score)
-    snapshot["storyboard_review_progress"] = history[-6:]
-    return bool(issues) and (len(history) >= 6 or (
-        len(history) >= 3 and not score < min(history[-3:-1])))
+    snapshot["storyboard_review_progress"] = history[-12:]
+    # A single flat round after improvement (5 -> 2 -> 2) is not three
+    # stagnant reviews. Also track located issues: equal counts may mean an
+    # old defect was fixed and a different one was discovered.
+    signatures = sorted({json.dumps([item.get("shot_indices") or item.get("location"),
+        sorted(item.get("fields") or []), item.get("severity")], ensure_ascii=False) for item in issues})
+    identities = list(snapshot.get("storyboard_review_issue_history") or [])
+    identities.append(signatures)
+    snapshot["storyboard_review_issue_history"] = identities[-12:]
+    recent = history[-3:]
+    no_score_progress = len(recent) == 3 and all(b >= a for a, b in zip(recent, recent[1:]))
+    # Legacy histories lack identities. Observe three real snapshots before
+    # claiming identical issues stagnated; the total-round ceiling still holds.
+    same_issues = len(identities) >= 3 and identities[-1] == identities[-2] == identities[-3]
+    return bool(issues) and (len(history) >= 12 or (
+        no_score_progress and same_issues))
 
 
 async def _queue_automatic_repair(
@@ -1648,23 +1698,8 @@ async def _queue_automatic_repair(
     blocking = _review_has_blocking_findings(result)
     if target == "storyboard":
         snapshot = dict(workflow.context_snapshot or {})
-        stalled = storyboard_review_stalled(snapshot, result)
+        storyboard_review_stalled(snapshot, result)  # Diagnostics only; never a stop gate.
         workflow.context_snapshot = snapshot
-        if stalled or (version_count >= 5 and blocking):
-            workflow.stage = DirectorWorkflowStage.AWAITING_STORYBOARD_DECISION
-            workflow.status = DirectorWorkflowStatus.WAITING_USER
-            workflow.current_task_id = None
-            workflow.last_message = "分镜审核修复未持续收敛，已保留全部成果并暂停自动重试，请查看剩余问题后选择处理方式"
-            session.add(DirectorDecisionRequest(
-                tenant_id=workflow.tenant_id, user_id=workflow.user_id,
-                project_id=workflow.project_id, workflow_id=workflow.id,
-                child_run_id=child.id, decision_type="storyboard_review",
-                prompt=workflow.last_message, options=REVIEW_OPTIONS))
-            return None
-    if version_count >= 5 and not blocking:
-        target_label = "剧本" if target == "script" else "分镜"
-        workflow.last_message = f"{target_label}已达到 5 个版本，记录普通问题后继续自动流程"
-        return None
     is_script = target == "script"
     workflow.stage = (
         DirectorWorkflowStage.SCRIPT_REPAIRING
@@ -1702,6 +1737,22 @@ async def submit_decision(
 ) -> None:
     if decision.resolved:
         raise ValueError("该审核选择已处理")
+    if decision.decision_type == 'jev_control':
+        if option != 'partial_repair':
+            raise ValueError('JEV待确认只能重新判断，不能跳过或批准未完成的检查')
+        parent = await session.get(DirectorChildRun, decision.child_run_id)
+        original = await session.get(AITask, parent.task_id) if parent else None
+        if original is None:
+            raise ValueError('原任务已不存在，请重新发起')
+        retry, event = await _retry_child(session, workflow, parent, original)
+        retry.result_payload = {key: value for key, value in (original.result_payload or {}).items()
+                                if key in {'jev_modules', 'jev_control'}}
+        decision.selected_option = option
+        decision.resolved = True
+        workflow.last_error = None
+        workflow.last_message = '已重新提交JEV判断，复用已保存成果'
+        await _commit_and_dispatch(session, [(retry, event)])
+        return
     if option not in {item["value"] for item in REVIEW_OPTIONS}:
         raise ValueError("不支持的审核选择")
     if option == "provide_feedback" and not feedback.strip():
@@ -1756,6 +1807,7 @@ async def submit_decision(
 async def stop_automatic_workflow(
     session: AsyncSession,
     workflow: DirectorWorkflowRun,
+    *, failure_reason: str | None = None,
 ) -> None:
     if not workflow.automation_mode:
         raise ValueError("当前流程不是 AI 全自动任务")
@@ -1787,7 +1839,7 @@ async def stop_automatic_workflow(
         if task is None:
             continue
         task.status = TaskStatus.CANCELLED
-        task.error_message = "AI 全自动任务已由用户停止"
+        task.error_message = failure_reason or "AI 全自动任务已由用户停止"
         child.status = DirectorChildStatus.CANCELLED
         child.summary = "已随 AI 全自动任务停止"
         if task.task_type == "asset_image_generation":
@@ -1801,7 +1853,7 @@ async def stop_automatic_workflow(
                 VideoClipStatus.GENERATING,
             }:
                 clip.status = VideoClipStatus.CANCELLED
-                clip.error_message = "AI 全自动任务已由用户停止"
+                clip.error_message = task.error_message
         event = record_task_event(
             session,
             task,
@@ -1814,11 +1866,11 @@ async def stop_automatic_workflow(
         published.append((task, event))
 
     workflow.stop_requested = True
-    workflow.status = DirectorWorkflowStatus.CANCELLED
-    workflow.stage = DirectorWorkflowStage.CANCELLED
+    workflow.status = DirectorWorkflowStatus.FAILED if failure_reason else DirectorWorkflowStatus.CANCELLED
+    workflow.stage = DirectorWorkflowStage.FAILED if failure_reason else DirectorWorkflowStage.CANCELLED
     workflow.current_task_id = None
-    workflow.last_error = None
-    workflow.last_message = "AI 全自动制作已停止，章节已解除锁定"
+    workflow.last_error = failure_reason
+    workflow.last_message = failure_reason or "AI 全自动制作已停止，章节已解除锁定"
     chapter = await session.get(Chapter, workflow.chapter_id)
     if chapter is not None:
         if workflow.storyboard_version_id:
@@ -1841,8 +1893,9 @@ async def mark_child_running(task_id: str) -> None:
     from app.db.session import SessionLocal
 
     async with SessionLocal() as session:
+        await _lock_workflow_for_task(session, task_id)
         child = await session.scalar(select(DirectorChildRun).where(DirectorChildRun.task_id == task_id))
-        if child is None:
+        if child is None or child.status not in {DirectorChildStatus.QUEUED, DirectorChildStatus.RUNNING}:
             return
         workflow = await session.get(DirectorWorkflowRun, child.workflow_id)
         if (
@@ -1899,7 +1952,9 @@ async def _retry_child(
         retry_task,
         status=TaskStatus.QUEUED,
         progress=0,
-        message=f"{child.title}自动重试 {retry_child.attempt}/{retry_child.max_attempts}",
+        message=(f"{child.title}自动重试 · 第 {retry_child.attempt} 次尝试"
+                 if workflow.automation_mode else
+                 f"{child.title}自动重试 {retry_child.attempt}/{retry_child.max_attempts}"),
     )
     workflow.current_task_id = retry_task.id
     workflow.status = DirectorWorkflowStatus.RUNNING
@@ -2003,11 +2058,25 @@ async def _pause_workflow_for_missing_credits(task_id: str) -> None:
         await session.commit()
 
 
+async def _lock_workflow_for_task(session: AsyncSession, task_id: str) -> None:
+    # Recovery and the task consumer can observe the same terminal task at once.
+    # Lock BEFORE reading child status: an in-memory check is not idempotency.
+    # A no-op UPDATE locks the workflow on both SQLite (where FOR UPDATE is
+    # ignored) and PostgreSQL, including concurrent sibling completions. The
+    # lock and downstream enqueue commit/roll back together; no lease can stick.
+    await session.execute(update(DirectorWorkflowRun).where(
+        DirectorWorkflowRun.id == select(DirectorChildRun.workflow_id).where(
+            DirectorChildRun.task_id == task_id).scalar_subquery(),
+    ).values(current_task_id=DirectorWorkflowRun.current_task_id,
+             updated_at=DirectorWorkflowRun.updated_at).execution_options(synchronize_session=False))
+
+
 async def _advance_director_task_terminal(task_id: str) -> None:
     from app.db.session import SessionLocal
 
     queued: list[tuple[AITask, TaskEvent]] = []
     async with SessionLocal() as session:
+        await _lock_workflow_for_task(session, task_id)
         task = await session.get(AITask, task_id)
         child = await session.scalar(select(DirectorChildRun).where(DirectorChildRun.task_id == task_id))
         if task is None or child is None or task.status not in {
@@ -2053,18 +2122,35 @@ async def _advance_director_task_terminal(task_id: str) -> None:
             )
             child.summary = task.error_message or "子智能体执行未完成"
             child.details = {**child.details, "error": task.error_message or ""}
-            if task.status == TaskStatus.FAILED and child.attempt < child.max_attempts:
-                queued.append(await _retry_child(session, workflow, child, task))
-            elif task.status == TaskStatus.FAILED and child.kind in {
-                "storyboard_generation",
-                "storyboard_repair",
-                "storyboard_review",
-            } and workflow.automation_mode:
-                workflow.stage = DirectorWorkflowStage.FAILED
-                workflow.status = DirectorWorkflowStatus.FAILED
+            from app.services.jev_control import pending as jev_pending
+            if jev_pending(task.error_message):
+                # This is an unresolved decision, not another generation attempt.
+                # A user can continue after clarifying evidence or fixing the provider.
+                workflow.status = DirectorWorkflowStatus.WAITING_USER
                 workflow.current_task_id = None
                 workflow.last_error = child.summary
-                workflow.last_message = f"{child.title}未完成，已保留成功批次；继续时接续未完成部分"
+                workflow.last_message = '需要确认后继续：' + child.summary
+                child.details = {**child.details, 'decision_pending': True}
+                session.add(DirectorDecisionRequest(tenant_id=workflow.tenant_id, user_id=workflow.user_id,
+                    project_id=workflow.project_id, workflow_id=workflow.id, child_run_id=child.id,
+                    decision_type='jev_control', prompt=workflow.last_message,
+                    options=[{'value': 'partial_repair', 'label': '重新判断',
+                              'description': '补充相关内容或修复JEV配置后，只继续未完成步骤，不跳过检查'}]))
+                session.add(Notification(tenant_id=workflow.tenant_id, user_id=workflow.user_id,
+                    project_id=workflow.project_id, task_id=task.id, title='JEV 判断需要确认',
+                    message=workflow.last_message))
+                await session.commit()
+                return
+            if task.status == TaskStatus.FAILED and workflow.automation_mode:
+                if child.kind == "asset_image":
+                    failures = _increment_workflow_counter(workflow, "consecutive_image_failures")
+                    if failures >= 5:
+                        await stop_automatic_workflow(session, workflow,
+                            failure_reason="图片连续 5 次生成失败，已停止 AI 全自动制作并保留全部成果")
+                        return
+                queued.append(await _retry_child(session, workflow, child, task))
+            elif task.status == TaskStatus.FAILED and child.attempt < child.max_attempts:
+                queued.append(await _retry_child(session, workflow, child, task))
             else:
                 workflow.stage = DirectorWorkflowStage.FAILED
                 workflow.status = DirectorWorkflowStatus.FAILED
@@ -2075,6 +2161,8 @@ async def _advance_director_task_terminal(task_id: str) -> None:
             return
 
         child.status = DirectorChildStatus.SUCCEEDED
+        if workflow.automation_mode and child.kind == "asset_image":
+            workflow.context_snapshot = {**(workflow.context_snapshot or {}), "consecutive_image_failures": 0}
         result = dict(task.result_payload or {})
         child.summary = str(
             result.get("summary") or task.request_payload.get("success_message") or "执行完成"
@@ -2244,6 +2332,16 @@ async def _advance_director_task_terminal(task_id: str) -> None:
                 )
         elif child.kind == "video_prompt":
             queued.extend(await _queue_video_generation(session, workflow, child))
+        elif child.kind == "video_concat":
+            if not (result.get("storage_key") or result.get("media_url")):
+                raise RuntimeError("拼接任务未返回可下载的视频文件")
+            chapter = await session.get(Chapter, workflow.chapter_id)
+            if chapter is not None:
+                chapter.status = ChapterStatus.COMPLETED
+            workflow.stage = DirectorWorkflowStage.READY_FOR_VIDEO
+            workflow.status = DirectorWorkflowStatus.COMPLETED
+            workflow.context_snapshot = {**(workflow.context_snapshot or {}), "video_concat_task_id": task.id}
+            workflow.last_message = "AI 全自动制作完成，拼接视频已就绪，可一键下载"
         elif child.kind == "video_generation":
             active_video_children = list(
                 (
@@ -2278,13 +2376,16 @@ async def _advance_director_task_terminal(task_id: str) -> None:
                     workflow.last_error = "部分镜头没有生成可用视频"
                     workflow.last_message = workflow.last_error
                 else:
-                    chapter = await session.get(Chapter, workflow.chapter_id)
-                    if chapter is not None:
-                        chapter.status = ChapterStatus.COMPLETED
-                    workflow.stage = DirectorWorkflowStage.READY_FOR_VIDEO
-                    workflow.status = DirectorWorkflowStatus.COMPLETED
-                    workflow.current_task_id = None
-                    workflow.last_message = f"AI 全自动制作完成，共生成 {len(shots)} 个镜头视频"
+                    if workflow.automation_mode:
+                        queued.extend(await _queue_automatic_concat(session, workflow))
+                    else:
+                        chapter = await session.get(Chapter, workflow.chapter_id)
+                        if chapter is not None:
+                            chapter.status = ChapterStatus.COMPLETED
+                        workflow.stage = DirectorWorkflowStage.READY_FOR_VIDEO
+                        workflow.status = DirectorWorkflowStatus.COMPLETED
+                        workflow.current_task_id = None
+                        workflow.last_message = f"已完成 {len(shots)} 个镜头视频"
             else:
                 workflow.current_task_id = next(
                     (
@@ -2395,6 +2496,18 @@ async def recover_automatic_workflows() -> int:
             ).all()
         )
         for workflow in workflows:
+            # The candidate list may be stale by the time this workflow is
+            # reached. Share the terminal transition's DB lock and refresh
+            # before reconciliation can overwrite a newer stage/task pointer.
+            await session.execute(update(DirectorWorkflowRun).where(
+                DirectorWorkflowRun.id == workflow.id,
+            ).values(updated_at=DirectorWorkflowRun.updated_at).execution_options(synchronize_session=False))
+            await session.refresh(workflow)
+            if (workflow.stop_requested or not workflow.automation_mode or
+                    (workflow.status != DirectorWorkflowStatus.RUNNING and not (
+                        workflow.status == DirectorWorkflowStatus.FAILED
+                        and workflow.last_error in RESTART_GAP_ERRORS))):
+                continue
             if workflow.status == DirectorWorkflowStatus.FAILED:
                 gap_workflow_ids.append(workflow.id)
                 continue

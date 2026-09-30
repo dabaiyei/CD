@@ -1,0 +1,6 @@
+{
+  "name": "cineforge-video-replica",
+  "private": true,
+  "type": "module",
+  "dependencies": { "@hypit/hypit": "0.2.16" }
+}

@@ -49,6 +49,7 @@ image_prompt 与 frame_layout 必须一致，实际生成以 frame_layout 的空
 
 
 def build_frame_prompt(shot, assets, raw_layout=None):
+    from app.services.cinematography import FRAMING, VISUAL_RULES
     names = {a.name for a in assets}
     if raw_layout:
         layout = FrameLayout.model_validate(raw_layout)
@@ -66,6 +67,8 @@ def build_frame_prompt(shot, assets, raw_layout=None):
         if not shot.image_prompt.strip():
             raise RuntimeError("镜头缺少首帧图片提示词")
         prompt = "单幅0秒静态镜头，以下为首帧设计：\n" + shot.image_prompt.strip()
+    prompt += "\n取景说明：" + FRAMING
+    prompt += "\n" + VISUAL_RULES
     prompt += ("\n空间规则：左右以观众画面为准；持物左右手以人物自身为准。保持单一相机位置与观察方向，"
         "人物的朝向、视线、脚下支撑与遮挡须物理一致。对峙主体朝向彼此，不能都朝镜头摆拍。"
         "仅画动作开始状态，不画多个时刻，不提前命中/落地，不画相机运动轨迹。\n"

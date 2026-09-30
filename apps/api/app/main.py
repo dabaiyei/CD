@@ -15,6 +15,7 @@ from app.api.routes import (
     assets,
     auth,
     branding,
+    jev,
     director,
     director_workflows,
     dubbing,
@@ -25,11 +26,14 @@ from app.api.routes import (
     notifications,
     pricing,
     projects,
-    skills,
+    replica_production,
+    replica_studio,
     site_backups,
+    skills,
     storyboards,
     tasks,
     user_skills,
+    video_replica,
 )
 from app.core.config import get_settings
 from app.db.migration_guard import assert_database_current
@@ -42,9 +46,9 @@ from app.services.object_storage import (
     valid_media_signature,
     validate_object_key,
 )
-from app.services.task_queue import close_redis
-from app.services.site_maintenance import SiteMaintenanceMiddleware, claim_coordinator, locked
 from app.services.site_backup import recover_interrupted
+from app.services.site_maintenance import SiteMaintenanceMiddleware, claim_coordinator, locked
+from app.services.task_queue import close_redis
 
 settings = get_settings()
 mimetypes.add_type("image/webp", ".webp")
@@ -69,6 +73,9 @@ async def site_lifespan() -> AsyncIterator[None]:
     if settings.seed_demo_data and not locked():
         await seed_demo_data()
     yield
+    from app.services.replica_studio import shutdown
+
+    await shutdown()
     await close_object_storage()
     await close_redis()
 
@@ -91,6 +98,7 @@ app.add_middleware(SiteMaintenanceMiddleware)
 app.include_router(site_backups.router, prefix=settings.api_prefix)
 app.include_router(auth.router, prefix=settings.api_prefix)
 app.include_router(branding.router, prefix=settings.api_prefix)
+app.include_router(jev.router, prefix=settings.api_prefix)
 app.include_router(invitations.router, prefix=settings.api_prefix)
 app.include_router(marketplace.router, prefix=settings.api_prefix)
 app.include_router(projects.router, prefix=settings.api_prefix)
@@ -108,6 +116,9 @@ app.include_router(tasks.router, prefix=settings.api_prefix)
 app.include_router(notifications.router, prefix=settings.api_prefix)
 app.include_router(pricing.router, prefix=settings.api_prefix)
 app.include_router(user_skills.router, prefix=settings.api_prefix)
+app.include_router(video_replica.router, prefix=settings.api_prefix)
+app.include_router(replica_production.router, prefix=settings.api_prefix)
+app.include_router(replica_studio.router, prefix=settings.api_prefix)
 app.include_router(admin.router, prefix=settings.api_prefix)
 app.include_router(skills.router, prefix=settings.api_prefix)
 

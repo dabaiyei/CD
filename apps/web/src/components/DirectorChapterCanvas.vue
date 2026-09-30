@@ -16,6 +16,7 @@ import {
   LockKeyhole,
   LoaderCircle,
   Play,
+  RefreshCw,
   Sparkles,
   Square,
   WandSparkles,
@@ -47,9 +48,11 @@ const props = defineProps<{
   automaticWorkflow?: DirectorWorkflowDetail | null
   automationAction?: 'start' | 'stop' | ''
   automationLocked?: boolean
+  syncingAssets?: boolean
 }>()
 const emit = defineEmits<{
   openAssets: []
+  syncAssets: []
   editScript: [script?: ScriptVersion]
   selectScript: [id: string]
   activateScript: [script: ScriptVersion]
@@ -471,7 +474,7 @@ watch(
     </section>
 
     <section v-else-if="tab === 'storyboard' && storyboard" class="director-storyboard-board">
-      <header><div><strong>导演分镜 v{{ storyboard.version.version }}</strong><span>{{ storyboardShots.length }} 个镜头</span></div><span><Sparkles :size="14" />已通过资产校验</span></header>
+      <header><div><strong>导演分镜 v{{ storyboard.version.version }}</strong><span>{{ storyboardShots.length }} 个镜头</span></div><button class="button button--secondary" type="button" :disabled="syncingAssets || automationLocked || !storyboard.version.is_active || Boolean(busyShotIds?.length) || Boolean(busyVideoPromptShotIds?.length)" title="读取绑定资产的当前版本，替换本章参考图；保留提示词和已生成视频" @click="emit('syncAssets')"><LoaderCircle v-if="syncingAssets" class="spin" :size="15" /><RefreshCw v-else :size="15" />{{ syncingAssets ? '同步中…' : '同步最新资产图' }}</button></header>
       <VirtualGrid :items="storyboardShots" :min-column-width="150" :media-aspect-ratio="4 / 3" :card-footer-height="76">
         <template #default="{ item: shot }">
         <article class="director-media-card director-media-card--storyboard">
@@ -490,6 +493,7 @@ watch(
           <span><b class="tabular-nums">{{ readyVideoCount }}</b> / {{ storyboardShots.length }} 已完成 · <b class="tabular-nums">{{ shotsWithPromptCount }}</b> 个镜头已有提示词</span>
         </div>
         <div class="director-video-board__actions">
+          <button class="button button--secondary" type="button" :disabled="syncingAssets || automationLocked || !storyboard?.version.is_active || Boolean(busyShotIds?.length) || Boolean(busyVideoPromptShotIds?.length)" title="同步本章全部镜头的资产参考图；不会修改已生成的视频" @click="emit('syncAssets')"><LoaderCircle v-if="syncingAssets" class="spin" :size="15" /><RefreshCw v-else :size="15" />{{ syncingAssets ? '同步中…' : '同步最新资产图' }}</button>
           <button type="button" class="button button--secondary" :disabled="!downloadableVideoClips.length || downloadingVideos" @click="downloadReadyVideos"><LoaderCircle v-if="downloadingVideos" class="spin" :size="15" /><Download v-else :size="15" />{{ downloadingVideos ? '正在打包' : '下载已完成' }}</button>
           <VideoConcatButton v-if="storyboard" :project-id="chapter.project_id" :chapter-id="chapter.id" :storyboard-id="storyboard.version.id" :count="downloadableVideoClips.length" />
           <button type="button" class="button button--secondary" :disabled="automationLocked || !videoPromptMissingShots.length || videoAction === 'videoPrompt' || videoPromptTaskActive" @click="queueVideoPrompts">

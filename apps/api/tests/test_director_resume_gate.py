@@ -138,13 +138,16 @@ def test_exhausted_batch_retries_preserve_work_instead_of_rebuilding(monkeypatch
     workflow = SimpleNamespace(
         id="w1", status=orchestration.DirectorWorkflowStatus.RUNNING,
         stage=orchestration.DirectorWorkflowStage.STORYBOARD_REPAIRING,
-        stop_requested=False, automation_mode=True, context_snapshot={},
+        stop_requested=False, automation_mode=False, context_snapshot={},
         current_task_id="t1", chapter_id="ch1", tenant_id="t", user_id="u", project_id="p",
         last_error=None, last_message="", storyboard_version_id=None, script_version_id="s1",
         asset_extraction_id="ex1",
     )
 
     class Session:
+        async def execute(self, _statement):
+            pass
+
         async def get(self, model, key):
             return workflow if model is DirectorWorkflowRun else task
 
@@ -177,7 +180,7 @@ def test_exhausted_batch_retries_preserve_work_instead_of_rebuilding(monkeypatch
     asyncio.run(orchestration._advance_director_task_terminal("t1"))
     assert rebuilt == []
     assert workflow.status == orchestration.DirectorWorkflowStatus.FAILED
-    assert "已保留成功批次" in workflow.last_message
+    assert "连续失败" in workflow.last_message
 
 
 def test_the_rebuild_loop_is_bounded(monkeypatch):
@@ -199,7 +202,7 @@ def test_the_rebuild_loop_is_bounded(monkeypatch):
     workflow = SimpleNamespace(
         id="w1", status=orchestration.DirectorWorkflowStatus.RUNNING,
         stage=orchestration.DirectorWorkflowStage.STORYBOARD_REPAIRING,
-        stop_requested=False, automation_mode=True,
+        stop_requested=False, automation_mode=False,
         context_snapshot={"storyboard_rebuild_count": 2},
         current_task_id="t1", chapter_id="ch1", tenant_id="t", user_id="u", project_id="p",
         last_error=None, last_message="", storyboard_version_id=None, script_version_id="s1",
@@ -207,6 +210,9 @@ def test_the_rebuild_loop_is_bounded(monkeypatch):
     )
 
     class Session:
+        async def execute(self, _statement):
+            pass
+
         async def get(self, model, key):
             return workflow if model is DirectorWorkflowRun else task
 
@@ -335,24 +341,61 @@ def test_storyboard_review_stops_nonconvergent_hard_issues():
 def test_storyboard_review_allows_measurable_progress_but_has_round_limit():
     from app.services.director_orchestration import storyboard_review_stalled
     snapshot = {}
-    for count in range(10, 5, -1):
+    for count in range(20, 9, -1):
         assert not storyboard_review_stalled(snapshot, {"findings": [{"severity": "major"}] * count})
     assert storyboard_review_stalled(snapshot, {"findings": [{"severity": "major"}]})
 
 
-def test_exhausted_blocking_review_creates_decision_instead_of_another_task(monkeypatch):
-    workflow = SimpleNamespace(context_snapshot={"storyboard_version_count": 5},
-        tenant_id="t", user_id="u", project_id="p", id="wf", current_task_id="old")
+def test_flat_round_after_improvement_is_not_three_stagnant_reviews():
+    snapshot = {"storyboard_review_progress": [[0, 5], [0, 2]]}
+    assert not orchestration.storyboard_review_stalled(snapshot, {"findings": [{"severity": "major"}] * 2})
+    assert not orchestration.storyboard_review_stalled(snapshot, {"findings": [{"severity": "major"}] * 2})
+    assert orchestration.storyboard_review_stalled(snapshot, {"findings": [{"severity": "major"}] * 2})
+
+
+def test_equal_counts_with_a_resolved_target_are_progress():
+    snapshot = {}
+    for targets in ([10, 39], [10, 39], [9, 39]):
+        assert not orchestration.storyboard_review_stalled(snapshot, {"findings": [
+            {"severity": "major", "shot_indices": [i], "fields": ["dialogue"]} for i in targets]})
+    for expected in (False, True):
+        assert orchestration.storyboard_review_stalled(snapshot, {"findings": [
+            {"severity": "major", "shot_indices": [i], "fields": ["dialogue"]} for i in [9, 39]]}) is expected
+
+
+def test_improving_board_continues_past_fifth_version(monkeypatch):
+    workflow = SimpleNamespace(context_snapshot={"storyboard_version_count": 5,
+        "storyboard_review_progress": [[0, 33], [0, 25], [0, 14], [0, 10]]},
+        chapter_id="chapter", script_version_id="script", storyboard_version_id="board")
+    calls = []
+    async def queue(*args, **kwargs):
+        calls.append(kwargs)
+        return "task", "event", None
+    monkeypatch.setattr(orchestration, "_queue_child", queue)
+    result = asyncio.run(orchestration._queue_automatic_repair(None, workflow,
+        SimpleNamespace(details={}), target="storyboard",
+        result={"review": {"findings": [{"severity": "major"}] * 6}}))
+    assert result == ("task", "event")
+    assert calls[0]["request_payload"]["repair_mode"] == "partial"
+    assert workflow.stage == orchestration.DirectorWorkflowStage.STORYBOARD_REPAIRING
+
+
+@pytest.mark.parametrize("severity", ["blocking", "major"])
+def test_exhausted_review_continues_without_decision(monkeypatch, severity):
+    snapshot = {"storyboard_version_count": 5}
+    for _ in range(2):
+        orchestration.storyboard_review_stalled(snapshot, {"findings": [{"severity": severity}]})
+    snapshot["storyboard_version_count"] = 50
+    workflow = SimpleNamespace(context_snapshot=snapshot, chapter_id="ch", script_version_id="script",
+        storyboard_version_id="board", tenant_id="t", user_id="u", project_id="p", id="wf", current_task_id="old")
     decisions = []
     session = SimpleNamespace(add=decisions.append)
-    async def forbidden(*args, **kwargs):
-        pytest.fail("阻断问题达到上限后不应再排队")
-    monkeypatch.setattr(orchestration, "_queue_child", forbidden)
+    async def queue(*args, **kwargs):
+        return "task", "event", None
+    monkeypatch.setattr(orchestration, "_queue_child", queue)
     result = asyncio.run(orchestration._queue_automatic_repair(session, workflow,
-        SimpleNamespace(id="review"), target="storyboard",
-        result={"review": {"findings": [{"severity": "blocking"}]}}))
-    assert result is None
-    assert workflow.status == orchestration.DirectorWorkflowStatus.WAITING_USER
-    assert workflow.stage == orchestration.DirectorWorkflowStage.AWAITING_STORYBOARD_DECISION
-    assert workflow.current_task_id is None
-    assert len(decisions) == 1
+        SimpleNamespace(id="review", details={}), target="storyboard",
+        result={"review": {"findings": [{"severity": severity}]}}))
+    assert result == ("task", "event")
+    assert workflow.stage == orchestration.DirectorWorkflowStage.STORYBOARD_REPAIRING
+    assert decisions == []

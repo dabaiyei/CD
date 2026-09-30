@@ -9,6 +9,7 @@ import {
 import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from 'reka-ui'
 
 import BaseDialog from '@/components/BaseDialog.vue'
+import VirtualGrid from '@/components/VirtualGrid.vue'
 import { useActivityStore } from '@/stores/activity'
 import { useToastStore } from '@/stores/toast'
 import type { AITask, NotificationItem, TaskEvent, TaskStatus } from '@/types'
@@ -28,6 +29,7 @@ const filter = ref<TaskFilter>('all')
 const actionId = ref<string | null>(null)
 const selectedTask = ref<AITask | null>(null)
 const selectedEvents = ref<TaskEvent[]>([])
+const newestEvents = computed(() => [...selectedEvents.value].reverse())
 const detailLoading = ref(false)
 const animationRoot = ref<HTMLElement | null>(null)
 const deleteTarget = ref<DeleteTarget | null>(null)
@@ -77,6 +79,9 @@ const statusCopy: Record<TaskStatus, { label: string; icon: typeof Clock3 }> = {
 }
 
 const taskMeta: Record<string, { title: string; category: string; icon: typeof Sparkles }> = {
+  video_replica_analysis: { title: '参考视频分析', category: '视频复刻', icon: FileSearch },
+  video_replica_render: { title: '视频复刻', category: '视频复刻', icon: Video },
+  video_replica_image: { title: '复刻参考图', category: '视频复刻', icon: FileSearch },
   agent_chat_run: { title: 'Agent 创作回复', category: 'Agent', icon: Bot },
   project_cover_generation: { title: '项目封面生成', category: '图片', icon: Image },
   chapter_analysis_generation: { title: '章节内容分析', category: '文本', icon: FileSearch },
@@ -202,7 +207,7 @@ async function animateOverview(): Promise<void> {
       { autoAlpha: 1, y: 0, scale: 1, duration: 0.26, stagger: 0.04, ease: 'power2.out', clearProps: 'all' },
     )
     gsap.fromTo(
-      '.activity-list > .task-activity, .activity-list > .notification-activity',
+      '.activity-list .task-activity, .activity-list .notification-activity',
       { autoAlpha: 0, y: 8, scale: 0.985 },
       { autoAlpha: 1, y: 0, scale: 1, duration: 0.3, stagger: { amount: 0.28 }, ease: 'power2.out', clearProps: 'all' },
     )
@@ -213,7 +218,7 @@ async function animateList(): Promise<void> {
   await nextTick()
   if (!animationRoot.value || reducedMotion.value) return
   const rows = animationRoot.value.querySelectorAll<HTMLElement>(
-    '.activity-list > .task-activity, .activity-list > .notification-activity',
+    '.activity-list .task-activity, .activity-list .notification-activity',
   )
   gsap.killTweensOf(rows)
   gsap.fromTo(
@@ -354,13 +359,17 @@ onUnmounted(() => {
               <section class="task-timeline">
                 <header><div><strong>执行轨迹</strong><span>{{ selectedEvents.length }} 条持久化记录</span></div><Clock3 :size="16" /></header>
                 <div v-if="detailLoading" class="task-timeline__loading"><LoaderCircle class="spin" :size="18" />正在同步任务轨迹</div>
-                <ol v-else-if="selectedEvents.length">
-                  <li v-for="(event, index) in [...selectedEvents].reverse()" :key="event.id" v-motion="{ preset: 'row', index }" :data-status="event.status">
+                <VirtualGrid v-else-if="selectedEvents.length" :items="newestEvents" :min-column-width="10000"
+                  :row-gap="0" :estimate-row-height="84" role="list" aria-label="执行轨迹">
+                  <template #default="{ item: event, index }">
+                  <div class="task-timeline__row" role="listitem" :aria-posinset="index + 1"
+                    :aria-setsize="newestEvents.length" :data-last="index === newestEvents.length - 1" :data-status="event.status">
                     <span><component :is="statusCopy[event.status].icon" :size="14" /></span>
                     <div><strong>{{ event.message }}</strong><p>{{ statusCopy[event.status].label }} · {{ event.progress }}%</p></div>
                     <time>{{ exactTime(event.created_at) }}</time>
-                  </li>
-                </ol>
+                  </div>
+                  </template>
+                </VirtualGrid>
                 <div v-else class="task-timeline__loading">暂无执行记录</div>
               </section>
             </div>
@@ -400,7 +409,10 @@ onUnmounted(() => {
                 <button v-if="filter !== 'active' && filteredTerminalCount" class="activity-clear-button" type="button" @click="requestTaskClear"><Trash2 :size="13" />{{ clearTaskLabel }} <span>{{ filter === 'all' ? terminalTaskCount : filteredTerminalCount }}</span></button>
               </div>
               <div class="activity-list">
-                <article v-for="task in filteredTasks" :key="task.id" class="task-activity" :data-task-id="task.id" :data-status="task.status" :data-terminal="['succeeded', 'failed', 'cancelled'].includes(task.status)">
+                <VirtualGrid v-if="filteredTasks.length" :key="filter" :items="filteredTasks"
+                  :min-column-width="10000" :row-gap="3" :estimate-row-height="100" role="list" aria-label="生成任务">
+                <template #default="{ item: task, index }">
+                <article class="task-activity" role="listitem" :aria-posinset="index + 1" :aria-setsize="filteredTasks.length" :data-task-id="task.id" :data-status="task.status" :data-terminal="['succeeded', 'failed', 'cancelled'].includes(task.status)">
                   <button class="task-activity__open" type="button" @click="openTask(task)">
                     <span class="task-activity__icon"><component :is="metaFor(task).icon" :size="18" /></span>
                     <span class="task-activity__body">
@@ -416,12 +428,17 @@ onUnmounted(() => {
                     <button v-if="['succeeded', 'failed', 'cancelled'].includes(task.status)" class="task-activity__delete" type="button" title="删除任务记录" aria-label="删除任务记录" @click="requestTaskDelete(task)"><Trash2 :size="14" /></button>
                   </span>
                 </article>
+                </template>
+                </VirtualGrid>
                 <div v-if="!filteredTasks.length" class="activity-empty"><Clock3 :size="24" /><span>当前筛选下暂无任务</span></div>
               </div>
             </section>
 
             <div v-else class="activity-list notification-list">
-              <article v-for="item in activity.notifications" :key="item.id" class="notification-activity" :class="{ unread: !item.is_read }" :data-notification-id="item.id">
+              <VirtualGrid v-if="activity.notifications.length" :items="activity.notifications"
+                :min-column-width="10000" :row-gap="3" :estimate-row-height="90" role="list" aria-label="消息通知">
+              <template #default="{ item, index }">
+              <article class="notification-activity" role="listitem" :aria-posinset="index + 1" :aria-setsize="activity.notifications.length" :class="{ unread: !item.is_read }" :data-notification-id="item.id">
                 <button class="notification-activity__open" type="button" @click="openNotification(item)">
                   <span class="notification-activity__icon"><Bell :size="15" /></span>
                   <span><strong>{{ item.title }}</strong><p>{{ item.message }}</p><time>{{ relativeTime(item.created_at) }}</time></span>
@@ -429,6 +446,8 @@ onUnmounted(() => {
                 </button>
                 <button class="notification-activity__delete" type="button" title="删除通知" aria-label="删除通知" @click="requestNotificationDelete(item)"><Trash2 :size="14" /></button>
               </article>
+              </template>
+              </VirtualGrid>
               <div v-if="!activity.notifications.length" class="activity-empty"><Bell :size="24" /><span>暂无消息通知</span></div>
             </div>
 

@@ -23,6 +23,7 @@ dependencies = [
   "redis[hiredis]>=6.4,<7",
   "sqlalchemy[asyncio]>=2.0.43,<3",
   "uvicorn[standard]>=0.35,<1",
+  "websockets>=15,<18",
 ]
 
 [project.optional-dependencies]

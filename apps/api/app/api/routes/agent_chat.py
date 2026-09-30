@@ -189,6 +189,12 @@ def requested_asset_platform_action(content: str) -> Literal["prompt", "image"] 
     return None
 
 
+def asset_regeneration_requested(content: str) -> bool:
+    clauses = re.split(r"[。；;，,\n]", content)
+    return any(re.search(r"重新生成|重新生图|重新出图|重做|重绘|再生成|再画", clause)
+               and not re.search(r"不要|不需要|无需|别|禁止|不用", clause) for clause in clauses)
+
+
 def requested_storyboard_platform_action(content: str) -> bool:
     normalized = re.sub(r"\s+", "", content.lower())
     if not normalized:
@@ -485,6 +491,7 @@ async def message_attachments(
     user: User,
     project_id: str,
     attachment_ids: list[str],
+    edit_message_id: str | None = None,
 ) -> list[ProjectFile]:
     if not attachment_ids:
         return []
@@ -507,7 +514,8 @@ async def message_attachments(
         if (
             item is None
             or item.file_metadata.get("role") != "agent_chat_attachment"
-            or item.file_metadata.get("agent_chat_message_id")
+            or (item.file_metadata.get("agent_chat_message_id")
+                and item.file_metadata.get("agent_chat_message_id") != edit_message_id)
             or not item.storage_path
             or not supported_attachment(item.mime_type)
         ):
@@ -1924,6 +1932,56 @@ class DeleteChatMessages(BaseModel):
     message_ids: list[str] = Field(min_length=1, max_length=500)
 
 
+async def prepare_message_edit(db, chat_session, payload, user, project_id=None):
+    """Truncate a conversation branch inside the send transaction; preserve the edited message ID."""
+    if not payload.edit_message_id:
+        return None
+    rows = list((await db.scalars(select(AgentChatMessage).where(
+        AgentChatMessage.session_id == chat_session.id,
+        AgentChatMessage.user_id == user.id,
+        AgentChatMessage.tenant_id == user.tenant_id,
+    ).order_by(AgentChatMessage.created_at, AgentChatMessage.id))).all())
+    index = next((i for i, row in enumerate(rows) if row.id == payload.edit_message_id), None)
+    if index is None:
+        raise HTTPException(404, "要编辑的消息不存在或不属于当前对话")
+    target = rows[index]
+    if target.role != AgentMessageRole.USER:
+        raise HTTPException(422, "只能编辑自己发送的消息")
+    runtime = AgentRuntimeClient(settings.agent_runtime_url,
+        settings.agent_runtime_internal_token, settings.agent_runtime_timeout_seconds)
+    try:
+        await runtime.delete_session(tenant_id=user.tenant_id,
+            project_id=project_id or f"personal-{user.id}", session_id=chat_session.id)
+    except Exception as exc:
+        raise HTTPException(503, "无法重置会话上下文，原记录未修改，请稍后重试") from exc
+    maintenance = list((await db.scalars(select(AITask).where(
+        AITask.tenant_id == user.tenant_id, AITask.user_id == user.id,
+        AITask.task_type == "agent_memory_maintenance",
+        AITask.status.in_([TaskStatus.QUEUED, TaskStatus.RUNNING]),
+        AITask.request_payload['agent_chat_session_id'].as_string() == chat_session.id,
+    ).with_for_update())).all())
+    for task in maintenance:
+        task.status = TaskStatus.CANCELLED
+        task.completed_at = datetime.now(UTC)
+        task.worker_id = None
+        task.lease_expires_at = None
+        db.add(TaskEvent(tenant_id=user.tenant_id, user_id=user.id, task_id=task.id,
+            status=TaskStatus.CANCELLED, progress=100, message="对话已编辑，取消旧分支记忆整理"))
+    await db.execute(delete(AgentChatSummary).where(AgentChatSummary.session_id == chat_session.id))
+    await db.execute(delete(AgentMemory).where(
+        AgentMemory.source_session_id == chat_session.id, AgentMemory.is_automatic.is_(True)))
+    removed = [row.id for row in rows[index + 1:]]
+    if removed:
+        await db.execute(delete(AgentChatMessage).where(AgentChatMessage.id.in_(removed)))
+    chat_session.runtime_manifest = {key: value for key, value in (chat_session.runtime_manifest or {}).items()
+                                    if key in {'scene', 'scope', 'mode', 'requested_mode', 'selected_skill_ids'}}
+    target.content = payload.content
+    target.run_id = None
+    target.finish_reason = None
+    target.runtime_events = []
+    return target
+
+
 async def delete_chat_messages(
     session_id: str,
     payload: DeleteChatMessages,
@@ -2081,8 +2139,32 @@ async def send_message(
     db: AsyncSession = Depends(get_session),
 ) -> AgentChatRunQueuedPublic:
     project = await project_for_user(db, project_id, user)
-    await serialize_project_task_submissions(db, project_id)
     chat_session = await session_for_user(db, project_id, session_id, user)
+    # Classify before taking the submission write lock. All shortcut task
+    # creation below must obey the same JEV authority as the queued assistant.
+    from app.services.jev_control import JevDecisionPending, project_entry
+    entry_checkpoint = {}
+    entry = None
+    history_query = select(AgentChatMessage).where(
+        AgentChatMessage.session_id == chat_session.id,
+        AgentChatMessage.tenant_id == user.tenant_id,
+        AgentChatMessage.user_id == user.id,
+    )
+    if payload.edit_message_id:
+        edited = await db.get(AgentChatMessage, payload.edit_message_id)
+        if edited and edited.session_id == chat_session.id:
+            # Replies after the edited message will be removed. They cannot
+            # authorize a task for the replacement message.
+            history_query = history_query.where(AgentChatMessage.created_at < edited.created_at)
+    history_rows = list((await db.scalars(history_query.order_by(
+        AgentChatMessage.created_at.desc()).limit(4))).all())
+    history = [{'role': item.role.value, 'content': item.content[:1200],
+                'partial': len(item.content) > 1200} for item in reversed(history_rows)]
+    try:
+        entry = await project_entry(user.tenant_id, payload.content, history, checkpoint=entry_checkpoint)
+    except JevDecisionPending as exc:
+        entry = {'operation': None, 'action': 'assistant', 'pending': str(exc)}
+    await serialize_project_task_submissions(db, project_id)
     scene = await chat_session_scene(db, chat_session)
     chapter: Chapter | None = None
     if scene == "director":
@@ -2126,11 +2208,14 @@ async def send_message(
         user=user,
         project_id=project_id,
         attachment_ids=payload.attachment_ids,
+        edit_message_id=payload.edit_message_id,
     )
+
+    edited_message = await prepare_message_edit(db, chat_session, payload, user, project_id)
 
     now = datetime.now(UTC)
     attachment_manifest = [attachment_public(item).model_dump(mode="json") for item in attachments]
-    user_message = AgentChatMessage(
+    user_message = edited_message or AgentChatMessage(
         id=new_id(),
         tenant_id=user.tenant_id,
         user_id=user.id,
@@ -2139,6 +2224,7 @@ async def send_message(
         content=payload.content,
         runtime_manifest={"attachments": attachment_manifest} if attachment_manifest else None,
     )
+    user_message.runtime_manifest = {"attachments": attachment_manifest} if attachment_manifest else None
     db.add(user_message)
     for attachment in attachments:
         attachment.file_metadata = {
@@ -2147,7 +2233,8 @@ async def send_message(
             "agent_chat_session_id": chat_session.id,
         }
     storyboard_video_action = (
-        requested_storyboard_video_action(payload.content)
+        ({'video_prompt': 'prompt', 'video': 'video'}.get(entry['action']) if entry else
+         requested_storyboard_video_action(payload.content))
         if scene == "director" and chapter is not None
         else None
     )
@@ -2248,6 +2335,7 @@ async def send_message(
             "project_file_changes": [outcome],
             "domain_changes": [outcome],
             "platform_action": outcome["operation"],
+            "jev_entry": entry,
         }
         user_message.run_id = primary_task.id
         assistant_message = AgentChatMessage(
@@ -2282,7 +2370,9 @@ async def send_message(
             user_message=user_message,
             task=task_public,
         )
-    if scene == "director" and chapter is not None and requested_storyboard_platform_action(payload.content):
+    if scene == "director" and chapter is not None and (
+        entry['action'] == 'storyboard' if entry else requested_storyboard_platform_action(payload.content)
+    ):
         from app.services.director_orchestration import start_storyboard_workflow_for_chapter
 
         try:
@@ -2368,6 +2458,7 @@ async def send_message(
             "project_file_changes": [outcome],
             "domain_changes": [outcome],
             "platform_action": "storyboard_workflow",
+            "jev_entry": entry,
         }
         assistant_message = AgentChatMessage(
             tenant_id=user.tenant_id,
@@ -2408,9 +2499,11 @@ async def send_message(
             task=task_public,
         )
 
-    platform_action = requested_asset_platform_action(payload.content) if not attachments else None
+    platform_action = (({'asset_prompt': 'prompt', 'asset_image': 'image'}.get(entry['action']) if entry else
+                       requested_asset_platform_action(payload.content)) if not attachments else None)
     if platform_action is not None:
         dispatches: list[tuple[AITask, TaskEvent]] = []
+        regenerate = asset_regeneration_requested(payload.content)
         target, asset_ids, asset_names = await inferred_asset_action_target(
             db,
             user=user,
@@ -2425,7 +2518,7 @@ async def send_message(
                     "target": target,
                     "asset_ids": asset_ids,
                     "asset_names": asset_names,
-                    "only_missing_prompt": True,
+                    "only_missing_prompt": not regenerate,
                     "auto_queue_images_after_prompt": False,
                 },
                 ensure_ascii=False,
@@ -2445,7 +2538,7 @@ async def send_message(
                     "target": target,
                     "asset_ids": asset_ids,
                     "asset_names": asset_names,
-                    "only_missing_image": True,
+                    "only_missing_image": not regenerate,
                     "auto_generate_missing_prompts": True,
                 },
                 ensure_ascii=False,
@@ -2492,6 +2585,7 @@ async def send_message(
             "project_file_changes": [outcome],
             "domain_changes": [outcome],
             "platform_action": platform_action,
+            "jev_entry": entry,
         }
         assistant_message = AgentChatMessage(
             tenant_id=user.tenant_id,
@@ -2545,6 +2639,8 @@ async def send_message(
         model_id=model.id,
         cost=pricing.total_cost,
         request_payload={
+            "jev_entry": entry,
+            "jev_entry_checkpoint": entry_checkpoint,
             "agent_chat_session_id": chat_session.id,
             "user_message_id": user_message.id,
             "agent_profile_id": agent.id,
@@ -2608,6 +2704,7 @@ async def personal_message_attachments(
     *,
     user: User,
     attachment_ids: list[str],
+    edit_message_id: str | None = None,
 ) -> list[PersonalAgentAttachment]:
     if not attachment_ids:
         return []
@@ -2628,7 +2725,7 @@ async def personal_message_attachments(
         item = by_id.get(attachment_id)
         if (
             item is None
-            or item.message_id
+            or (item.message_id and item.message_id != edit_message_id)
             or not item.storage_path
             or not supported_attachment(item.mime_type)
         ):
@@ -2972,12 +3069,14 @@ async def send_personal_message(
         db,
         user=user,
         attachment_ids=payload.attachment_ids,
+        edit_message_id=payload.edit_message_id,
     )
     selected_skills = await selected_personal_skills(
         db,
         user=user,
         skill_ids=payload.skill_ids,
     )
+    edited_message = await prepare_message_edit(db, chat_session, payload, user)
     now = datetime.now(UTC)
     attachment_manifest = [personal_attachment_public(item).model_dump(mode="json") for item in attachments]
     selection_manifest = [
@@ -2991,7 +3090,7 @@ async def send_personal_message(
     }
     if attachment_manifest:
         message_manifest["attachments"] = attachment_manifest
-    user_message = AgentChatMessage(
+    user_message = edited_message or AgentChatMessage(
         id=new_id(),
         tenant_id=user.tenant_id,
         user_id=user.id,
@@ -3000,6 +3099,7 @@ async def send_personal_message(
         content=payload.content,
         runtime_manifest=message_manifest,
     )
+    user_message.runtime_manifest = message_manifest
     db.add(user_message)
     for attachment in attachments:
         attachment.session_id = chat_session.id

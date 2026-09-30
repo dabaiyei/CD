@@ -35,6 +35,7 @@ import {
 
 import BaseDialog from '@/components/BaseDialog.vue'
 import { api } from '@/lib/api'
+import { copyText } from '@/lib/clipboard'
 import { useTheme } from '@/lib/theme'
 import { useToastStore } from '@/stores/toast'
 import type {
@@ -295,10 +296,10 @@ async function unpublish(): Promise<void> {
 
 async function copyTemplateContent(content: string): Promise<void> {
   try {
-    await navigator.clipboard.writeText(content)
+    if (!await copyText(content)) throw new Error('copy failed')
     toast.show('模板正文已复制', { tone: 'success' })
   } catch {
-    toast.show('复制失败', { message: '浏览器未授予剪贴板权限', tone: 'error' })
+    toast.show('复制失败', { message: '请长按或选中文字后手动复制', tone: 'error' })
   }
 }
 

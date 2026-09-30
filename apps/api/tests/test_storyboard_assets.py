@@ -36,6 +36,29 @@ def test_explicit_binding_prune_is_not_undone_by_parent_expansion():
     assert preserved == {1: ["角色·雨衣"]}
 
 
+def test_review_patch_keeps_existing_variant_selection_after_visual_correction(monkeypatch):
+    original = task_worker.GeneratedStoryboardShotPayload(title="原镜", image_prompt="旧机位",
+        asset_names=["角色", "角色·雨衣"])
+    repaired = original.model_copy(update={"image_prompt": "修正机位与手臂位置", "asset_names": ["角色·战甲"]})
+    task = SimpleNamespace(project_id="p", tenant_id="t", user_id="u")
+    @asynccontextmanager
+    async def sessions():
+        yield object()
+    async def owned(*args):
+        return task
+    async def catalog(*args):
+        return [SimpleNamespace(id=name, name=name) for name in ["角色", "角色·雨衣", "角色·战甲"]]
+    monkeypatch.setattr(task_worker, "SessionLocal", sessions)
+    monkeypatch.setattr(task_worker, "owned_task_for_update", owned)
+    monkeypatch.setattr(task_worker, "owns_running_task", lambda _: True)
+    monkeypatch.setattr(storyboard_assets, "extraction_asset_catalog", catalog)
+    definitions, bindings = asyncio.run(storyboard_assets.plan("task", [repaired],
+        lambda: pytest.fail("已明确的资产绑定不应再交给模型改写"),
+        previous_shots=[original.model_dump(mode="json")], reviewed_bindings=True))
+    assert definitions == []
+    assert bindings == {1: ["角色·战甲"]}
+
+
 def test_sequential_batches_reuse_prior_and_resume(monkeypatch):
     task = SimpleNamespace(request_payload={}, project_id="p", tenant_id="t", user_id="u")
     commits = []

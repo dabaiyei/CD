@@ -5,7 +5,7 @@ from functools import lru_cache
 from pathlib import Path
 from typing import Annotated, Literal
 
-from pydantic import Field, field_validator
+from pydantic import Field, SecretStr, field_validator
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 PROJECT_ROOT = Path(__file__).resolve().parents[4]
@@ -27,13 +27,21 @@ def _absolute_sqlite_url(value: str) -> str:
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(
-        env_file=PROJECT_ROOT / ".env",
+        env_file=(PROJECT_ROOT / ".env", PROJECT_ROOT / ".env.jev"),
         env_file_encoding="utf-8",
         case_sensitive=False,
         extra="ignore",
     )
 
     app_name: str = "CineForge API"
+    typesafe_api_key: SecretStr = SecretStr("")
+    laya_routing_enabled: bool = False
+    laya_base_url: str = ""
+    laya_api_key: SecretStr = SecretStr("")
+    laya_timeout_seconds: float = Field(default=3.0, gt=0, le=30)
+    typesafe_model: str = "jev-1.13.0"
+    typesafe_timeout_seconds: float = Field(default=8.0, gt=0, le=30)
+    typesafe_route_confidence: float = Field(default=0.65, ge=0, le=1)
     app_env: str = "development"
     api_prefix: str = "/api/v1"
     database_url: str = f"sqlite+aiosqlite:///{(PROJECT_ROOT / 'cineforge.db').as_posix()}"
@@ -70,6 +78,8 @@ class Settings(BaseSettings):
     agent_runtime_internal_token: str = "development-agent-runtime-token"
     agent_runtime_timeout_seconds: float = 900.0
     storyboard_review_concurrency: int = Field(default=4, ge=1, le=8)
+    storyboard_review_reasoning_effort: Literal["inherit", "low", "medium", "high"] = "low"
+    storyboard_patch_reasoning_effort: Literal["inherit", "low", "medium", "high"] = "low"
     redis_url: str | None = None
     task_queue_name: str = "cineforge:tasks"
     task_event_channel: str = "cineforge:events"

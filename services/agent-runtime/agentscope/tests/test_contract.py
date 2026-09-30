@@ -13,10 +13,12 @@ from fastapi.testclient import TestClient
 from runtime import AGENTSCOPE_VERSION, CONTRACT_VERSION, RUNTIME_VERSION
 from runtime.adapter import (
     AgentScopeAdapter,
+    bounded_reply_stream,
     _ToolCallIdNormalizingStream,
     call_responses_with_chat_fallback,
     is_transient_response_input_parse_error,
     retry_transient_response_input_errors,
+    response_model_parameters,
 )
 from runtime.config import get_settings
 from runtime.context import (
@@ -28,6 +30,24 @@ from runtime.context import (
 )
 from runtime.contracts import AgentRunRequest, AgentRunResponse, ExecutionManifest
 from runtime.main import _runtime_error_message, app
+
+
+def test_explicit_none_reasoning_reaches_responses_api():
+    from agentscope.credential import OpenAICredential
+    from agentscope.model import OpenAIResponseModel
+    async def scenario():
+        model = OpenAIResponseModel(credential=OpenAICredential(api_key="test"), model="test",
+            parameters=OpenAIResponseModel.Parameters(**response_model_parameters({
+                "reasoning_effort": "none", "thinking_enable": False})), stream=True)
+        await model.client.close()
+        calls = []
+        async def create(**kwargs):
+            calls.append(kwargs)
+            return None
+        model.client = SimpleNamespace(responses=SimpleNamespace(create=create))
+        await model._call_api("test", [])
+        assert calls[0]["reasoning"] == {"effort": "none"}
+    asyncio.run(scenario())
 
 
 class FakeAdapter:
@@ -59,6 +79,30 @@ class FakeAdapter:
                 skill_versions=request.skill_versions,
             ),
         )
+
+
+def test_direct_reply_never_starts_a_hidden_second_model_call():
+    markers = []
+    async def stream():
+        try:
+            yield SimpleNamespace(type="MODEL_CALL_START")
+            markers.append("first_call")
+            yield SimpleNamespace(type="MODEL_CALL_END")
+            yield SimpleNamespace(type="MODEL_CALL_START")
+            markers.append("second_call")
+        finally:
+            markers.append("closed")
+    async def run(mode):
+        return [item async for item in bounded_reply_stream(stream(), mode)]
+    with pytest.raises(RuntimeError, match="未返回正文"):
+        asyncio.run(run("none"))
+    assert markers == ["first_call", "closed"]
+    markers.clear()
+    asyncio.run(run("retrieval"))
+    assert markers == ["first_call", "second_call", "closed"]
+    from runtime.response_stream import IncompleteModelResponse
+    assert _runtime_error_message(IncompleteModelResponse("模型未返回正文")) == "模型未返回正文"
+    assert "private" not in _runtime_error_message(RuntimeError("private provider response"))
 
 
 def test_official_grok_binding_uses_native_xai_protocol() -> None:
@@ -309,7 +353,8 @@ def test_stream_emits_safe_events_and_durable_result(tmp_path: Path) -> None:
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("application/x-ndjson")
     envelopes: list[dict[str, Any]] = [json.loads(line) for line in response.text.splitlines()]
-    assert [item["type"] for item in envelopes] == ["event", "event", "event", "result"]
+    assert [item["type"] for item in envelopes] == ["event"] * 5 + ["result"]
+    assert [item["event"]["type"] for item in envelopes[:2]] == ["RUN_QUEUED", "RUN_STARTED"]
     assert "private reasoning" not in response.text
     assert (
         "".join(item["event"].get("delta", "") for item in envelopes if item["type"] == "event")
@@ -331,7 +376,7 @@ def test_stream_logs_runtime_failure_and_returns_sanitized_error(
             json=request_payload(),
         )
 
-    envelope = json.loads(response.text)
+    envelope = json.loads(response.text.splitlines()[-1])
     assert envelope == {
         "type": "error",
         "message": "模型与所选 OpenAI 接口或工具调用格式不兼容 (HTTP 400)",

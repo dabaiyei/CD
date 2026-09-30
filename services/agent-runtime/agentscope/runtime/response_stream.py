@@ -2,6 +2,10 @@
 from types import SimpleNamespace
 
 
+class IncompleteModelResponse(RuntimeError):
+    """Platform-authored diagnostic safe to expose without provider bodies."""
+
+
 class ResponseToolStream:
     def __init__(self, source):
         self.source = source
@@ -22,6 +26,7 @@ class ResponseToolStream:
 
     async def _events(self):
         items, indices, emitted = {}, {}, {}
+        text_emitted = ""
 
         def register(item, index):
             identity = getattr(item, "id", None) or getattr(item, "call_id", None)
@@ -57,6 +62,14 @@ class ResponseToolStream:
         async for event in self.stream:
             kind = event.type
             item = getattr(event, "item", None)
+            if kind == "response.incomplete":
+                reason = getattr(getattr(event.response, "incomplete_details", None), "reason", None)
+                detail = "输出预算耗尽" if reason == "max_output_tokens" else "未完成完整响应"
+                raise IncompleteModelResponse(f"模型{detail}，未将不完整内容当作最终结果；请调整本次生成预算后重试")
+            if kind == "response.failed":
+                raise IncompleteModelResponse("模型供应商报告本次生成失败，未收到完整结果")
+            if kind == "response.output_text.delta":
+                text_emitted += getattr(event, "delta", "") or ""
             if kind == "response.output_item.added" and getattr(item, "type", None) == "function_call":
                 _, normalized, _ = register(item, getattr(event, "output_index", None))
                 yield SimpleNamespace(type=kind, item=normalized, output_index=getattr(event, "output_index", None))
@@ -79,6 +92,21 @@ class ResponseToolStream:
                 for repaired in complete(item, getattr(event, "output_index", None)):
                     yield repaired
             if kind == "response.completed":
+                # Some relays omit some/all text deltas while retaining the
+                # complete assistant message. AgentScope only reads deltas;
+                # losing this text otherwise turns a completed verdict into a
+                # thinking-only response and silently starts another model round.
+                full_text = "".join(getattr(part, "text", "") or ""
+                    for output in (getattr(event.response, "output", []) or [])
+                    if getattr(output, "type", None) == "message"
+                    for part in (getattr(output, "content", []) or [])
+                    if getattr(part, "type", None) == "output_text")
+                if full_text:
+                    if not full_text.startswith(text_emitted):
+                        raise ValueError("Responses 文本增量与完整结果不一致")
+                    if full_text != text_emitted:
+                        yield SimpleNamespace(type="response.output_text.delta", delta=full_text[len(text_emitted):])
+                        text_emitted = full_text
                 for index, output in enumerate(getattr(event.response, "output", []) or []):
                     if getattr(output, "type", None) == "function_call":
                         for repaired in complete(output, index):

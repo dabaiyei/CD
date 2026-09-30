@@ -52,6 +52,7 @@ import AdminUsersPanel from '@/components/AdminUsersPanel.vue'
 import AdminInvitationsPanel from '@/components/AdminInvitationsPanel.vue'
 import AdminBrandingPanel from '@/components/AdminBrandingPanel.vue'
 import AdminBackupsPanel from '@/components/AdminBackupsPanel.vue'
+import AdminJevPanel from '@/components/AdminJevPanel.vue'
 import VisualHandbookCreator from '@/components/VisualHandbookCreator.vue'
 import BaseDialog from '@/components/BaseDialog.vue'
 import SkillTree from '@/components/SkillTree.vue'
@@ -145,7 +146,7 @@ const pendingHandbookCover = ref<File | null>(null)
 const pendingHandbookCoverPreview = ref<string | null>(null)
 let adminTabsResizeObserver: ResizeObserver | null = null
 
-const validSections = ['overview', 'users', 'invitations', 'branding', 'models', 'pricing', 'agents', 'prompts', 'handbooks', 'skills', 'security', 'backups'] as const
+const validSections = ['overview', 'users', 'invitations', 'branding', 'models', 'jev', 'pricing', 'agents', 'prompts', 'handbooks', 'skills', 'security', 'backups'] as const
 const section = computed(() => {
   const value = String(route.params.section || 'overview')
   return validSections.includes(value as (typeof validSections)[number]) ? value : 'overview'
@@ -157,6 +158,7 @@ const tabs = [
   { id: 'invitations', label: '邀请注册', icon: MailPlus },
   { id: 'branding', label: '登录视觉', icon: MonitorPlay },
   { id: 'models', label: '模型平台', icon: ServerCog },
+  { id: 'jev', label: 'JEV 意图路由', icon: Network },
   { id: 'pricing', label: '计费规则', icon: Coins },
   { id: 'agents', label: 'Agent', icon: Bot },
   { id: 'prompts', label: '提示词', icon: FileCode2 },
@@ -538,7 +540,7 @@ const selectedDiscoveryCount = computed(() => selectableDiscoveryRows.value.filt
 const allDiscoverySelected = computed(() => selectableDiscoveryRows.value.length > 0 && selectedDiscoveryCount.value === selectableDiscoveryRows.value.length)
 
 onMounted(async () => {
-  if (section.value === 'backups') loading.value = false
+  if (['backups', 'jev'].includes(section.value)) loading.value = false
   else await loadAll()
   if (section.value === 'security') await loadSecurityEvents(true)
   await revealActiveTab(false)
@@ -549,7 +551,7 @@ onMounted(async () => {
   }
 })
 watch(section, async (value, previous) => {
-  if (previous === 'backups' && value !== 'backups') await loadAll()
+  if (['backups', 'jev'].includes(previous) && !['backups', 'jev'].includes(value)) await loadAll()
   window.scrollTo({ top: 0, behavior: 'smooth' })
   if (value === 'security' && securityEvents.value.length === 0) await loadSecurityEvents(true)
   await revealActiveTab(true)
@@ -1468,6 +1470,7 @@ async function saveSkill(): Promise<void> {
       </section>
 
       <AdminBackupsPanel v-else-if="section === 'backups'" />
+      <AdminJevPanel v-else-if="section === 'jev'" />
       <AdminUsersPanel v-else-if="section === 'users'" />
 
       <AdminInvitationsPanel v-else-if="section === 'invitations'" />

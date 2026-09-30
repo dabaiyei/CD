@@ -100,6 +100,13 @@ def test_combat_script_rules_reach_runtime_system_context(client, creator_header
     assert asyncio.run(claim_task(task_id)) == task_id
     request = asyncio.run(runtime_request(task_id, prompt_code=stage, prompt="两人静立石台两侧，摄影机极缓横移；枪仙沉肩抬枪蓄力，枪尖斜指下段，切至下一镜突刺。"))
     assert "系统战斗专项规则优先于导演手册、画风手册" in request.system_prompt
+    if stage in {'storyboard-generation', 'storyboard-repair', 'video-prompt-generation'}:
+        assert '【镜头语言】' in request.system_prompt
+        assert '移 Truck/Slide' in request.system_prompt
+        assert '固定机位' in request.system_prompt
+    elif stage == 'storyboard-review':
+        assert '【镜头语言核验】' in request.system_prompt
+        assert '不因缺少焦距数值' in request.system_prompt
     if stage == "video-prompt-generation":
         assert "不得二次总结删减" in request.system_prompt
     else:
@@ -376,7 +383,8 @@ def test_derivative_prompt_receives_parent_identity_and_auto_queues_images(clien
 
 
 @pytest.mark.parametrize("fail_after_design", [False, True])
-def test_combat_prompts_use_assets_without_independent_frames(client, creator_headers, combat_project, monkeypatch, fail_after_design):
+@pytest.mark.parametrize("large_snapshot", [False, True])
+def test_combat_prompts_use_assets_without_independent_frames(client, creator_headers, combat_project, monkeypatch, fail_after_design, large_snapshot):
     project_id = combat_project
     owner = create_character(client, creator_headers, project_id)
     imported = client.post(f"/api/v1/projects/{project_id}/sources/import", headers=creator_headers,
@@ -396,7 +404,8 @@ def test_combat_prompts_use_assets_without_independent_frames(client, creator_he
             session.add(board)
             await session.flush()
             shot = StoryboardShot(**scope, storyboard_version_id=board.id, order_index=1,
-                title="挥剑格挡", action_description="右足蹬地，抬剑格挡，剑锋擦出火花后收势", image_prompt="青衣剑客持剑起势，城楼前",
+                title="挥剑格挡", action_description="右足蹬地，抬剑格挡，剑锋擦出火花后收势",
+                image_prompt="青衣剑客持剑起势，城楼前" + ("既有首帧细节" * 5000 if large_snapshot else ""),
                 asset_ids=[owner["id"]], reference_image_url=owner["media_url"])
             session.add(shot)
             await session.commit()

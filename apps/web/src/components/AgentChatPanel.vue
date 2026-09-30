@@ -21,6 +21,7 @@ import {
   ImagePlus,
   LockKeyhole,
   LoaderCircle,
+  ListChecks,
   Maximize2,
   Menu,
   Ellipsis,
@@ -44,9 +45,12 @@ import {
 } from 'lucide-vue-next'
 
 import { api, apiUpload } from '@/lib/api'
+import { copyText } from '@/lib/clipboard'
 import { renderMarkdown } from '@/lib/markdown'
+import { imageViewer } from '@/lib/imageViewer'
 import { useStreamTypewriter } from '@/lib/useStreamTypewriter'
 import AgentExecutionPanel from '@/components/AgentExecutionPanel.vue'
+import AgentMediaPlan from '@/components/AgentMediaPlan.vue'
 import BaseDialog from '@/components/BaseDialog.vue'
 import DirectorAgentWorkflowCard from '@/components/DirectorAgentWorkflowCard.vue'
 import MediaPreviewDialog from '@/components/MediaPreviewDialog.vue'
@@ -101,6 +105,10 @@ const selectedSessionId = ref('')
 const options = ref<AgentChatOptions>({ agents: [], skills: [], text_models: [], image_models: [], video_models: [], tts_models: [] })
 const sessions = ref<AgentChatSession[]>([])
 const messages = ref<AgentChatMessage[]>([])
+const mediaPlan = ref<unknown>(null)
+const mediaPlanSessionId = ref('')
+const lastPlanTask = ref<AITask | null>(null)
+const mediaPlanOpen = ref(false)
 const draft = ref('')
 const loading = ref(false)
 const submitting = ref(false)
@@ -142,6 +150,8 @@ const skillCommandIndex = ref(0)
 const deleteSessionTarget = ref<AgentChatSession | null>(null)
 const deletingSession = ref(false)
 const editingMessages = ref(false)
+const editingMessageId = ref('')
+const editedContent = ref('')
 const selectedMessageIds = ref<string[]>([])
 const deletingMessages = ref(false)
 const confirmMessageDelete = ref(false)
@@ -150,6 +160,8 @@ const allMessagesSelected = computed(() => selectableMessages.value.length > 0
   && selectableMessages.value.every(message => selectedMessageIds.value.includes(message.id)))
 
 watch(selectedSessionId, () => {
+  editingMessageId.value = ''
+  editedContent.value = ''
   editingMessages.value = false
   selectedMessageIds.value = []
   confirmMessageDelete.value = false
@@ -208,8 +220,13 @@ const dropdownSelector = '.agent-mode-dropdown, .agent-context-switcher, .agent-
 const selectedProject = computed(() => props.projects.find((item) => item.id === selectedProjectId.value))
 const personalMode = computed(() => props.personal && props.scene === 'workspace')
 watch([selectedSessionId, selectedProjectId, personalMode], () => {
+  mediaPlanOpen.value = false
   cancelAttachmentUpload()
 }, { flush: 'sync' })
+function openMediaPlan(): void {
+  if (modeMenu.value) modeMenu.value.open = false
+  mediaPlanOpen.value = true
+}
 const personalModes: Array<{
   value: PersonalAgentMode
   label: string
@@ -241,6 +258,10 @@ const emptyGuideDescription = computed(() => props.scene === 'director'
       }[personalAgentMode.value]
     : 'Agent 可读取当前项目资料，并将获准的结果同步回项目文件。')
 const trackedTask = computed(() => activity.tasks.find((item) => item.id === runTaskId.value) ?? null)
+const visibleMediaPlan = computed(() => (
+  (mediaPlanSessionId.value === selectedSessionId.value ? mediaPlan.value : null)
+  || (trackedTask.value?.request_payload.jev_route as { media_plan?: unknown } | undefined)?.media_plan
+))
 const currentRunMode = computed<PersonalAgentMode>(() => {
   const mediaIntent = trackedTask.value?.request_payload.media_intent
     || trackedTask.value?.result_payload?.media_intent
@@ -271,7 +292,7 @@ const canSend = computed(
     && (personalMode.value || selectedProjectId.value)
     && options.value.agents.length
     && (props.scene !== 'director' || Boolean(props.chapterId)),
-  ) && !props.disabled && !sending.value && !uploadingAttachments.value,
+  ) && !props.disabled && !sending.value && !uploadingAttachments.value && !editingMessageId.value,
 )
 const messageVirtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>(computed(() => ({
   count: messages.value.length,
@@ -778,6 +799,19 @@ async function applySessionDetail(
   if (version !== loadVersion) return false
   selectedSessionId.value = detail.session.id
   messages.value = detail.messages
+  mediaPlan.value = detail.session.runtime_manifest?.media_plan ?? null
+  mediaPlanSessionId.value = detail.session.id
+  lastPlanTask.value = detail.active_task
+  if (mediaPlan.value && !detail.active_task) {
+    const lastRun = [...detail.messages].reverse().find(item => item.run_id)?.run_id
+    if (lastRun) {
+      try {
+        const last = await api<AITask>(`/tasks/${lastRun}`)
+        if (version !== loadVersion || selectedSessionId.value !== detail.session.id) return false
+        lastPlanTask.value = last
+      } catch { /* Keep the saved plan visible even if the task was removed. */ }
+    }
+  }
   await nextTick()
   messageVirtualizer.value.measure()
   if (personalMode.value) {
@@ -946,33 +980,59 @@ function toggleCollapsed(): void {
 
 async function copyMessage(message: AgentChatMessage): Promise<void> {
   try {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(message.content)
-    } else {
-      const temporary = document.createElement('textarea')
-      temporary.value = message.content
-      temporary.style.position = 'fixed'
-      temporary.style.opacity = '0'
-      document.body.appendChild(temporary)
-      temporary.select()
-      document.execCommand('copy')
-      temporary.remove()
-    }
+    if (!await copyText(message.content)) throw new Error('copy failed')
     copiedMessageId.value = message.id
     if (copiedResetTimer) clearTimeout(copiedResetTimer)
     copiedResetTimer = setTimeout(() => (copiedMessageId.value = ''), 1600)
   } catch {
-    toast.show('复制失败', { message: '浏览器未授予剪贴板权限', tone: 'error' })
+    toast.show('复制失败', { message: '请长按或选中文字后手动复制', tone: 'error' })
   }
 }
 
 function editMessage(message: AgentChatMessage): void {
-  draft.value = message.content
-  collapsed.value = false
+  if (sending.value || props.disabled) return
+  editingMessageId.value = message.id
+  editedContent.value = message.content
   void nextTick(() => {
-    resizeTextarea()
-    textarea.value?.focus()
+    thread.value?.querySelector<HTMLTextAreaElement>('.agent-inline-editor textarea')?.focus({ preventScroll: true })
   })
+}
+
+async function resendEditedMessage(message: AgentChatMessage): Promise<void> {
+  const content = editedContent.value.trim()
+  const sessionId = selectedSessionId.value
+  if (!content || !sessionId || sending.value || props.disabled) return
+  submitting.value = true
+  try {
+    const manifest = message.runtime_manifest || {}
+    const result = await api<AgentChatRunQueued>(`${agentApiBase()}/sessions/${sessionId}/messages`, {
+      method: 'POST',
+      body: JSON.stringify({
+        content, edit_message_id: message.id,
+        attachment_ids: messageAttachments(message).map(item => item.id),
+        chapter_id: props.scene === 'director' ? props.chapterId : undefined,
+        mode: personalMode.value ? (manifest.mode || 'chat') : undefined,
+        media_options: personalMode.value ? (manifest.media_options || {}) : undefined,
+        skill_ids: personalMode.value ? messageSelectedSkills(message).map(item => item.id) : undefined,
+        text_model_id: personalMode.value ? selectedTextModelId.value || undefined : undefined,
+      }),
+    })
+    if (selectedSessionId.value !== sessionId) return
+    const index = messages.value.findIndex(item => item.id === message.id)
+    if (index >= 0) messages.value.splice(index, messages.value.length - index, result.user_message)
+    editingMessageId.value = ''
+    editedContent.value = ''
+    if (result.task.task_type === 'agent_chat_run') trackRunTask(result.task)
+    else {
+      activity.upsertTask(result.task)
+      await openSession(sessionId)
+      if (props.scene === 'director') requestDirectorWorkflowSync()
+    }
+    stickToLatest.value = true
+    await scrollToLatest()
+  } catch (error) {
+    toast.show('修改发送失败', { message: error instanceof Error ? error.message : undefined, tone: 'error' })
+  } finally { submitting.value = false }
 }
 
 async function stopCurrentRun(): Promise<void> {
@@ -1059,12 +1119,12 @@ function mediaSizeLabel(sizeBytes: number): string {
 
 async function copyMediaPrompt(media: AgentGeneratedMedia): Promise<void> {
   try {
-    await navigator.clipboard.writeText(media.prompt)
+    if (!await copyText(media.prompt)) throw new Error('copy failed')
     copiedMessageId.value = `media-${media.id}`
     if (copiedResetTimer) clearTimeout(copiedResetTimer)
     copiedResetTimer = setTimeout(() => (copiedMessageId.value = ''), 1600)
   } catch {
-    toast.show('提示词复制失败', { message: '浏览器未授予剪贴板权限', tone: 'error' })
+    toast.show('提示词复制失败', { message: '请长按或选中文字后手动复制', tone: 'error' })
   }
 }
 
@@ -1362,8 +1422,20 @@ function fileSyncTitle(message: AgentChatMessage): string {
   return '项目文件已同步'
 }
 
-function openMediaPreview(media: AgentGeneratedMedia): void {
+function openMediaPreview(media: AgentGeneratedMedia, event: MouseEvent): void {
+  if (media.mime_type.startsWith('image/') && event.currentTarget instanceof HTMLElement) {
+    imageViewer.value = { src: media.media_url, title: media.name, trigger: event.currentTarget }
+    return
+  }
   previewMedia.value = media
+}
+
+function openMarkdownImage(event: MouseEvent): void {
+  const target = event.target
+  if (!(target instanceof HTMLImageElement)) return
+  event.preventDefault()
+  event.stopPropagation()
+  imageViewer.value = { src: target.currentSrc || target.src, title: target.alt || '图片预览', trigger: target }
 }
 
 function closeMediaPreview(): void {
@@ -1465,6 +1537,11 @@ async function settleRunTask(task: AITask): Promise<void> {
       if (runTaskId.value === task.id) runTaskId.value = ''
       const applied = await applyDetail
       if (!applied) return
+      // Completion can atomically enqueue the next media step. Follow that
+      // task instead of clearing the live view and leaving the UI idle.
+      if (detail.active_task && detail.active_task.id !== task.id) {
+        trackRunTask(detail.active_task)
+      }
       if (task.status === 'succeeded') {
         if (assistant && fileChangeCount(assistant, 'applied')) {
           if (selectedProjectId.value) emit('projectFilesChanged', selectedProjectId.value)
@@ -1633,6 +1710,24 @@ async function sendMessage(): Promise<void> {
 }
 </script>
 
+<style scoped>
+.agent-task-trigger { display: inline-flex; align-items: center; justify-content: center; gap: 6px; min-height: 40px; flex-shrink: 0; margin-right: 4px; padding: 0 10px; border: 0; border-radius: 10px; background: transparent; color: var(--ink-secondary); font: inherit; font-size: 13px; cursor: pointer; }
+.agent-task-trigger:hover { background: color-mix(in srgb, var(--ink) 7%, transparent); color: var(--ink); }
+.agent-task-trigger:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.agent-task-trigger:active { transform: scale(.96); }
+.agent-task-empty { padding: 24px 12px; text-align: center; color: var(--ink-secondary); line-height: 1.7; }
+.agent-task-empty p { margin: 0 0 6px; color: var(--ink); }
+:global(.agent-task-dialog .agent-media-plan) { width: 100%; margin: 0; padding: 0; background: transparent; box-shadow: none; }
+:global(.dialog-content.agent-task-dialog) { top: 50% !important; left: 50% !important; width: min(520px, calc(100vw - 32px)) !important; height: auto !important; min-height: 0 !important; max-height: calc(100dvh - 48px) !important; transform: translate(-50%, -50%) !important; }
+.agent-inline-editor { display: grid; gap: 12px; width: min(620px, 100%); min-width: 0; padding: 14px; border-radius: 18px; background: var(--glass-panel, var(--surface)); box-sizing: border-box; }
+.agent-inline-editor textarea { width: 100%; min-width: 0; min-height: 120px; max-height: 50dvh; resize: vertical; box-sizing: border-box; padding: 12px; border: 1px solid var(--glass-edge, var(--line)); border-radius: 10px; background: var(--glass-inset, var(--surface-subtle)); color: var(--ink); font: inherit; line-height: 1.65; }
+.agent-inline-editor small { color: var(--ink-secondary); line-height: 1.5; }
+.agent-inline-editor > div { display: flex; gap: 8px; justify-content: flex-end; flex-wrap: wrap; }
+.agent-inline-editor button { min-height: 40px; padding: 8px 14px; border-radius: 10px; border: 1px solid var(--glass-edge, var(--line)); color: var(--ink); background: var(--glass-hover, var(--surface-subtle)); cursor: pointer; }
+.agent-inline-editor button[type=submit] { color: #fff; background: var(--brand); }
+.agent-inline-editor button:disabled { opacity: .5; cursor: not-allowed; }
+</style>
+
 <template>
   <Teleport to="body" :disabled="!focusMode">
     <section
@@ -1671,6 +1766,9 @@ async function sendMessage(): Promise<void> {
             </button>
           </div>
           <div class="agent-home-mode-menu">
+            <button class="agent-task-trigger" type="button" aria-label="查看连续任务" aria-haspopup="dialog" :aria-expanded="mediaPlanOpen" @click="openMediaPlan">
+              <ListChecks :size="17" /><span>任务</span>
+            </button>
             <details ref="modeMenu" class="agent-mode-dropdown" @toggle="handleDetailsToggle">
               <summary :aria-label="`当前模式：${currentPersonalMode.label}`">
                 <span>{{ currentPersonalMode.label }}</span>
@@ -1836,7 +1934,7 @@ async function sendMessage(): Promise<void> {
                 </div>
                 <div v-if="messageAttachments(message).length" class="agent-message-attachments">
                   <figure v-for="attachment in messageAttachments(message)" :key="attachment.id">
-                    <img v-if="attachment.mime_type.startsWith('image/')" :src="attachment.media_url" :alt="attachment.name" />
+                    <img v-if="attachment.mime_type.startsWith('image/')" v-image-preview="attachment.media_url" :src="attachment.media_url" :alt="attachment.name" />
                     <span v-else aria-label="文档附件">📄</span>
                     <figcaption>{{ attachment.name }}</figcaption>
                   </figure>
@@ -1844,8 +1942,14 @@ async function sendMessage(): Promise<void> {
                 <div
                   v-if="message.role === 'assistant' && message.content"
                   class="agent-message__content agent-markdown"
+                  @click="openMarkdownImage"
                   v-html="renderMarkdown(message.content)"
                 ></div>
+                <form v-else-if="editingMessageId === message.id" class="agent-inline-editor" @submit.prevent="resendEditedMessage(message)">
+                  <textarea v-model="editedContent" aria-label="编辑消息" :disabled="sending" rows="5" @keydown.esc.prevent="!sending && (editingMessageId = '')" />
+                  <small>重新发送会清除此条消息之后的所有对话记录。</small>
+                  <div><button type="button" :disabled="sending" @click="editingMessageId = ''">取消</button><button type="submit" :disabled="sending || !editedContent.trim()">{{ submitting ? '正在发送…' : '保存并重新发送' }}</button></div>
+                </form>
                 <div v-else-if="message.content" class="agent-message__content">{{ message.content }}</div>
 
                 <section
@@ -1858,7 +1962,7 @@ async function sendMessage(): Promise<void> {
                     class="agent-generated-media__preview"
                     type="button"
                     :aria-label="`放大预览${media.mime_type.startsWith('video/') ? '视频' : '图片'} ${media.name}`"
-                    @click="openMediaPreview(media)"
+                    @click="openMediaPreview(media, $event)"
                   >
                     <video
                       v-if="media.mime_type.startsWith('video/')"
@@ -1911,10 +2015,10 @@ async function sendMessage(): Promise<void> {
                     <Check v-if="copiedMessageId === message.id" :size="14" />
                     <Copy v-else :size="14" />
                   </button>
-                  <button v-if="message.role === 'user'" type="button" title="放回输入框继续编辑" aria-label="继续编辑" :disabled="sending" @click="editMessage(message)">
+                  <button v-if="message.role === 'user' && editingMessageId !== message.id" type="button" title="编辑此消息" aria-label="编辑此消息" :disabled="sending || props.disabled" @click="editMessage(message)">
                     <PencilLine :size="16" />
                   </button>
-                  <button v-else type="button" title="引用追问" aria-label="引用追问" :disabled="sending" @click="quoteMessage(message)"><Quote :size="16" /></button>
+                  <button v-else-if="message.role === 'assistant'" type="button" title="引用追问" aria-label="引用追问" :disabled="sending" @click="quoteMessage(message)"><Quote :size="16" /></button>
                   <DropdownMenuRoot>
                     <DropdownMenuTrigger as-child><button type="button" title="更多" aria-label="更多消息操作" :disabled="sending || deletingMessages"><Ellipsis :size="19" /></button></DropdownMenuTrigger>
                     <DropdownMenuPortal>
@@ -1960,7 +2064,7 @@ async function sendMessage(): Promise<void> {
                 <div class="agent-message__body agent-message__body--streaming">
                   <div class="agent-stream-output">
                     <div v-if="displayedStreamText" class="agent-message__content agent-message__content--streaming">
-                      <div class="agent-markdown agent-stream-markdown" v-html="streamedMarkdown"></div>
+                      <div class="agent-markdown agent-stream-markdown" @click="openMarkdownImage" v-html="streamedMarkdown"></div>
                       <i class="agent-stream-caret" aria-hidden="true"></i>
                     </div>
                     <section
@@ -2105,7 +2209,7 @@ async function sendMessage(): Promise<void> {
           </div>
           <TransitionGroup v-if="pendingAttachments.length" name="agent-attachment" tag="div" class="agent-attachment-tray">
             <figure v-for="attachment in pendingAttachments" :key="attachment.id">
-              <img v-if="attachment.mime_type.startsWith('image/')" :src="attachment.media_url" :alt="attachment.name" />
+              <img v-if="attachment.mime_type.startsWith('image/')" v-image-preview="attachment.media_url" :src="attachment.media_url" :alt="attachment.name" />
               <span v-else aria-label="文档附件">📄 {{ attachment.name }}</span>
               <button type="button" title="移除图片" @click="removePendingAttachment(attachment)"><X :size="14" /></button>
             </figure>
@@ -2244,6 +2348,10 @@ async function sendMessage(): Promise<void> {
           <Trash2 v-else :size="17" />确认删除
         </button>
       </template>
+    </BaseDialog>
+    <BaseDialog :open="mediaPlanOpen" title="连续任务" content-class="agent-task-dialog" @update:open="mediaPlanOpen = $event">
+      <AgentMediaPlan v-if="visibleMediaPlan" :plan="visibleMediaPlan" :task="trackedTask || lastPlanTask" />
+      <div v-else class="agent-task-empty"><p>当前会话暂无连续任务</p><small>连续生成图片、视频时，可在这里查看步骤和进度。</small></div>
     </BaseDialog>
     <MediaPreviewDialog
       :open="Boolean(previewMedia)"

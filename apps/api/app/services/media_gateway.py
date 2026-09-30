@@ -455,15 +455,28 @@ class OpenAICompatibleMediaGateway:
             attempts = IMAGE_REQUEST_ATTEMPTS if index + 1 >= len(variants) else 1
             for attempt in range(attempts):
                 try:
-                    response = await self._post_image_variant(
-                        client, endpoint, headers, variant
-                    )
+                    # Connection/TLS failures happen before submission, including
+                    # on the first format probe. Retry the same body/key safely.
+                    for connect_attempt in range(IMAGE_REQUEST_ATTEMPTS):
+                        try:
+                            response = await self._post_image_variant(client, endpoint, headers, variant)
+                            break
+                        except (httpx.ConnectError, httpx.ConnectTimeout):
+                            if connect_attempt + 1 >= IMAGE_REQUEST_ATTEMPTS:
+                                raise
+                            await asyncio.sleep(0.75 * (2**connect_attempt))
+                except (httpx.ConnectError, httpx.ConnectTimeout):
+                    raise
                 except (httpx.TimeoutException, httpx.NetworkError):
                     if attempt + 1 >= attempts:
                         raise
                     await asyncio.sleep(0.75 * (2**attempt))
                     continue
                 if response.status_code < 400:
+                    return response
+                if response.status_code in {401, 403}:
+                    # Authentication/group permissions do not change with image
+                    # payload variants. Preserve the original rejection.
                     return response
                 last_response = response
                 if (
@@ -570,7 +583,9 @@ class OpenAICompatibleMediaGateway:
             context["job_id"] = provider_job_id
             body, client = await self._adapter_request(self.adapter.video.poll, context)
             try:
-                result = await self._adapter_video_result(client, body, self.adapter.video.response)
+                result = await self._adapter_video_result(
+                    client, body, self.adapter.video.response, fallback_job_id=provider_job_id
+                )
                 if result.provider_job_id is None:
                     result.provider_job_id = provider_job_id
                 return result
@@ -582,6 +597,7 @@ class OpenAICompatibleMediaGateway:
             method="GET",
             url=f"{self.base_url}/{endpoint}",
             headers=self.headers,
+            fallback_job_id=provider_job_id,
         )
         if result.provider_job_id is None:
             result.provider_job_id = provider_job_id
@@ -952,16 +968,18 @@ class OpenAICompatibleMediaGateway:
         client: httpx.AsyncClient,
         body: dict[str, Any],
         mapping: VideoResponseMapping,
+        *,
+        fallback_job_id: str | None = None,
     ) -> VideoGenerationResult:
         task_id_value = extract_path(body, mapping.task_id_path)
         # 异步供应商的创建响应和轮询响应经常使用不同的任务 ID 字段。
         # Agnes 创建时返回 video_id，轮询时返回 id；两者都应能恢复同一个任务。
         if task_id_value in (None, ""):
-            for fallback_path in ("id", "video_id", "data.id", "data.video_id"):
+            for fallback_path in ("id", "video_id", "task_id", "job_id", "data.id", "data.video_id", "data.task_id"):
                 task_id_value = extract_path(body, fallback_path)
                 if task_id_value not in (None, ""):
                     break
-        provider_job_id = str(task_id_value) if task_id_value not in (None, "") else None
+        provider_job_id = str(task_id_value) if task_id_value not in (None, "") else fallback_job_id
         status_value = extract_path(body, mapping.status_path)
         if status_value in (None, ""):
             for fallback_path in ("status", "data.status", "internal_status"):
@@ -993,7 +1011,7 @@ class OpenAICompatibleMediaGateway:
                 raise ModelGatewayError("视频平台返回了无效的 Base64 数据") from exc
         result_url = extract_path(body, mapping.result_url_path)
         if result_url in (None, ""):
-            for fallback_path in ("url", "metadata.url", "data.url", "data.video_url"):
+            for fallback_path in ("url", "video_url", "output_url", "metadata.url", "data.url", "data.video_url"):
                 result_url = extract_path(body, fallback_path)
                 if result_url not in (None, ""):
                     break
@@ -1014,10 +1032,12 @@ class OpenAICompatibleMediaGateway:
                 video_data=_bounded_video(downloaded.content),
                 content_type=content_type,
             )
-        if raw_status in succeeded:
-            raise ModelGatewayError("视频平台任务完成但未返回视频文件")
         if provider_job_id:
+            # Completion and media publication can be eventually consistent.
+            # Keep polling the same job within the caller's existing deadline.
             return VideoGenerationResult(status="pending", provider_job_id=provider_job_id)
+        if raw_status in succeeded:
+            raise ModelGatewayError("视频平台任务完成但未返回视频文件或可查询的任务 ID")
         raise ModelGatewayError(error_message or "视频平台未返回视频或可恢复的任务 ID")
 
     async def _video_request(
@@ -1027,6 +1047,7 @@ class OpenAICompatibleMediaGateway:
         url: str,
         headers: dict[str, str],
         payload: dict[str, object] | None = None,
+        fallback_job_id: str | None = None,
     ) -> VideoGenerationResult:
         timeout = httpx.Timeout(get_settings().media_request_timeout_seconds)
         try:
@@ -1044,7 +1065,8 @@ class OpenAICompatibleMediaGateway:
                 if not isinstance(body, dict):
                     raise ModelGatewayError("视频平台返回了无法识别的数据结构")
                 return await _parse_video_response(
-                    client, body, allow_private_media=await self._allows_private_media()
+                    client, body, allow_private_media=await self._allows_private_media(),
+                    fallback_job_id=fallback_job_id,
                 )
         except httpx.HTTPStatusError as exc:
             raise ModelGatewayError(
@@ -1168,12 +1190,13 @@ async def _parse_video_response(
     body: dict[str, object],
     *,
     allow_private_media: bool = False,
+    fallback_job_id: str | None = None,
 ) -> VideoGenerationResult:
     raw_data = body.get("data")
     item = raw_data[0] if isinstance(raw_data, list) and raw_data else raw_data
     source = item if isinstance(item, dict) else body
     raw_status = str(source.get("status") or body.get("status") or "").lower()
-    provider_job_id = _first_string(source, body, keys=("id", "job_id", "task_id"))
+    provider_job_id = _first_string(source, body, keys=("id", "job_id", "task_id", "video_id")) or fallback_job_id
     error_message = _first_string(source, body, keys=("error_message", "message", "error"))
     if raw_status in {"failed", "error", "cancelled", "canceled"}:
         return VideoGenerationResult(
@@ -1210,8 +1233,8 @@ async def _parse_video_response(
             video_data=_bounded_video(downloaded.content),
             content_type=content_type,
         )
-    if raw_status in {"succeeded", "completed", "success", "done"}:
-        raise ModelGatewayError("视频平台任务完成但未返回视频文件")
+    if raw_status in {"succeeded", "completed", "success", "done"} and not provider_job_id:
+        raise ModelGatewayError("视频平台任务完成但未返回视频文件或可查询的任务 ID")
     if not provider_job_id:
         raise ModelGatewayError("视频平台未返回视频或可恢复的任务 ID")
     return VideoGenerationResult(status="pending", provider_job_id=provider_job_id)

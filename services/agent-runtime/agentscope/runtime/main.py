@@ -15,6 +15,7 @@ from runtime.adapter import AgentScopeAdapter, RuntimeAdapter
 from runtime.config import Settings, get_settings
 from runtime.context import InvalidProjectFileSnapshot, InvalidSkillSnapshot
 from runtime.contracts import SAFE_ID, AgentRunRequest, AgentRunResponse, HealthResponse
+from runtime.response_stream import IncompleteModelResponse
 
 settings = get_settings()
 logger = logging.getLogger(__name__)
@@ -22,6 +23,8 @@ logger = logging.getLogger(__name__)
 
 def _runtime_error_message(exc: Exception) -> str:
     """Return an actionable error without leaking upstream response bodies or credentials."""
+    if isinstance(exc, IncompleteModelResponse):
+        return str(exc)
     status_code = getattr(exc, "status_code", None)
     if isinstance(status_code, int):
         if status_code in {401, 403}:
@@ -203,7 +206,9 @@ async def stream_agent_v2(
 
         async def execute() -> None:
             try:
+                await emit({"type": "RUN_QUEUED"})
                 async with request.app.state.run_slots:
+                    await emit({"type": "RUN_STARTED"})
                     result = await adapter.run(payload, emit)
                 await queue.put({"type": "result", "result": result.model_dump(mode="json")})
             except (InvalidSkillSnapshot, InvalidProjectFileSnapshot) as exc:

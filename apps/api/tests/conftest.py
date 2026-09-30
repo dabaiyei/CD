@@ -18,6 +18,7 @@ if TEST_DATABASE.exists():
 
 os.environ["DATABASE_URL"] = f"sqlite+aiosqlite:///{TEST_DATABASE.as_posix()}"
 os.environ["SEED_DEMO_DATA"] = "true"
+os.environ["TYPESAFE_API_KEY"] = ""
 os.environ["SITE_BACKUP_ADMIN_EMAILS"] = '["admin@cineforge.local"]'
 os.environ["SKILLS_ROOT"] = str(TEST_SKILLS)
 os.environ["UPLOADS_ROOT"] = str(TEST_UPLOADS)
@@ -59,3 +60,15 @@ def creator_headers(client: TestClient) -> dict[str, str]:
 @pytest.fixture(scope="session")
 def admin_headers(client: TestClient) -> dict[str, str]:
     return login(client, "admin@cineforge.local", "Admin123!")
+
+
+@pytest.fixture
+def jev_disabled(monkeypatch):
+    """Legacy pipeline tests explicitly exercise the administrator-disabled mode."""
+    from app.services import jev_control
+    from app.services.jev_configuration import JevSettings
+
+    async def configuration(*args, **kwargs):
+        return JevSettings(False, "")
+
+    monkeypatch.setattr(jev_control, "get_jev_configuration", configuration)

@@ -1,0 +1,983 @@
+[
+  {
+    "case": "text_prompt",
+    "message": "帮我写东方神龙战斗的12秒视频提示词，不要生成视频",
+    "expected": {
+      "output": "text"
+    },
+    "answer": {
+      "type": "choice",
+      "choice": "video",
+      "probabilities": {
+        "text": 0.2407,
+        "image": 0.0125,
+        "video": 0.6622,
+        "clarify": 0.0847
+      },
+      "confidence": 0.3656,
+      "action": {
+        "act_probability": 1.0
+      }
+    },
+    "correct": false,
+    "app_output": "text",
+    "seconds": 0.319,
+    "model": "laya-rl-agent",
+    "usage": {
+      "input_tokens": 220,
+      "output_tokens": 0
+    },
+    "response": {
+      "model": "laya-rl-agent",
+      "answers": {
+        "output": {
+          "type": "choice",
+          "choice": "video",
+          "probabilities": {
+            "text": 0.2407,
+            "image": 0.0125,
+            "video": 0.6622,
+            "clarify": 0.0847
+          },
+          "confidence": 0.3656,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "continuation": {
+          "type": "choice",
+          "choice": "new",
+          "probabilities": {
+            "continue": 0.4067,
+            "new": 0.5933
+          },
+          "confidence": 0.0253,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "rewrite": {
+          "type": "choice",
+          "choice": "yes",
+          "probabilities": {
+            "yes": 0.6247,
+            "no": 0.3753
+          },
+          "confidence": 0.0454,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "usage": {
+        "input_tokens": 220,
+        "output_tokens": 0
+      },
+      "routing": {
+        "model": "multilingual",
+        "repo": "/opt/models/multilingual",
+        "reason": "explicit model='multilingual'",
+        "detection": null,
+        "workflow": null
+      }
+    }
+  },
+  {
+    "case": "story",
+    "message": "帮我生成一个故事文案",
+    "expected": {
+      "output": "text"
+    },
+    "answer": {
+      "type": "choice",
+      "choice": "text",
+      "probabilities": {
+        "text": 0.9973,
+        "image": 0.0007,
+        "video": 0.0006,
+        "clarify": 0.0014
+      },
+      "confidence": 0.9843,
+      "action": {
+        "act_probability": 1.0
+      }
+    },
+    "correct": true,
+    "app_output": "text",
+    "seconds": 0.204,
+    "model": "laya-rl-agent",
+    "usage": {
+      "input_tokens": 128,
+      "output_tokens": 0
+    },
+    "response": {
+      "model": "laya-rl-agent",
+      "answers": {
+        "output": {
+          "type": "choice",
+          "choice": "text",
+          "probabilities": {
+            "text": 0.9973,
+            "image": 0.0007,
+            "video": 0.0006,
+            "clarify": 0.0014
+          },
+          "confidence": 0.9843,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "continuation": {
+          "type": "choice",
+          "choice": "continue",
+          "probabilities": {
+            "continue": 0.5524,
+            "new": 0.4476
+          },
+          "confidence": 0.0079,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "usage": {
+        "input_tokens": 128,
+        "output_tokens": 0
+      },
+      "routing": {
+        "model": "multilingual",
+        "repo": "/opt/models/multilingual",
+        "reason": "explicit model='multilingual'",
+        "detection": null,
+        "workflow": null
+      }
+    }
+  },
+  {
+    "case": "negative",
+    "message": "不要生成图片，先讨论一下衣服",
+    "expected": {
+      "output": "text"
+    },
+    "answer": {
+      "type": "choice",
+      "choice": "clarify",
+      "probabilities": {
+        "text": 0.2401,
+        "image": 0.0456,
+        "video": 0.0138,
+        "clarify": 0.7005
+      },
+      "confidence": 0.4288,
+      "action": {
+        "act_probability": 1.0
+      }
+    },
+    "correct": false,
+    "app_output": "text",
+    "seconds": 0.213,
+    "model": "laya-rl-agent",
+    "usage": {
+      "input_tokens": 134,
+      "output_tokens": 0
+    },
+    "response": {
+      "model": "laya-rl-agent",
+      "answers": {
+        "output": {
+          "type": "choice",
+          "choice": "clarify",
+          "probabilities": {
+            "text": 0.2401,
+            "image": 0.0456,
+            "video": 0.0138,
+            "clarify": 0.7005
+          },
+          "confidence": 0.4288,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "continuation": {
+          "type": "choice",
+          "choice": "continue",
+          "probabilities": {
+            "continue": 0.5263,
+            "new": 0.4737
+          },
+          "confidence": 0.002,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "usage": {
+        "input_tokens": 134,
+        "output_tokens": 0
+      },
+      "routing": {
+        "model": "multilingual",
+        "repo": "/opt/models/multilingual",
+        "reason": "explicit model='multilingual'",
+        "detection": null,
+        "workflow": null
+      }
+    }
+  },
+  {
+    "case": "image",
+    "message": "生成一张苹果图片",
+    "expected": {
+      "output": "image"
+    },
+    "answer": {
+      "type": "choice",
+      "choice": "image",
+      "probabilities": {
+        "text": 0.0009,
+        "image": 0.9928,
+        "video": 0.0028,
+        "clarify": 0.0035
+      },
+      "confidence": 0.964,
+      "action": {
+        "act_probability": 1.0
+      }
+    },
+    "correct": true,
+    "app_output": "fallback_to_jev",
+    "seconds": 0.186,
+    "model": "laya-rl-agent",
+    "usage": {
+      "input_tokens": 126,
+      "output_tokens": 0
+    },
+    "response": {
+      "model": "laya-rl-agent",
+      "answers": {
+        "output": {
+          "type": "choice",
+          "choice": "image",
+          "probabilities": {
+            "text": 0.0009,
+            "image": 0.9928,
+            "video": 0.0028,
+            "clarify": 0.0035
+          },
+          "confidence": 0.964,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "continuation": {
+          "type": "choice",
+          "choice": "continue",
+          "probabilities": {
+            "continue": 0.8367,
+            "new": 0.1633
+          },
+          "confidence": 0.358,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "usage": {
+        "input_tokens": 126,
+        "output_tokens": 0
+      },
+      "routing": {
+        "model": "multilingual",
+        "repo": "/opt/models/multilingual",
+        "reason": "explicit model='multilingual'",
+        "detection": null,
+        "workflow": null
+      }
+    }
+  },
+  {
+    "case": "video",
+    "message": "基于刚才的图片和提示词帮我生成视频",
+    "expected": {
+      "output": "video"
+    },
+    "answer": {
+      "type": "choice",
+      "choice": "video",
+      "probabilities": {
+        "text": 0.0172,
+        "image": 0.2574,
+        "video": 0.6029,
+        "clarify": 0.1225
+      },
+      "confidence": 0.292,
+      "action": {
+        "act_probability": 1.0
+      }
+    },
+    "correct": true,
+    "app_output": "fallback_to_jev",
+    "seconds": 0.261,
+    "model": "laya-rl-agent",
+    "usage": {
+      "input_tokens": 262,
+      "output_tokens": 0
+    },
+    "response": {
+      "model": "laya-rl-agent",
+      "answers": {
+        "output": {
+          "type": "choice",
+          "choice": "video",
+          "probabilities": {
+            "text": 0.0172,
+            "image": 0.2574,
+            "video": 0.6029,
+            "clarify": 0.1225
+          },
+          "confidence": 0.292,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "continuation": {
+          "type": "choice",
+          "choice": "continue",
+          "probabilities": {
+            "continue": 0.7928,
+            "new": 0.2072
+          },
+          "confidence": 0.2638,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "rewrite": {
+          "type": "choice",
+          "choice": "no",
+          "probabilities": {
+            "yes": 0.0648,
+            "no": 0.9352
+          },
+          "confidence": 0.6537,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "usage": {
+        "input_tokens": 262,
+        "output_tokens": 0
+      },
+      "routing": {
+        "model": "multilingual",
+        "repo": "/opt/models/multilingual",
+        "reason": "explicit model='multilingual'",
+        "detection": null,
+        "workflow": null
+      }
+    }
+  },
+  {
+    "case": "confirm",
+    "message": "好了开始吧",
+    "expected": {
+      "plan_action": "execute"
+    },
+    "answer": {
+      "type": "choice",
+      "choice": "execute",
+      "probabilities": {
+        "execute": 0.841,
+        "wait": 0.1113,
+        "cancel": 0.0477
+      },
+      "confidence": 0.5129,
+      "action": {
+        "act_probability": 1.0
+      }
+    },
+    "correct": true,
+    "app_output": "image",
+    "seconds": 0.309,
+    "model": "laya-rl-agent",
+    "usage": {
+      "input_tokens": 296,
+      "output_tokens": 0
+    },
+    "response": {
+      "model": "laya-rl-agent",
+      "answers": {
+        "output": {
+          "type": "choice",
+          "choice": "video",
+          "probabilities": {
+            "text": 0.0005,
+            "image": 0.0274,
+            "video": 0.9426,
+            "clarify": 0.0295
+          },
+          "confidence": 0.8108,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "continuation": {
+          "type": "choice",
+          "choice": "continue",
+          "probabilities": {
+            "continue": 0.6874,
+            "new": 0.3126
+          },
+          "confidence": 0.1039,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "plan_action": {
+          "type": "choice",
+          "choice": "execute",
+          "probabilities": {
+            "execute": 0.841,
+            "wait": 0.1113,
+            "cancel": 0.0477
+          },
+          "confidence": 0.5129,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "chain": {
+          "type": "choice",
+          "choice": "step",
+          "probabilities": {
+            "auto": 0.0702,
+            "step": 0.9298
+          },
+          "confidence": 0.6334,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "usage": {
+        "input_tokens": 296,
+        "output_tokens": 0
+      },
+      "routing": {
+        "model": "multilingual",
+        "repo": "/opt/models/multilingual",
+        "reason": "explicit model='multilingual'",
+        "detection": null,
+        "workflow": null
+      }
+    }
+  },
+  {
+    "case": "chain",
+    "message": "全部开始，图片完成后自动生成视频",
+    "expected": {
+      "chain": "auto"
+    },
+    "answer": {
+      "type": "choice",
+      "choice": "step",
+      "probabilities": {
+        "auto": 0.0701,
+        "step": 0.9299
+      },
+      "confidence": 0.6337,
+      "action": {
+        "act_probability": 1.0
+      }
+    },
+    "correct": false,
+    "app_output": "fallback_to_jev",
+    "seconds": 0.323,
+    "model": "laya-rl-agent",
+    "usage": {
+      "input_tokens": 316,
+      "output_tokens": 0
+    },
+    "response": {
+      "model": "laya-rl-agent",
+      "answers": {
+        "output": {
+          "type": "choice",
+          "choice": "video",
+          "probabilities": {
+            "text": 0.0032,
+            "image": 0.0677,
+            "video": 0.8958,
+            "clarify": 0.0333
+          },
+          "confidence": 0.7024,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "continuation": {
+          "type": "choice",
+          "choice": "continue",
+          "probabilities": {
+            "continue": 0.8181,
+            "new": 0.1819
+          },
+          "confidence": 0.3157,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "plan_action": {
+          "type": "choice",
+          "choice": "execute",
+          "probabilities": {
+            "execute": 0.7213,
+            "wait": 0.1735,
+            "cancel": 0.1053
+          },
+          "confidence": 0.2931,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "chain": {
+          "type": "choice",
+          "choice": "step",
+          "probabilities": {
+            "auto": 0.0701,
+            "step": 0.9299
+          },
+          "confidence": 0.6337,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "usage": {
+        "input_tokens": 316,
+        "output_tokens": 0
+      },
+      "routing": {
+        "model": "multilingual",
+        "repo": "/opt/models/multilingual",
+        "reason": "explicit model='multilingual'",
+        "detection": null,
+        "workflow": null
+      }
+    }
+  },
+  {
+    "case": "wait",
+    "message": "先出图给我看，等我确认再生成视频",
+    "expected": {
+      "chain": "step"
+    },
+    "answer": {
+      "type": "choice",
+      "choice": "step",
+      "probabilities": {
+        "auto": 0.0482,
+        "step": 0.9518
+      },
+      "confidence": 0.7213,
+      "action": {
+        "act_probability": 1.0
+      }
+    },
+    "correct": true,
+    "app_output": "fallback_to_jev",
+    "seconds": 0.365,
+    "model": "laya-rl-agent",
+    "usage": {
+      "input_tokens": 328,
+      "output_tokens": 0
+    },
+    "response": {
+      "model": "laya-rl-agent",
+      "answers": {
+        "output": {
+          "type": "choice",
+          "choice": "video",
+          "probabilities": {
+            "text": 0.0009,
+            "image": 0.4306,
+            "video": 0.5348,
+            "clarify": 0.0337
+          },
+          "confidence": 0.41,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "continuation": {
+          "type": "choice",
+          "choice": "new",
+          "probabilities": {
+            "continue": 0.4808,
+            "new": 0.5192
+          },
+          "confidence": 0.0011,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "plan_action": {
+          "type": "choice",
+          "choice": "wait",
+          "probabilities": {
+            "execute": 0.3081,
+            "wait": 0.632,
+            "cancel": 0.0599
+          },
+          "confidence": 0.2524,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "chain": {
+          "type": "choice",
+          "choice": "step",
+          "probabilities": {
+            "auto": 0.0482,
+            "step": 0.9518
+          },
+          "confidence": 0.7213,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "usage": {
+        "input_tokens": 328,
+        "output_tokens": 0
+      },
+      "routing": {
+        "model": "multilingual",
+        "repo": "/opt/models/multilingual",
+        "reason": "explicit model='multilingual'",
+        "detection": null,
+        "workflow": null
+      }
+    }
+  },
+  {
+    "case": "reference_only",
+    "message": "以后都参考第一张图",
+    "expected": {
+      "output": "text"
+    },
+    "answer": {
+      "type": "choice",
+      "choice": "image",
+      "probabilities": {
+        "text": 0.0028,
+        "image": 0.6009,
+        "video": 0.003,
+        "clarify": 0.3933
+      },
+      "confidence": 0.49,
+      "action": {
+        "act_probability": 1.0
+      }
+    },
+    "correct": false,
+    "app_output": "text",
+    "seconds": 0.167,
+    "model": "laya-rl-agent",
+    "usage": {
+      "input_tokens": 130,
+      "output_tokens": 0
+    },
+    "response": {
+      "model": "laya-rl-agent",
+      "answers": {
+        "output": {
+          "type": "choice",
+          "choice": "image",
+          "probabilities": {
+            "text": 0.0028,
+            "image": 0.6009,
+            "video": 0.003,
+            "clarify": 0.3933
+          },
+          "confidence": 0.49,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "continuation": {
+          "type": "choice",
+          "choice": "continue",
+          "probabilities": {
+            "continue": 0.8053,
+            "new": 0.1947
+          },
+          "confidence": 0.2888,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "usage": {
+        "input_tokens": 130,
+        "output_tokens": 0
+      },
+      "routing": {
+        "model": "multilingual",
+        "repo": "/opt/models/multilingual",
+        "reason": "explicit model='multilingual'",
+        "detection": null,
+        "workflow": null
+      }
+    }
+  },
+  {
+    "case": "reference_change",
+    "message": "用第二张图的人物替换第一张图的人物并生成图片",
+    "expected": {
+      "references": "select"
+    },
+    "answer": {},
+    "correct": false,
+    "app_output": "fallback_to_jev",
+    "seconds": 0.204,
+    "model": "laya-rl-agent",
+    "usage": {
+      "input_tokens": 144,
+      "output_tokens": 0
+    },
+    "response": {
+      "model": "laya-rl-agent",
+      "answers": {
+        "output": {
+          "type": "choice",
+          "choice": "image",
+          "probabilities": {
+            "text": 0.0028,
+            "image": 0.9446,
+            "video": 0.0038,
+            "clarify": 0.0488
+          },
+          "confidence": 0.8277,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "continuation": {
+          "type": "choice",
+          "choice": "continue",
+          "probabilities": {
+            "continue": 0.6726,
+            "new": 0.3274
+          },
+          "confidence": 0.0877,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "usage": {
+        "input_tokens": 144,
+        "output_tokens": 0
+      },
+      "routing": {
+        "model": "multilingual",
+        "repo": "/opt/models/multilingual",
+        "reason": "explicit model='multilingual'",
+        "detection": null,
+        "workflow": null
+      }
+    }
+  },
+  {
+    "case": "continue",
+    "message": "继续",
+    "expected": {
+      "plan_action": "execute"
+    },
+    "answer": {
+      "type": "choice",
+      "choice": "execute",
+      "probabilities": {
+        "execute": 0.5275,
+        "wait": 0.3568,
+        "cancel": 0.1157
+      },
+      "confidence": 0.131,
+      "action": {
+        "act_probability": 1.0
+      }
+    },
+    "correct": true,
+    "app_output": "video",
+    "seconds": 0.465,
+    "model": "laya-rl-agent",
+    "usage": {
+      "input_tokens": 372,
+      "output_tokens": 0
+    },
+    "response": {
+      "model": "laya-rl-agent",
+      "answers": {
+        "output": {
+          "type": "choice",
+          "choice": "video",
+          "probabilities": {
+            "text": 0.0005,
+            "image": 0.0015,
+            "video": 0.9834,
+            "clarify": 0.0146
+          },
+          "confidence": 0.9337,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "continuation": {
+          "type": "choice",
+          "choice": "continue",
+          "probabilities": {
+            "continue": 0.7838,
+            "new": 0.2162
+          },
+          "confidence": 0.2468,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "plan_action": {
+          "type": "choice",
+          "choice": "execute",
+          "probabilities": {
+            "execute": 0.5275,
+            "wait": 0.3568,
+            "cancel": 0.1157
+          },
+          "confidence": 0.131,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "chain": {
+          "type": "choice",
+          "choice": "step",
+          "probabilities": {
+            "auto": 0.0256,
+            "step": 0.9744
+          },
+          "confidence": 0.8279,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "usage": {
+        "input_tokens": 372,
+        "output_tokens": 0
+      },
+      "routing": {
+        "model": "multilingual",
+        "repo": "/opt/models/multilingual",
+        "reason": "explicit model='multilingual'",
+        "detection": null,
+        "workflow": null
+      }
+    }
+  },
+  {
+    "case": "cancel",
+    "message": "取消任务，不要继续生成",
+    "expected": {
+      "plan_action": "cancel"
+    },
+    "answer": {
+      "type": "choice",
+      "choice": "execute",
+      "probabilities": {
+        "execute": 0.5242,
+        "wait": 0.2302,
+        "cancel": 0.2456
+      },
+      "confidence": 0.0702,
+      "action": {
+        "act_probability": 1.0
+      }
+    },
+    "correct": false,
+    "app_output": "text",
+    "seconds": 0.491,
+    "model": "laya-rl-agent",
+    "usage": {
+      "input_tokens": 392,
+      "output_tokens": 0
+    },
+    "response": {
+      "model": "laya-rl-agent",
+      "answers": {
+        "output": {
+          "type": "choice",
+          "choice": "video",
+          "probabilities": {
+            "text": 0.0001,
+            "image": 0.0013,
+            "video": 0.9959,
+            "clarify": 0.0027
+          },
+          "confidence": 0.9787,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "continuation": {
+          "type": "choice",
+          "choice": "continue",
+          "probabilities": {
+            "continue": 0.5633,
+            "new": 0.4367
+          },
+          "confidence": 0.0116,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "plan_action": {
+          "type": "choice",
+          "choice": "execute",
+          "probabilities": {
+            "execute": 0.5242,
+            "wait": 0.2302,
+            "cancel": 0.2456
+          },
+          "confidence": 0.0702,
+          "action": {
+            "act_probability": 1.0
+          }
+        },
+        "chain": {
+          "type": "choice",
+          "choice": "step",
+          "probabilities": {
+            "auto": 0.0264,
+            "step": 0.9736
+          },
+          "confidence": 0.8239,
+          "action": {
+            "act_probability": 1.0
+          }
+        }
+      },
+      "usage": {
+        "input_tokens": 392,
+        "output_tokens": 0
+      },
+      "routing": {
+        "model": "multilingual",
+        "repo": "/opt/models/multilingual",
+        "reason": "explicit model='multilingual'",
+        "detection": null,
+        "workflow": null
+      }
+    }
+  }
+]

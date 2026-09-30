@@ -87,3 +87,30 @@ def test_standard_stream_passes_through_and_partial_arguments_are_completed():
         NS(type="response.completed", response=NS(output=[target])),
     ])
     assert calls(output) == {"fc_1": target.arguments}
+
+
+def test_completed_assistant_text_is_recovered_without_duplicate_deltas():
+    text = '{"approved":true,"findings":[]}'
+    message = NS(type="message", content=[NS(type="output_text", text=text)])
+    reasoning = NS(type="reasoning", id="rs_1")
+    for prefix in ("", text[:8], text):
+        output = normalized([
+            *([NS(type="response.output_text.delta", delta=prefix)] if prefix else []),
+            NS(type="response.completed", response=NS(output=[reasoning, message])),
+        ])
+        assert "".join(e.delta for e in output if e.type == "response.output_text.delta") == text
+
+
+def test_conflicting_completed_text_is_not_appended_to_a_corrupt_verdict():
+    import pytest
+    with pytest.raises(ValueError, match="文本增量与完整结果不一致"):
+        normalized([NS(type="response.output_text.delta", delta="wrong"),
+            NS(type="response.completed", response=NS(output=[NS(type="message",
+                content=[NS(type="output_text", text="correct")])]))])
+
+
+def test_incomplete_reasoning_does_not_become_a_successful_empty_answer():
+    import pytest
+    with pytest.raises(RuntimeError, match="输出预算耗尽"):
+        normalized([NS(type="response.incomplete", response=NS(
+            incomplete_details=NS(reason="max_output_tokens")))])

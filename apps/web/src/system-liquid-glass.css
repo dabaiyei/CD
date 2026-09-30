@@ -1,5 +1,20 @@
 /* Shared glass tokens also reach Reka portals mounted outside AppShell.
    Auth pages retain their video backgrounds and existing login treatment. */
+.app-shell .agent-studio--director .agent-message--user .agent-message__content {
+  color: var(--ink);
+  background: var(--glass-panel);
+  border: 1px solid var(--glass-edge);
+  border-radius: 16px 16px 4px 16px;
+  padding: 12px 14px;
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
+.app-shell .agent-studio--director .agent-message--assistant .agent-message__content {
+  color: var(--ink); background: transparent; border: 0; box-shadow: none;
+  line-height: 1.8; overflow-wrap: anywhere;
+}
+.app-shell .agent-studio--director .agent-message__body { min-width: 0; }
+.app-shell .agent-studio--director .agent-message { max-width: 100%; }
 :root:has(.app-shell--glass-system) {
   --glass-panel: rgba(220, 234, 249, .66);
   --glass-ink: #142b46;
@@ -590,8 +605,29 @@
 }
 
 @media (max-width: 760px) {
-  :root .app-shell.app-shell--glass-system { --topbar-height: 70px; --shell-edge-gap: 8px; }
+  :root .app-shell.app-shell--glass-system {
+    --topbar-height: calc(70px + env(safe-area-inset-top, 0px));
+    --shell-edge-gap: 8px;
+  }
+  /* Keep a flow spacer even on the fixed-height chat page: removing the
+     header from flow must not expand the thread underneath the navigation. */
+  :root .app-shell.app-shell--glass-system .shell-main::before {
+    content: '';
+    display: block;
+    height: var(--topbar-height);
+    flex: 0 0 var(--topbar-height);
+    pointer-events: none;
+  }
   :root .app-shell.app-shell--glass-system .topbar.topbar--scene {
+    position: fixed;
+    top: calc(10px + env(safe-area-inset-top, 0px));
+    right: var(--shell-edge-gap);
+    left: var(--shell-edge-gap);
+    z-index: 40;
+    width: auto;
+    height: 50px;
+    min-height: 50px;
+    margin: 0;
     border-radius: 18px;
   }
   :root .app-shell.app-shell--glass-workspace .workspace-agent-stage--home .agent-empty-guide__surface {

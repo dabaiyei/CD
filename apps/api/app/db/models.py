@@ -39,6 +39,26 @@ class TimestampMixin:
     updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utc_now, onupdate=utc_now)
 
 
+class JevConfiguration(Base, TimestampMixin):
+    __tablename__ = "jev_configurations"
+
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True)
+    enabled: Mapped[bool] = mapped_column(Boolean, default=False)
+    encrypted_api_key: Mapped[str | None] = mapped_column(Text, nullable=True)
+    model: Mapped[str] = mapped_column(String(120), default="jev-1.13.0")
+    timeout_seconds: Mapped[float] = mapped_column(Float, default=8.0)
+    route_confidence: Mapped[float] = mapped_column(Float, default=0.65)
+
+
+class JevPlatformSettings(Base, TimestampMixin):
+    __tablename__ = "jev_platform_settings"
+
+    tenant_id: Mapped[str] = mapped_column(ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True)
+    provider: Mapped[str] = mapped_column(String(40), default="typesafe")
+    # Only encrypted credentials are persisted in these per-platform profiles.
+    profiles: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+
 class UserRole(enum.StrEnum):
     ADMIN = "admin"
     USER = "user"

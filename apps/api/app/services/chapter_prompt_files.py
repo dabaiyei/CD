@@ -14,7 +14,7 @@ from sqlalchemy import select
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import defer
 
-from app.db.models import Chapter, ProjectFile, ProjectFileKind, StoryboardShot, StoryboardVersion, User
+from app.db.models import Asset, Chapter, ProjectFile, ProjectFileKind, StoryboardShot, StoryboardVersion, User
 from app.domain.schemas import StoryboardShotCreate, StoryboardShotUpdate
 
 
@@ -61,6 +61,11 @@ async def sync_chapter_prompt_files(
         ).all()
     )
     extras = {row.get("order_index"): row for row in (board.content or [])}
+    asset_ids = {aid for shot in shots for aid in (shot.asset_ids or [])}
+    asset_names = dict((await session.execute(select(Asset.id, Asset.name).where(
+        Asset.id.in_(asset_ids), Asset.project_id == board.project_id,
+        Asset.tenant_id == board.tenant_id, Asset.user_id == board.user_id,
+    ))).all())
     rows = []
     for shot in shots:
         row = dict(extras.get(shot.order_index, {}))
@@ -70,6 +75,15 @@ async def sync_chapter_prompt_files(
         row.update(
             shot_id=shot.id, order_index=shot.order_index, duration_seconds=float(shot.duration_seconds)
         )
+        previous = {b['id']: b['name'] for b in row.get('asset_bindings', [])
+                    if isinstance(b, dict) and b.get('id') and b.get('name')}
+        old_ids, old_names = extras.get(shot.order_index, {}).get('asset_ids', []), row.get('asset_names', [])
+        if len(old_ids) == len(old_names):
+            previous.update(zip(old_ids, old_names, strict=True))
+        row['asset_bindings'] = [{'id': aid, 'name': asset_names.get(aid) or previous.get(aid, '')}
+                                 for aid in (shot.asset_ids or [])]
+        # Keep the legacy parallel fields aligned when shot bindings are edited.
+        row['asset_names'] = [b['name'] for b in row['asset_bindings']]
         rows.append(row)
     # Keep the structured board in agreement with manual/per-shot updates too.
     board.content = [{key: value for key, value in row.items() if key != "shot_id"} for row in rows]

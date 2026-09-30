@@ -155,6 +155,7 @@ async def list_tasks(
         AITask.tenant_id == user.tenant_id,
         AITask.user_id == user.id,
         AITask.task_type != "agent_memory_maintenance",
+        func.coalesce(AITask.request_payload["task_center_hidden"].as_boolean(), False).is_(False),
     )
     if project_id:
         query = query.where(AITask.project_id == project_id)
@@ -185,12 +186,22 @@ async def clear_tasks(
         "failed": {TaskStatus.FAILED, TaskStatus.CANCELLED},
         "completed": {TaskStatus.SUCCEEDED},
     }[group]
+    # Replica tasks are also durable projects/checkpoints, not disposable events.
+    replicas = (await session.scalars(select(AITask).where(
+        AITask.tenant_id == user.tenant_id,
+        AITask.user_id == user.id,
+        AITask.status.in_(statuses),
+        AITask.task_type.startswith("video_replica_", autoescape=True),
+    ).with_for_update())).all()
+    for task in replicas:
+        task.request_payload = {**task.request_payload, "task_center_hidden": True}
     await session.execute(
         delete(AITask).where(
             AITask.tenant_id == user.tenant_id,
             AITask.user_id == user.id,
             AITask.status.in_(statuses),
             AITask.task_type != "agent_memory_maintenance",
+            ~AITask.task_type.startswith("video_replica_", autoescape=True),
         )
     )
     await session.commit()
@@ -215,7 +226,10 @@ async def delete_task(
     task = await task_for_user(session, task_id, user, for_update=True)
     if task.status not in TERMINAL_TASK_STATUSES:
         raise HTTPException(status_code=409, detail="只有已完成、失败或已取消的任务可以删除")
-    await session.delete(task)
+    if task.task_type.startswith("video_replica_"):
+        task.request_payload = {**task.request_payload, "task_center_hidden": True}
+    else:
+        await session.delete(task)
     await session.commit()
 
 
@@ -541,6 +555,7 @@ async def retry_task(
     task.result_payload = result
     task.status = TaskStatus.QUEUED
     task.error_message = None
+    task.request_payload = {k: v for k, v in task.request_payload.items() if k != "task_center_hidden"}
     if (
         task.task_type == "agent_chat_run"
         and task.request_payload.get("scope") == "personal"

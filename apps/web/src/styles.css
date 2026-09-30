@@ -1392,13 +1392,7 @@ img {
   font-size: 8px;
 }
 
-.task-timeline ol {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-}
-
-.task-timeline li {
+.task-timeline__row {
   position: relative;
   display: grid;
   min-height: 60px;
@@ -1406,9 +1400,10 @@ img {
   align-items: start;
   gap: 9px;
   padding: 8px 4px;
+  overflow-wrap: anywhere;
 }
 
-.task-timeline li:not(:last-child)::after {
+.task-timeline__row:not([data-last='true'])::after {
   position: absolute;
   top: 38px;
   bottom: -7px;
@@ -1418,7 +1413,7 @@ img {
   content: '';
 }
 
-.task-timeline li>span {
+.task-timeline__row>span {
   z-index: 1;
   display: inline-flex;
   width: 30px;
@@ -1430,35 +1425,35 @@ img {
   background: var(--surface-strong);
 }
 
-.task-timeline li[data-status='running']>span {
+.task-timeline__row[data-status='running']>span {
   color: var(--brand-strong);
   background: var(--brand-soft);
 }
 
-.task-timeline li[data-status='succeeded']>span {
+.task-timeline__row[data-status='succeeded']>span {
   color: var(--success);
   background: var(--success-soft);
 }
 
-.task-timeline li[data-status='failed']>span {
+.task-timeline__row[data-status='failed']>span {
   color: var(--danger);
   background: var(--danger-soft);
 }
 
-.task-timeline li strong {
+.task-timeline__row strong {
   display: block;
   padding-top: 1px;
   font-size: 10px;
   font-weight: 650;
 }
 
-.task-timeline li p {
+.task-timeline__row p {
   margin-top: 4px;
   color: var(--ink-tertiary);
   font-size: 8px;
 }
 
-.task-timeline li time {
+.task-timeline__row time {
   padding-top: 2px;
   color: var(--ink-tertiary);
   font-size: 8px;

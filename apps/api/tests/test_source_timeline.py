@@ -93,8 +93,12 @@ def test_pasted_script_timing_reaches_runtime_and_persists_after_retry(client, c
     class Runtime:
         async def run(self, request):
             calls.append(request)
-            assert "原始剧本时间轴约束" in request.system_prompt
-            assert "8—16秒" in request.system_prompt
+            # Retrieval-mode tasks expose stage rules as read-only evidence.
+            evidence = request.system_prompt + "\n" + "\n".join(
+                file.content for file in request.project_files if not file.editable
+            )
+            assert "原始剧本时间轴约束" in evidence
+            assert "8—16秒" in evidence
             content = "场一：林遥推门，相机回卷。" if len(calls) == 1 else source
             return AgentRuntimeResponse(session_id=request.session_id,
                 final_response=json.dumps({"title": "雨夜", "content": content, "review_notes": ""}),

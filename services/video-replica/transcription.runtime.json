@@ -1,0 +1,20 @@
+{
+  "format": "hypit.runtime-local@1",
+  "dataRoot": "../../runtime-data/video-replica-transcription",
+  "credentials": {},
+  "bindings": {},
+  "endpoints": {
+    "whisperx.local": {
+      "use": "@hypit/provider-whisperx-local",
+      "config": {
+        "expectedModel": "small",
+        "expectedDevice": "cpu",
+        "expectedCompute": "int8",
+        "expectedBatchSize": 4,
+        "alignmentLanguages": ["zh", "en"],
+        "modelCacheDirectory": "../hypit-speech/models",
+        "defaultConcurrency": 1
+      }
+    }
+  }
+}

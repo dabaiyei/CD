@@ -184,7 +184,7 @@ const selectedStoryboardId = ref('')
 const selectedVideoShotId = ref('')
 const selectedVideoShotIds = ref<string[]>([])
 const storyboardLoading = ref(false)
-const storyboardAction = ref<'generate' | 'activate' | 'video' | 'batchVideo' | 'videoPrompt' | 'save' | ''>('')
+const storyboardAction = ref<'generate' | 'activate' | 'video' | 'batchVideo' | 'videoPrompt' | 'save' | 'syncAssets' | ''>('')
 const automaticWorkflow = ref<DirectorWorkflowDetail | null>(null)
 const automationAction = ref<'start' | 'stop' | ''>('')
 const shotEditorOpen = ref(false)
@@ -973,6 +973,26 @@ async function loadStoryboards(chapterId: string): Promise<void> {
   } finally {
     storyboardLoading.value = false
   }
+}
+
+async function syncStoryboardAssetImages(): Promise<void> {
+  if (!selectedChapter.value || !storyboardDetail.value || storyboardAction.value) return
+  const chapterId = selectedChapter.value.id
+  const boardId = storyboardDetail.value.version.id
+  storyboardAction.value = 'syncAssets'
+  try {
+    const result = await api<{ updated: number; total: number; skipped: number[]; repaired_bindings: number; unresolved: number[] }>(
+      `/projects/${projectId.value}/chapters/${chapterId}/storyboards/${boardId}/sync-asset-images`,
+      { method: 'POST' },
+    )
+    await Promise.all([loadStoryboards(chapterId), refreshAssets(), refreshProjectFiles(projectId.value)])
+    toast.show('资产参考图已同步', {
+      message: `已更新 ${result.updated} / ${result.total} 个镜头，修复 ${result.repaired_bindings} 处资产绑定${result.skipped.length ? `，${result.skipped.length} 个镜头无可用资产图` : ''}${result.unresolved.length ? `；镜头 ${result.unresolved.join('、')} 的资产关联仍不明确，请编辑镜头绑定` : ''}。已生成视频保持不变。`,
+      tone: result.unresolved.length ? 'error' : 'success',
+    })
+  } catch (error) {
+    toast.show('同步资产图失败', { message: error instanceof Error ? error.message : undefined, tone: 'error' })
+  } finally { storyboardAction.value = '' }
 }
 
 async function selectStoryboard(storyboardId: string): Promise<void> {
@@ -2337,6 +2357,8 @@ function fileSize(bytes: number): string {
           :automatic-workflow="automaticWorkflow"
           :automation-action="automationAction"
           :automation-locked="automationLocked"
+          :syncing-assets="storyboardAction === 'syncAssets'"
+          @sync-assets="syncStoryboardAssetImages"
           @open-assets="openAssetLibrary()"
           @edit-script="openScriptEditor"
           @select-script="selectedScriptId = $event"
@@ -2497,6 +2519,7 @@ function fileSize(bytes: number): string {
           </header>
 
           <div v-if="storyboards.length" class="storyboard-version-bar">
+            <button v-if="storyboardDetail?.version.is_active" class="button button--secondary" type="button" :disabled="Boolean(storyboardAction) || automationLocked || busyShotIds.size > 0 || busyVideoPromptShotIds.size > 0" title="将当前章节的分镜图和视频参考图替换为所绑定资产的当前版本；不重新生成视频" @click="syncStoryboardAssetImages"><LoaderCircle v-if="storyboardAction === 'syncAssets'" class="spin" :size="15" /><RefreshCw v-else :size="15" />同步最新资产图</button>
             <span><History :size="15" />版本历史</span>
             <div><button v-for="item in storyboards" :key="item.id" type="button" :class="{ active: selectedStoryboardId === item.id }" @click="selectStoryboard(item.id)"><strong class="tabular-nums">v{{ item.version }}</strong><small>{{ item.is_active ? '当前生效' : item.invalidated_reason ? '历史版本' : '可切换' }}</small><CircleCheckBig v-if="item.is_active" :size="14" /></button></div>
             <button v-if="storyboardDetail && !storyboardDetail.version.is_active" class="button button--secondary" type="button" :disabled="storyboardAction === 'activate'" @click="activateStoryboardVersion"><Check :size="15" />设为生效</button>

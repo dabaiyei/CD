@@ -688,8 +688,24 @@ async def queue_video_concat(
     user: User = Depends(get_current_user),
     session: AsyncSession = Depends(get_session),
 ) -> dict:
+    task, event = await prepare_video_concat(session, project_id=project_id,
+        chapter_id=chapter_id, storyboard_id=storyboard_id, user=user)
+    await session.commit()
+    if event is not None:
+        await publish_task_event(task, event)
+        await enqueue_task(task.id)
+    return {"id": task.id, "status": task.status.value}
+
+
+async def prepare_video_concat(session: AsyncSession, *, project_id: str,
+                             chapter_id: str, storyboard_id: str, user: User):
+    """Prepare/reuse a concat job; caller owns the transaction and dispatch."""
     from app.services.video_concat import CONCAT_VERSION
 
+    await session.execute(update(StoryboardVersion).where(
+        StoryboardVersion.id == storyboard_id, StoryboardVersion.user_id == user.id,
+        StoryboardVersion.tenant_id == user.tenant_id,
+    ).values(updated_at=StoryboardVersion.updated_at).execution_options(synchronize_session=False))
     chapter, storyboard = await storyboard_for_user(
         session,
         project_id=project_id,
@@ -753,7 +769,7 @@ async def queue_video_concat(
                     await materialize_media_file((task.result_payload or {})["storage_key"])
                 except (FileNotFoundError, ValueError, KeyError):
                     continue
-            return {"id": task.id, "status": task.status.value}
+            return task, None
     task = AITask(
         tenant_id=user.tenant_id,
         user_id=user.id,
@@ -776,10 +792,7 @@ async def queue_video_concat(
     event = record_task_event(
         session, task, status=TaskStatus.QUEUED, progress=0, message="视频拼接已进入队列"
     )
-    await session.commit()
-    await publish_task_event(task, event)
-    await enqueue_task(task.id)
-    return {"id": task.id, "status": task.status.value}
+    return task, event
 
 
 @router.get(
@@ -956,6 +969,33 @@ async def activate_storyboard(
     await session.commit()
     await session.refresh(storyboard)
     return storyboard
+
+
+@router.post("/{project_id}/chapters/{chapter_id}/storyboards/{storyboard_id}/sync-asset-images")
+async def sync_storyboard_asset_images(
+    project_id: str,
+    chapter_id: str,
+    storyboard_id: str,
+    user: User = Depends(get_current_user),
+    session: AsyncSession = Depends(get_session),
+) -> dict:
+    chapter, storyboard = await storyboard_for_user(
+        session, project_id=project_id, chapter_id=chapter_id, storyboard_id=storyboard_id, user=user,
+    )
+    await require_chapter_writable(session, chapter, user)
+    if not storyboard.is_active or storyboard.script_version_id != chapter.active_script_version_id:
+        raise HTTPException(409, "请先启用当前剧本对应的分镜版本再同步资产图")
+    pending = (await session.scalars(select(AITask).where(
+        AITask.project_id == project_id, AITask.user_id == user.id,
+        AITask.status.in_([TaskStatus.QUEUED, TaskStatus.RUNNING]),
+    ))).all()
+    if any((task.request_payload or {}).get("chapter_id") == chapter_id for task in pending):
+        raise HTTPException(409, "本章仍有任务排队或生成中，请等待完成或停止任务后再同步")
+    from app.services.storyboard_reference_sync import sync_asset_images
+
+    result = await sync_asset_images(session, storyboard)
+    await session.commit()
+    return result
 
 
 @router.get(
