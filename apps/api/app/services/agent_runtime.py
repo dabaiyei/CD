@@ -67,7 +67,7 @@ class AgentRuntimeRequest(BaseModel):
     conversation_summary: str | None = None
     recent_messages: list[dict[str, str]] = Field(default_factory=list)
     project_files: list[AgentRuntimeProjectFileSnapshot] = Field(default_factory=list)
-    attachments: list[AgentRuntimeAttachment] = Field(default_factory=list)
+    attachments: list[AgentRuntimeAttachment] = Field(default_factory=list, max_length=50)
     documents: list[AgentRuntimeDocument] = Field(default_factory=list)
 
 
@@ -163,6 +163,9 @@ async def raise_for_runtime_status(response: httpx.Response) -> None:
             if has_project_path_issue
             else "Agent Runtime 请求校验失败，请联系管理员检查运行时契约"
         )
+        if any(isinstance(issue, dict) and "attachments" in issue.get("loc", [])
+               and issue.get("type") == "too_long" for issue in issues):
+            message = "本次 AI 任务图片附件超过 Runtime 上限（最多 50 张）"
         if any(isinstance(issue, dict) and issue.get("type") == "string_too_long"
                and any(field in issue.get("loc", []) for field in ("prompt", "system_prompt"))
                for issue in issues):

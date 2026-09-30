@@ -146,6 +146,24 @@ test("生成状态查询由当前激活网页返回", async (t) => {
     assert.deepEqual(await result, { total: 1, tasks: [{ id: "image-1", status: "running" }] });
 });
 
+test("视频抽帧、分析与结果读取由绑定画布执行，不被其他网页接收", async (t) => {
+    const session = new CanvasSession();
+    const first = connect(session, "first");
+    const second = connect(session, "second");
+    t.after(() => { first.close(); second.close(); });
+    for (const name of ["canvas_extract_video_frames", "canvas_analyze_video", "canvas_get_video_analysis", "canvas_extract_audio", "canvas_mux_audio", "canvas_trim_video", "canvas_create_video_replica"]) {
+        const result = session.callTool(name, { nodeId: "video-1", start: 0, end: 2, segmentIndex: 0 }, "first");
+        const calls = first.events("tool_call");
+        const call = calls[calls.length - 1];
+        assert.equal(field(call, "name"), name);
+        assert.equal(second.event("tool_call"), undefined);
+        const requestId = String(field(call, "requestId"));
+        assert.equal(session.resolveResult("second", { requestId, result: "wrong canvas" }), false);
+        assert.equal(session.resolveResult("first", { requestId, result: { nodeId: "analysis-1" } }), true);
+        assert.deepEqual(await result, { nodeId: "analysis-1" });
+    }
+});
+
 test("活动网页关闭后回退到仍连接的画布", async (t) => {
     const session = new CanvasSession();
     const first = connect(session, "first");

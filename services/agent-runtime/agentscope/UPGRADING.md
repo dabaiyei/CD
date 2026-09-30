@@ -1,5 +1,7 @@
 # Upgrading AgentScope
 
+Image attachments now allow up to 50 per run, matching the API request contract and canvas reference limit. Upgrade API and Runtime together to avoid older Runtime instances rejecting requests with more than four images. This does not change the provider model's own visual capability or reference limits.
+
 The retrieval extension adds `tool_mode=retrieval` and optional `documents` to v2 requests. Upgrade API, Worker and AgentScope Runtime together; older runtimes reject these fields. Install the full Runtime dependency list (including ripgrep, ast-grep-py and MarkItDown), rebuild the web client for document attachments, and retain the old runtime until in-flight runs finish. No database migration is required. Verify `tests/test_retrieval_tools.py` and API `test_retrieval_context.py` / `test_chat_documents.py` in addition to the checks below.
 
 1. Review upstream release notes and source changes for `Agent`, `reply_stream`, events, `AgentState`, `LocalWorkspace`, Skills, OpenAI credentials, tools and permissions.

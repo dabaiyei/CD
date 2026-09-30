@@ -8,6 +8,13 @@ const generationModeSchema = z.enum(["text", "image", "video", "audio"]);
 
 /** Canvas Agent 对外提供的工具名称。 */
 export const toolNames = [
+    "canvas_extract_audio",
+    "canvas_mux_audio",
+    "canvas_trim_video",
+    "canvas_create_video_replica",
+    "canvas_extract_video_frames",
+    "canvas_analyze_video",
+    "canvas_get_video_analysis",
     "site_navigate",
     "canvas_list_projects",
     "canvas_get_state",
@@ -90,6 +97,13 @@ const generationFlowSchema = z.object({
 });
 
 export const toolInputSchemas = {
+    canvas_extract_audio: z.object({ nodeId: z.string(), start: z.number().nonnegative().optional(), end: z.number().positive().optional() }),
+    canvas_mux_audio: z.object({ nodeId: z.string(), audioNodeId: z.string().optional(), audioStart: z.number().nonnegative().optional(), offset: z.number().nonnegative().optional() }),
+    canvas_trim_video: z.object({ nodeId: z.string(), start: z.number().nonnegative(), end: z.number().positive() }),
+    canvas_create_video_replica: z.object({ nodeId: z.string(), segmentIndex: z.number().int().nonnegative() }),
+    canvas_extract_video_frames: z.object({ nodeId: z.string(), count: z.number().int().min(2).max(32).optional(), start: z.number().nonnegative().optional(), end: z.number().positive().optional(), sampling: z.enum(['adaptive','uniform']).optional(), times: z.array(z.number().nonnegative()).min(1).max(32).optional() }),
+    canvas_analyze_video: z.object({ nodeId: z.string(), prompt: z.string().optional(), model: z.string().optional(), referenceNodeIds: z.array(z.string()).optional(), count: z.number().int().min(2).max(32).optional(), start: z.number().nonnegative().optional(), end: z.number().positive().optional(), sampling: z.enum(['adaptive','uniform']).optional(), times: z.array(z.number().nonnegative()).min(1).max(32).optional() }),
+    canvas_get_video_analysis: z.object({ nodeId: z.string() }),
     site_navigate: z.object({ path: z.string() }),
     canvas_list_projects: z.object({ keyword: z.string().optional(), page: z.number().optional(), pageSize: z.number().optional() }),
     canvas_get_state: z.object({}).passthrough(),
@@ -127,6 +141,13 @@ export const toolInputSchemas = {
 } satisfies Record<ToolName, z.AnyZodObject>;
 
 export const toolDescriptions: Record<ToolName, string> = {
+    canvas_extract_audio: "本地提取视频节点原音轨，返回正在处理的音频 nodeId，用 generation_get_status 查询，完成后可播放/下载。start/end 是原片秒数，可选截取范围；保留原片，无模型调用。无音轨时报具体错误。",
+    canvas_mux_audio: "将指定音频封装到现有视频，返回正在处理的新视频 nodeId，用 generation_get_status 查询。替换原音轨，保持原画面与视频时长。audioNodeId 可指定当前画布音频；不指定时必须只有一条音频连入视频。audioStart 为从音频第几秒开始，offset 为从视频第几秒开始播放，短音频补静音，长音频截断。",
+    canvas_trim_video: "本地精确截取原视频 start–end 秒，保留画面比例、帧节奏和原音轨，返回正在处理的新视频参考节点 nodeId，用 generation_get_status 查询。原片不变。",
+    canvas_create_video_replica: "从已完成时间轴的结果文本节点 nodeId 创建第 segmentIndex 段复刻配置（从0计数），自动连接真实参考帧、替换身份图和时间轴；模型支持视频参考时自动截取并连接实际原片片段。返回配置 nodeId，之后用 canvas_run_generation 启动。图片额度不足明确报错，不静默丢失转场状态。",
+    canvas_extract_video_frames: "用本地 FFmpeg 提取当前画布视频节点的带时间戳关键帧，并创建与原视频连线的图片节点。无需原生视频理解模型；start/end 可指定分析范围，单次范围不超过180秒，count 默认16。原视频保留不变。",
+    canvas_analyze_video: "一体化视频解析：先本地提取带时间戳关键帧并保存成组，使用同一批画面证据调用视觉文本模型，输出连续结构化时间轴、动作/运镜/光线与复刻提示词。可指定 count/start/end；referenceNodeIds 关联人物替换图/要求。返回配置 nodeId、关键帧节点与关键帧组；必须用 canvas_get_video_analysis 读取完成结果。系统模型和自定义渠道均可用，不把每张关键帧拆成独立视频任务。",
+    canvas_get_video_analysis: "查询视频解析配置 nodeId，读取原视频、关键帧组、带时间戳图片节点、替换人物参考和每个结果的结构化 timeline。成功后应把本段对应的真实图片与时间轴一起连接到复刻配置，按当前视频模型的参考图/时长能力执行；首尾帧模型替换人物需先改图再生成。loading/idle 不代表完成。",
     site_navigate: "跳转网站页面。path 可为 / (首页)、/canvas (我的画布)、/canvas/:id (指定画布)、/image (生图工作台)、/video (视频创作台)、/prompts (提示词库)、/assets (我的素材)、/config (配置)。操作画布前若不在画布页，先用本工具打开画布。",
     canvas_list_projects: "列出用户全部画布（仅标题、创建/更新时间、节点数、连线数，不含完整数据），支持 keyword 搜索和 page/pageSize 分页。返回的 id 可配合 site_navigate 跳转到 /canvas/:id 打开对应画布。",
     canvas_get_state: "读取当前网页画布的节点、连线、选区和视口。",

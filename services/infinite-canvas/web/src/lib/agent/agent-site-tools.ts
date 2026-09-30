@@ -1,6 +1,8 @@
 import type { NavigateFunction } from "react-router-dom";
 
 import i18n from "@/i18n";
+import { analyzeVideo, extractVideoFrames, getVideoAnalysis, createVideoReplicaConfig } from '@/cineforge/video-analysis';
+import { startCanvasMedia } from '@/cineforge/media-processing';
 import { fetchPrompts } from "@/services/api/prompts";
 import { uploadImage } from "@/services/image-storage";
 import { imageAspectOptions, imageQualityOptions, imageScaleOptions } from "@/components/image-settings-panel";
@@ -16,6 +18,13 @@ import { useWorkbenchAgentStore } from "@/stores/use-workbench-agent-store";
 // Their data lives locally in the browser through localforage and Zustand, so this module accesses the relevant stores directly.
 
 export const SITE_TOOL_NAMES = [
+    "canvas_extract_audio",
+    "canvas_mux_audio",
+    "canvas_trim_video",
+    "canvas_create_video_replica",
+    "canvas_extract_video_frames",
+    "canvas_analyze_video",
+    "canvas_get_video_analysis",
     "canvas_list_projects",
     "generation_get_status",
     "workbench_image_get_config",
@@ -38,6 +47,13 @@ function siteText(key: string, options?: Record<string, unknown>) {
 }
 
 export const SITE_TOOL_LABELS: Record<SiteToolName, string> = {
+    canvas_extract_audio: '提取视频音轨',
+    canvas_mux_audio: '封装视频音轨',
+    canvas_trim_video: '截取原片参考',
+    canvas_create_video_replica: '创建视频复刻配置',
+    canvas_extract_video_frames: '提取视频关键帧',
+    canvas_analyze_video: '分析视频',
+    canvas_get_video_analysis: '读取视频分析结果',
     get canvas_list_projects() { return siteText("canvasList"); },
     get generation_get_status() { return siteText("generationStatus"); },
     get workbench_image_get_config() { return siteText("imageConfig"); },
@@ -56,6 +72,39 @@ type GenerationStatusItem = { id: string; source: "canvas" | "image" | "video"; 
 
 export async function runSiteTool(name: SiteToolName, input: SiteToolInput, navigate: NavigateFunction, context: SiteToolContext = {}): Promise<unknown> {
     switch (name) {
+        case 'canvas_extract_audio':
+        case 'canvas_mux_audio':
+        case 'canvas_trim_video':
+            return startCanvasMedia(String(input.nodeId || ''), name === 'canvas_extract_audio' ? 'extract_audio' : name === 'canvas_mux_audio' ? 'mux_audio' : 'trim_video', {
+                audioNodeId: typeof input.audioNodeId === 'string' ? input.audioNodeId : undefined,
+                start: typeof input.start === 'number' ? input.start : undefined,
+                end: typeof input.end === 'number' ? input.end : undefined,
+                audioStart: typeof input.audioStart === 'number' ? input.audioStart : undefined,
+                offset: typeof input.offset === 'number' ? input.offset : undefined,
+            });
+        case 'canvas_create_video_replica':
+            return createVideoReplicaConfig(String(input.nodeId || ''), Number(input.segmentIndex));
+        case 'canvas_extract_video_frames':
+            return extractVideoFrames(String(input.nodeId || ''), {
+                count: typeof input.count === 'number' ? input.count : undefined,
+                start: typeof input.start === 'number' ? input.start : undefined,
+                end: typeof input.end === 'number' ? input.end : undefined,
+                sampling: input.sampling === 'uniform' ? 'uniform' : 'adaptive',
+                times: Array.isArray(input.times) ? input.times as number[] : undefined,
+            });
+        case 'canvas_analyze_video':
+            return analyzeVideo(String(input.nodeId || ''), {
+                prompt: typeof input.prompt === 'string' ? input.prompt : undefined,
+                model: typeof input.model === 'string' ? input.model : undefined,
+                referenceNodeIds: Array.isArray(input.referenceNodeIds) ? input.referenceNodeIds.filter((id): id is string => typeof id === 'string') : [],
+                count: typeof input.count === 'number' ? input.count : undefined,
+                start: typeof input.start === 'number' ? input.start : undefined,
+                end: typeof input.end === 'number' ? input.end : undefined,
+                sampling: input.sampling === 'uniform' ? 'uniform' : 'adaptive',
+                times: Array.isArray(input.times) ? input.times as number[] : undefined,
+            });
+        case 'canvas_get_video_analysis':
+            return getVideoAnalysis(String(input.nodeId || ''));
         case "canvas_list_projects":
             return listCanvasProjects(input);
         case "generation_get_status":

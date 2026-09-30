@@ -6,6 +6,7 @@ import type { ReferenceAudio, ReferenceVideo } from "@/types/media";
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
 import { getGenerationResourceNodes, getGroupResourceNodes } from "@/lib/canvas/canvas-resource-references";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
+import { videoTimelineText } from '@/lib/canvas/video-analysis-result';
 
 export type NodeGenerationContext = {
     prompt: string;
@@ -40,19 +41,25 @@ export type NodeGenerationInput = NodeGenerationResourceInput | NodeGenerationGr
 export function buildNodeGenerationContext(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[], prompt: string): NodeGenerationContext {
     const inputs = buildNodeGenerationInputs(nodeId, nodes, connections);
     const sourceNode = nodes.find((node) => node.id === nodeId);
-    if (sourceNode?.type === CanvasNodeType.Config && Boolean(sourceNode.metadata?.composerContent?.trim())) {
-        return buildComposerGenerationContext(inputs, prompt);
+    if (sourceNode?.type === CanvasNodeType.Config && Boolean(sourceNode.metadata?.composerContent?.trim()) && !sourceNode.metadata?.videoAnalysis) {
+        const context = buildComposerGenerationContext(inputs, prompt);
+        if (inputs.some(input => nodes.find(n => n.id === input.nodeId)?.metadata?.videoAnalysis?.timeline)) {
+            context.prompt += `\n实际图片参考顺序：${context.referenceImages.map((image,index) => `${imageReferenceLabel(index)} = ${image.name}`).join('；')}。带秒数的图片是原片动作/机位证据，人物参考图用于替换身份。`;
+        }
+        return context;
     }
 
     const resourceInputs = flattenGenerationInputs(inputs);
+    const analysisNodes = resourceInputs.map(input => nodes.find(n => n.id === input.nodeId)).filter(n => n?.metadata?.videoAnalysis?.timeline);
     let textIndex = 0;
     const upstreamText = resourceInputs.flatMap((input) => (input.text ? [textBlock(generationLabel("text", textIndex++), input.text)] : [])).join("\n\n");
     const referenceImages = resourceInputs.map((input) => input.image).filter((image): image is ReferenceImage => Boolean(image));
-    const referenceVideos = resourceInputs.map((input) => input.video).filter((video): video is ReferenceVideo => Boolean(video));
+    const referenceVideos = resourceInputs.map((input) => input.video).filter((video): video is ReferenceVideo => Boolean(video)).map(video => ({ ...video,
+        evidence: sourceNode?.metadata?.videoAnalysis?.sourceNodeId === video.id ? sourceNode.metadata.videoAnalysis.evidence : video.evidence }));
     const referenceAudios = resourceInputs.map((input) => input.audio).filter((audio): audio is ReferenceAudio => Boolean(audio));
 
     return {
-        prompt: upstreamText ? `${prompt}\n\n${upstreamText}` : prompt,
+        prompt: (upstreamText ? `${prompt}\n\n${upstreamText}` : prompt) + (analysisNodes.length ? `\n实际图片参考顺序：${referenceImages.map((image,index) => `${imageReferenceLabel(index)} = ${image.name}`).join('；')}。带秒数的图片是原片动作/机位证据，人物参考图用于替换身份；不得把原片人物误当作替换人物。` : ''),
         referenceImages,
         referenceVideos,
         referenceAudios,
@@ -127,6 +134,13 @@ function buildComposerGenerationContext(inputs: NodeGenerationInput[], prompt: s
 
 export function buildNodeGenerationInputs(nodeId: string, nodes: CanvasNodeData[], connections: CanvasConnection[]): NodeGenerationInput[] {
     return getGenerationResourceNodes(nodeId, nodes, connections).flatMap((node): NodeGenerationInput[] => {
+        if (node.metadata?.videoAnalysis?.timeline) {
+            const analysis = node.metadata.videoAnalysis;
+            const times = analysis.timeline!.segments.flatMap(segment => segment.frameTimes);
+            const ids = [...analysis.evidence.frames.filter(frame => times.includes(frame.at)).map(frame => frame.nodeId), ...analysis.referenceNodeIds];
+            const children = [node, ...ids.flatMap(id => nodes.filter(n => n.id === id)).flatMap(n => n.type === CanvasNodeType.Group ? getGroupResourceNodes(n.id,nodes) : [n])].flatMap(readNodeGenerationResource);
+            return [{ nodeId: node.id, title: node.title, type: 'group', children }];
+        }
         if (node.type === CanvasNodeType.Group) {
             const children = getGroupResourceNodes(node.id, nodes).flatMap(readNodeGenerationResource);
             return children.length ? [{ nodeId: node.id, type: "group", title: node.title, children }] : [];
@@ -141,6 +155,7 @@ function flattenGenerationInputs(inputs: NodeGenerationInput[]) {
 }
 
 function readNodeGenerationResource(node: CanvasNodeData): NodeGenerationResourceInput[] {
+    if (node.metadata?.videoAnalysis?.timeline) return [{ nodeId: node.id, type: 'text', title: node.title, text: videoTimelineText(node.metadata.videoAnalysis) }];
     const image = readReferenceImage(node);
     if (image) return [{ nodeId: node.id, type: "image", title: node.title, image }];
     const video = readReferenceVideo(node);
@@ -175,6 +190,7 @@ export async function hydrateNodeGenerationContext(context: NodeGenerationContex
 }
 
 function readNodeTextInput(node: CanvasNodeData) {
+    if (node.metadata?.videoAnalysis?.timeline) return videoTimelineText(node.metadata.videoAnalysis);
     if (node.type === CanvasNodeType.Text) return node.metadata?.content || node.metadata?.prompt || "";
     return node.metadata?.prompt || "";
 }

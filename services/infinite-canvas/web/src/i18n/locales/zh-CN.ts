@@ -395,6 +395,10 @@ export default {
         },
         localStorage: {
             title: "IndexedDB 存储使用情况",
+            cacheTitle: "浏览器本地缓存",
+            serverDescription: "此处仅统计当前浏览器的本地数据；画布、素材和账号配置保存在服务端，不计入这里。",
+            unavailable: "浏览器未提供",
+            unavailableHint: "当前浏览器或访问方式不支持容量估算",
             description: "查看 Infinite Canvas 在浏览器中保存的数据量，并按对象仓库统计内容体积。",
             indexedDbUsage: "IndexedDB 占用",
             siteUsage: "站点总占用",

@@ -395,6 +395,10 @@ export default {
         },
         localStorage: {
             title: "IndexedDB storage usage",
+            cacheTitle: "Browser local cache",
+            serverDescription: "Only local data in this browser is counted here. Canvas, media and account settings are stored on the server and excluded.",
+            unavailable: "Not available",
+            unavailableHint: "Storage estimates are unavailable in this browser or access context",
             description: "View browser data saved by Infinite Canvas, grouped by object store.",
             indexedDbUsage: "IndexedDB usage",
             siteUsage: "Total site usage",

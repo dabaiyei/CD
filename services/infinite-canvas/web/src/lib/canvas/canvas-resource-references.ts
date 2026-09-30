@@ -3,6 +3,7 @@ import i18n from "@/i18n";
 import { getNodeDefinition } from "@/lib/canvas/node-registry";
 import { getDataUrlByteSize, readImageMeta } from "@/lib/image-utils";
 import { imageToDataUrl } from "@/services/image-storage";
+import { videoTimelineText } from '@/lib/canvas/video-analysis-result';
 import { CanvasNodeType, type CanvasConnection, type CanvasNodeData } from "@/types/canvas";
 
 export type CanvasResourceKind = "image" | "video" | "audio" | "text";
@@ -132,6 +133,7 @@ function isResourceNode(node: CanvasNodeData) {
 }
 
 function resourceText(node: CanvasNodeData): string | undefined {
+    if (node.metadata?.videoAnalysis?.timeline) return videoTimelineText(node.metadata.videoAnalysis);
     if (node.type === CanvasNodeType.Text) return node.metadata?.content || node.metadata?.prompt;
     const resource = getNodeDefinition(node.type)?.resource?.(node);
     return resource?.kind === "text" ? resource.text : undefined;

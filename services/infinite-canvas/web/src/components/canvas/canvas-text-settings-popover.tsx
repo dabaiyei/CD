@@ -8,6 +8,7 @@ import { reasoningEffortLabel, TextSettingsPanel } from "@/components/text-setti
 import { canvasThemes } from "@/lib/canvas-theme";
 import { useThemeStore } from "@/stores/use-theme-store";
 import type { AiConfig, ReasoningEffort } from "@/stores/use-config-store";
+import { CanvasSettingsSurface } from './canvas-settings-surface';
 
 type CanvasTextSettingsPopoverProps = {
     config: AiConfig;
@@ -70,7 +71,7 @@ function TextSettingsPortal({ buttonRect, panelRef, placement, theme, config, co
     onCountChange?: (count: number) => void;
 }) {
     const { t } = useTranslation();
-    const width = 356;
+    const width = Math.min(356, window.innerWidth - 24);
     const gap = 8;
     const margin = 12;
     const alignRight = placement?.endsWith("Right");
@@ -91,7 +92,7 @@ function TextSettingsPortal({ buttonRect, panelRef, placement, theme, config, co
     } as const;
 
     return createPortal(
-        <div ref={panelRef} style={style} onPointerDown={(event) => event.stopPropagation()} onMouseDown={(event) => event.stopPropagation()} onClick={(event) => event.stopPropagation()}>
+        <CanvasSettingsSurface panelRef={panelRef} style={style}>
             <TextSettingsPanel config={config} onConfigChange={onConfigChange} theme={theme} />
             {onCountChange ? (
                 <div className="mt-4 space-y-2.5">
@@ -99,7 +100,7 @@ function TextSettingsPortal({ buttonRect, panelRef, placement, theme, config, co
                     <InputNumber className="w-full" min={1} max={15} precision={0} value={count} onChange={(value) => onCountChange(value || 1)} />
                 </div>
             ) : null}
-        </div>,
+        </CanvasSettingsSurface>,
         document.body,
     );
 }

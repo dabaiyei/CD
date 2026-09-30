@@ -7,7 +7,9 @@ import { useAgentStore } from '@/stores/use-agent-store';
 import { createCanvasNode } from '@/lib/canvas/canvas-node-factory';
 import { CanvasNodeType } from '@/types/canvas';
 import { imageToDataUrl } from '@/services/image-storage';
-import { canvasText } from './generation';
+import { requestImageQuestion } from '@/services/api/image';
+import { videoTimelineText } from '@/lib/canvas/video-analysis-result';
+import { getGroupResourceNodes } from '@/lib/canvas/canvas-resource-references';
 import type { AiTextMessage } from '@/services/api/image';
 
 const store = localforage.createInstance({ name: 'infinite-canvas', storeName: 'assistant_messages' });
@@ -38,11 +40,25 @@ export function PlatformAssistant({ projectId, open, onClose }: { projectId: str
         setBusy(true);
         controller.current = new AbortController();
         try {
+            const resources = new Map(selected.map(node => [node.id,node]));
+            for (const node of selected) {
+                const analysis = node.metadata?.videoAnalysis;
+                if (!analysis?.timeline) continue;
+                const times = analysis.timeline.segments.flatMap(segment => segment.frameTimes);
+                for (const id of [...analysis.evidence.frames.filter(frame => times.includes(frame.at)).map(frame => frame.nodeId), ...analysis.referenceNodeIds]) {
+                    const reference = snapshot.nodes.find(item => item.id === id);
+                    if (reference) {
+                        for (const resource of reference.type === CanvasNodeType.Group ? getGroupResourceNodes(reference.id,snapshot.nodes) : [reference]) resources.set(resource.id,resource);
+                    }
+                }
+            }
             for (const node of selected.slice(0, 8)) {
-                instructions.push({ type: 'text', text: `节点 ${node.title}：${String(node.metadata?.prompt || node.metadata?.content || '').slice(0, 2000)}` });
+                const analysis = node.metadata?.videoAnalysis;
+                instructions.push({ type: 'text', text: `节点 ${node.title}：${analysis?.timeline ? videoTimelineText(analysis) : String(node.metadata?.prompt || node.metadata?.content || '').slice(0, 2000)}` });
             }
             const inputs: Exclude<AiTextMessage['content'], string> = [...instructions];
-            for (const node of selected.filter(node => node.type === CanvasNodeType.Image).slice(0, 5)) {
+            for (const node of [...resources.values()].filter(node => node.type === CanvasNodeType.Image)) {
+                inputs.push({ type: 'text', text: `参考图片 ${node.title}${node.metadata?.videoFrame ? `（原片 ${node.metadata.videoFrame.at} 秒画面证据）` : '（用户提供的图片参考）'}` });
                 const url = await imageToDataUrl({ storageKey: node.metadata?.storageKey, dataUrl: node.metadata?.content || '' });
                 inputs.push({ type: 'image_url', image_url: { url } });
             }
@@ -51,7 +67,11 @@ export function PlatformAssistant({ projectId, open, onClose }: { projectId: str
             // Only this canvas's recent conversation and explicitly selected nodes are sent.
             await store.setItem(projectId, next);
             setMessages(next); setPrompt('');
-            const answer = await canvasText({ ...config, model: config.textModel }, history, () => {}, { signal: controller.current.signal });
+            const answer = await requestImageQuestion({ ...config, model: config.textModel }, history, () => {}, {
+                signal: controller.current.signal,
+                videos: selected.filter(node => node.type === CanvasNodeType.Video).map(node => ({
+                    storageKey: node.metadata?.storageKey, url: node.metadata?.content, name: node.title })),
+            });
             const complete: Message[] = [...next, { id: nanoid(), role: 'assistant', content: answer }];
             await store.setItem(projectId, complete);
             setMessages(complete);
@@ -65,7 +85,7 @@ export function PlatformAssistant({ projectId, open, onClose }: { projectId: str
         message.success('已加入文本节点，可连线继续生成');
     }
     return <Drawer title="画布助手" open={open} onClose={onClose} size={Math.min(420, window.innerWidth)} styles={{body:{padding:16,display:'flex',flexDirection:'column',gap:16,minHeight:0}}}>
-        <p className="platform-assistant-hint">选中人物图或文本节点后提问，助手会参考这些节点。回复可以加入画布继续创作。</p>
+        <p className="platform-assistant-hint">选中视频、人物图或文本节点后提问。视频会自动提取带时间戳关键帧供视觉文本模型分析，回复可加入画布继续创作。</p>
         <div className="platform-assistant-messages">{messages.map(item => <article key={item.id} className={`platform-assistant-message ${item.role}`}><small>{item.role === 'user' ? '你' : '画布助手'}</small><p>{item.content}</p>{item.role === 'assistant' && <Button size="small" onClick={() => addText(item.content)}>加入文本节点</Button>}</article>)}{busy && <p role="status">正在分析当前画布…</p>}</div>
         <Input.TextArea value={prompt} onChange={event=>setPrompt(event.target.value)} autoSize={{minRows:3,maxRows:6}} placeholder="描述想法、分析选中图片或完善生成提示词…" disabled={!loaded} />
         <div style={{display:'flex',justifyContent:'flex-end',gap:8}}>{busy && <Button onClick={()=>controller.current?.abort()}>停止</Button>}<Button type="primary" disabled={busy || !loaded || !prompt.trim()} onClick={()=>void send()}>发送</Button></div>

@@ -477,7 +477,8 @@ def parse_review(text: str, indices: set[int], all_count: int, *, evidence_indic
     return review
 
 
-async def review_board(request, runtime_factory, *, shots, script, state, save, progress, concurrency=2):
+async def review_board(request, runtime_factory, *, shots, script, state, save, progress,
+                       concurrency=2, incremental=False):
     """Checkpoint each review immediately; fingerprints include adjacent context and rules."""
     from app.services.task_worker import DirectorReviewPayload
     from app.services.jev_control import controller, local_review, local_review_scope, LOCAL_SCOPE
@@ -548,7 +549,7 @@ async def review_board(request, runtime_factory, *, shots, script, state, save, 
             await save(state)
 
     async def check_unit(number, unit):
-        nonlocal manifest
+        nonlocal manifest, stopped
         indices = {row["order_index"] for row in unit["shots"]}
         key = unit_key(unit)
         coverage_rows = [row for row in shots if row["order_index"] in unit["scene_shot_indices"]]
@@ -607,6 +608,8 @@ async def review_board(request, runtime_factory, *, shots, script, state, save, 
                         cached[key] = review
                         await save(state)
                     await progress(f"第 {number}/{len(units)} 批 · JEV已保存 {len(local_findings)} 项局部问题")
+                    if incremental:
+                        stopped = True
                     return review
             triage_hint = local_review_scope(deferred)
         scoped_request = request
@@ -820,10 +823,34 @@ async def review_board(request, runtime_factory, *, shots, script, state, save, 
         await progress(f"第 {number}/{len(units)} 批已保存："
                        + ("审核通过" if review["approved"] else f"发现 {len(review['findings'])} 项问题")
                        + f"；当前已保存 {len(cached)}/{len(units)} 批")
+        if incremental and not review["approved"]:
+            stopped = True
         return review
 
-    pending = iter(enumerate(units, 1))
+    # Restore valid paid verdicts before scheduling any model calls. Enumerating
+    # cached units as fresh work produced a misleading "starting from batch 1"
+    # stream on retries even when every cached result was actually reused.
     results, errors = {}, []
+    remaining = []
+    for number, unit in enumerate(units, 1):
+        key = unit_key(unit)
+        if key in cached:
+            indices = {row["order_index"] for row in unit["shots"]}
+            evidence_rows = unit["neighbors"] + unit["asset_history"]
+            if unit["coverage_only"]:
+                evidence_rows += [row for row in shots if row["order_index"] in unit["scene_shot_indices"]]
+            try:
+                results[number] = parse_review(json.dumps(cached[key], ensure_ascii=False),
+                    indices, len(shots), evidence_indices={row["order_index"] for row in evidence_rows})
+                continue
+            except (ValueError, TypeError, RuntimeError):
+                cached.pop(key, None)
+        remaining.append((number, unit))
+    if results:
+        await persist()
+        await progress(f"已恢复 {len(results)}/{len(units)} 批审核结果；"
+                       f"仅继续剩余 {len(remaining)} 批，已完成批次不重复调用模型")
+    pending = iter(remaining)
     stopped = False
     consecutive_failures = 0
 
@@ -864,7 +891,10 @@ async def review_board(request, runtime_factory, *, shots, script, state, save, 
                 seen.add(identity)
                 findings.append(finding)
     approved = all(review["approved"] for review in reviews)
-    summary = f"已完成 {len(units)} 批、{len(all_indices)} 镜审核，发现 {len(findings)} 项问题"
+    processed_units = len(results)
+    summary = f"本轮完成 {processed_units}/{len(units)} 批、{len(all_indices)} 镜审核，发现 {len(findings)} 项问题"
+    if processed_units < len(units) and not errors:
+        summary += f"；已暂停后续 {len(units) - processed_units} 批，先修复当前问题"
     # Keep all blocking findings first if the public contract's limit is reached.
     findings.sort(key=lambda f: {"blocking": 0, "major": 1, "minor": 2}[f["severity"]])
     output = DirectorReviewPayload.model_validate({"approved": approved, "summary": summary,

@@ -111,7 +111,7 @@ def test_dns_rejects_nonpublic_answers(monkeypatch):
     mock_client(monkeypatch, handler)
     with pytest.raises(httpx.ConnectError, match="no public address"):
         asyncio.run(jev_transport.post(JevSettings(True, "secret", provider="opencode_zen"), {}))
-    assert len(calls) == 2
+    assert len(calls) == 2 * (jev_transport._CONNECT_RETRIES + 1)
 
 
 def test_typesafe_does_not_use_zen_dns(monkeypatch):
@@ -124,4 +124,20 @@ def test_typesafe_does_not_use_zen_dns(monkeypatch):
     mock_client(monkeypatch, handler)
     with pytest.raises(httpx.ConnectError):
         asyncio.run(jev_transport.post(JevSettings(True, "secret"), {}))
-    assert len(calls) == 1
+    assert len(calls) == jev_transport._CONNECT_RETRIES + 1
+
+
+def test_transient_tls_failure_retries_before_inference_and_recovers(monkeypatch):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        if len(calls) == 1:
+            raise httpx.ConnectError("temporary TLS handshake failure")
+        return httpx.Response(200, json={"answers": {}})
+
+    mock_client(monkeypatch, handler)
+    result = asyncio.run(jev_transport.post(JevSettings(True, "secret"), {"state": "local shot"}))
+    assert result == {"answers": {}}
+    assert len(calls) == 2
+    assert all(request.url.host == "api.typesafe.ai" for request in calls)

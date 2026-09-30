@@ -164,6 +164,90 @@ def test_exhausted_review_resumes_durable_results():
     assert [u["shots"][0]["order_index"] for u in working.calls] == [7]
 
 
+def test_jev_outage_after_44_batches_restores_only_remaining_12(monkeypatch):
+    from app.services import jev_control
+    from app.services.retrieval_context import automatic_request
+
+    state, saved, calls, messages = {}, {}, [], []
+    unavailable = True
+
+    async def controller(tenant, checkpoint):
+        return SimpleNamespace(policy_key="same-provider-and-policy")
+
+    async def local_review(control, row, *, deferred):
+        calls.append(("jev", row["order_index"]))
+        if unavailable and row["order_index"] == 45:
+            raise jev_control.JevTransientPending("连接暂时失败")
+        return []
+
+    async def save(value):
+        saved.clear()
+        saved.update(json.loads(json.dumps(value)))
+
+    async def progress(message):
+        messages.append(message)
+
+    class DirectRuntime:
+        async def run(self, req):
+            calls.append(("model", 0))
+            return SimpleNamespace(final_response=json.dumps({
+                "approved": True, "summary": "通过", "findings": []}), manifest={})
+
+    monkeypatch.setattr(jev_control, "controller", controller)
+    monkeypatch.setattr(jev_control, "local_review", local_review)
+    req = automatic_request(request(), rules="既有规则")
+    kwargs = dict(shots=shots(56), script="雨夜街道", save=save, progress=progress, concurrency=1)
+    with pytest.raises(jev_control.JevTransientPending):
+        asyncio.run(review_board(req, DirectRuntime, state=state, **kwargs))
+    assert len(saved["completed"]) == 44
+    unavailable = False
+    calls.clear()
+    messages.clear()
+    # A real worker restart reloads JSON from the database, not live objects.
+    restored = json.loads(json.dumps(saved))
+    result, _ = asyncio.run(review_board(req, DirectRuntime, state=restored, **kwargs))
+    assert result.approved and len(restored["completed"]) == 56
+    assert [index for kind, index in calls if kind == "jev"] == list(range(45, 57))
+    assert sum(kind == "model" for kind, _ in calls) == 12
+    assert "已恢复 44/56" in messages[0] and "剩余 12" in messages[0]
+    assert not any("复用第 1/" in message for message in messages)
+
+
+def test_incremental_review_stops_at_first_major_finding():
+    class FindingRuntime:
+        def __init__(self):
+            self.calls = []
+
+        async def run(self, req):
+            unit = json.loads(req.prompt.split("本批数据：", 1)[1].split("\n上次响应错误", 1)[0])
+            index = unit["shots"][0]["order_index"]
+            self.calls.append(index)
+            finding = {
+                "severity": "major", "shot_indices": [index],
+                "context_shot_indices": [], "fields": ["action_description"],
+                "location": f"镜头 {index}", "issue": "动作衔接断裂",
+                "suggestion": "补齐入镜动作",
+            }
+            return SimpleNamespace(final_response=json.dumps({
+                "approved": False, "summary": "需要局部修复", "findings": [finding]
+            }), manifest={})
+
+    runtime = FindingRuntime()
+    state, messages = {}, []
+
+    async def progress(message):
+        messages.append(message)
+
+    result, _ = asyncio.run(review_board(
+        request(), lambda: runtime, shots=shots(70), script="连续场景", state=state,
+        save=noop, progress=progress, concurrency=1, incremental=True,
+    ))
+    assert not result.approved
+    assert runtime.calls == [1]
+    assert len(state["completed"]) == 1
+    assert "暂停后续" in result.summary
+
+
 def test_repair_rechecks_only_changed_batch_and_boundary_context():
     state, runtime = {}, Runtime()
     run(runtime, state)

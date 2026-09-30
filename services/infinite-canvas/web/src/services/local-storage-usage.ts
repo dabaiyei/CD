@@ -1,16 +1,28 @@
 export type IndexedDbStoreUsage = { name: string; records: number; bytes: number };
 export type IndexedDbDatabaseUsage = { name: string; version: number; bytes: number; stores: IndexedDbStoreUsage[] };
-export type LocalStorageUsage = { usage: number; quota: number; contentBytes: number; databases: IndexedDbDatabaseUsage[] };
+export type LocalStorageUsage = { usage: number | null; quota: number | null; contentBytes: number; databases: IndexedDbDatabaseUsage[] };
 
 export async function readLocalStorageUsage(): Promise<LocalStorageUsage> {
-    const [estimate, database] = await Promise.all([navigator.storage.estimate(), readDatabaseUsage("infinite-canvas")]);
-    return { usage: estimate.usage!, quota: estimate.quota!, contentBytes: database.bytes, databases: [database] };
+    const [estimate, database] = await Promise.all([
+        navigator.storage?.estimate ? navigator.storage.estimate().catch(() => null) : null,
+        readDatabaseUsage("infinite-canvas"),
+    ]);
+    const { usage, quota } = estimate || {};
+    return { usage: typeof usage === "number" && Number.isFinite(usage) ? usage : null,
+        quota: typeof quota === "number" && Number.isFinite(quota) && quota > 0 ? quota : null,
+        contentBytes: database?.bytes ?? 0, databases: database ? [database] : [] };
 }
 
 function readDatabaseUsage(name: string) {
-    return new Promise<IndexedDbDatabaseUsage>((resolve, reject) => {
+    return new Promise<IndexedDbDatabaseUsage | null>((resolve, reject) => {
         const request = indexedDB.open(name);
-        request.onerror = () => reject(request.error);
+        let missing = false;
+        // Statistics must not create an empty database when data is stored on the server.
+        request.onupgradeneeded = () => {
+            missing = true;
+            request.transaction?.abort();
+        };
+        request.onerror = () => missing ? resolve(null) : reject(request.error);
         request.onsuccess = () => {
             const database = request.result;
             const names = Array.from(database.objectStoreNames);

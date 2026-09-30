@@ -8,6 +8,7 @@ export type ReferenceVideo = {
     width?: number;
     height?: number;
     durationMs?: number;
+    evidence?: import('./canvas').CanvasVideoEvidence;
 };
 
 export type ReferenceAudio = {

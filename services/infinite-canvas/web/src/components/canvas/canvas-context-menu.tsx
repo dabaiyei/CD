@@ -1,6 +1,8 @@
 import { useEffect } from "react";
 import type { ReactNode } from "react";
-import { BetweenHorizontalStart, GalleryHorizontalEnd, GalleryHorizontal, Group, Plus, Trash2, Ungroup } from "lucide-react";
+import { BetweenHorizontalStart, GalleryHorizontalEnd, GalleryHorizontal, Group, Plus, Trash2, Ungroup, ScanEye } from "lucide-react";
+import { analyzeVideo, extractVideoFrames } from '@/cineforge/video-analysis';
+import { App } from 'antd';
 import { useTranslation } from "react-i18next";
 
 import { canvasThemes } from "@/lib/canvas-theme";
@@ -11,6 +13,7 @@ import type { VideoFramePosition } from "@/lib/canvas/canvas-video-frame";
 export function CanvasNodeContextMenu({ menu, canCaptureVideoFrame, canGroup, canUngroup, onClose, onCaptureVideoFrame, onDuplicate, onGroup, onUngroup, onDelete }: { menu: ContextMenuState; canCaptureVideoFrame: boolean; canGroup?: boolean; canUngroup?: boolean; onClose: () => void; onCaptureVideoFrame: (position: VideoFramePosition) => void; onDuplicate: () => void; onGroup?: () => void; onUngroup?: () => void; onDelete: () => void }) {
     const { t } = useTranslation();
     const theme = canvasThemes[useThemeStore((state) => state.theme)];
+    const { message } = App.useApp();
 
     useEffect(() => {
         const close = (event: PointerEvent) => {
@@ -30,6 +33,16 @@ export function CanvasNodeContextMenu({ menu, canCaptureVideoFrame, canGroup, ca
         >
             {canCaptureVideoFrame ? (
                 <>
+                    <MenuButton icon={<ScanEye className="size-4" />} label="分析视频 / 复刻提示词" onClick={() => {
+                        if (menu.type !== 'node') return;
+                        try { analyzeVideo(menu.nodeId); onClose(); } catch (error) { message.error(String(error)); }
+                    }} />
+                    <MenuButton icon={<GalleryHorizontal className="size-4" />} label="提取时间戳关键帧" onClick={() => {
+                        if (menu.type !== 'node') return;
+                        onClose();
+                        const dismiss = message.loading('正在提取关键帧…', 0);
+                        void extractVideoFrames(menu.nodeId).then(() => message.success('关键帧已加入画布')).catch(error => message.error(String(error))).finally(dismiss);
+                    }} />
                     <MenuButton icon={<BetweenHorizontalStart className="size-4" />} label={t("canvas.videoFrames.first")} onClick={() => onCaptureVideoFrame("first")} />
                     <MenuButton icon={<GalleryHorizontalEnd className="size-4" />} label={t("canvas.videoFrames.last")} onClick={() => onCaptureVideoFrame("last")} />
                     <MenuButton icon={<GalleryHorizontal className="size-4" />} label={t("canvas.videoFrames.current")} onClick={() => onCaptureVideoFrame("current")} />

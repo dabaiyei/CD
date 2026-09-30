@@ -148,7 +148,7 @@ class AgentRunRequest(ContractModel):
     conversation_summary: str | None = Field(default=None, max_length=50_000)
     recent_messages: list[ConversationMessage] = Field(default_factory=list, max_length=20)
     project_files: list[ProjectFileSnapshot] = Field(default_factory=list, max_length=200)
-    attachments: list[Attachment] = Field(default_factory=list, max_length=4)
+    attachments: list[Attachment] = Field(default_factory=list, max_length=50)
     documents: list[DocumentSnapshot] = Field(default_factory=list, max_length=8)
 
     @field_validator("tenant_id", "project_id", "task_id", "session_id")

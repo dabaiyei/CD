@@ -1,6 +1,7 @@
 import axios from "axios";
 import { canvasImages, canvasText } from '@/cineforge/generation';
 import { isManagedModel } from '@/stores/use-config-store';
+import { withVideoEvidence } from '@/cineforge/video-analysis';
 
 import i18n from "@/i18n";
 import { buildApiUrl, resolveModelRequestConfig, resolveModelScript, withLocalProxy, type AiConfig, type ModelChannel } from "@/stores/use-config-store";
@@ -854,7 +855,8 @@ export async function requestEdit(config: AiConfig, prompt: string, references: 
     }
 }
 
-export async function requestImageQuestion(config: AiConfig, messages: AiTextMessage[], onDelta: (text: string) => void, options?: RequestOptions) {
+export async function requestImageQuestion(config: AiConfig, messages: AiTextMessage[], onDelta: (text: string) => void, options?: RequestOptions & { videos?: Array<{ storageKey?: string; url?: string; name?: string }> }) {
+    messages = await withVideoEvidence(messages, options?.videos || [], options?.signal);
     if (isManagedModel(config, config.model || config.textModel)) return canvasText(config, messages, onDelta, options);
     const requestConfig = resolveModelRequestConfig(config, config.model || config.textModel);
     const script = resolveModelScript(config, config.model || config.textModel);

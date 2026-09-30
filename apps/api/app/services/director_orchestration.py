@@ -973,7 +973,12 @@ async def _queue_review(
         refs = {
             "chapter_id": workflow.chapter_id,
             "storyboard_version_id": workflow.storyboard_version_id,
+            "automatic_review": bool(workflow.automation_mode),
         }
+        if (workflow.context_snapshot or {}).get("storyboard_review_cache"):
+            refs["storyboard_review_cache"] = copy.deepcopy(
+                workflow.context_snapshot["storyboard_review_cache"]
+            )
         task_type = "director_storyboard_review"
         message = "分镜审核"
     task, event, _ = await _queue_child(
@@ -1651,6 +1656,14 @@ def _review_has_blocking_findings(result: dict[str, Any]) -> bool:
     )
 
 
+def _is_stale_storyboard_repair_error(message: str | None) -> bool:
+    text = str(message or "")
+    return (
+        "分镜或资产提取版本已切换" in text
+        or "分镜修复结果已作废" in text
+    )
+
+
 def _increment_workflow_counter(workflow: DirectorWorkflowRun, key: str) -> int:
     snapshot = dict(workflow.context_snapshot or {})
     value = int(snapshot.get(key) or 0) + 1
@@ -1706,21 +1719,24 @@ async def _queue_automatic_repair(
         if is_script
         else DirectorWorkflowStage.STORYBOARD_REPAIRING
     )
+    request_payload = {
+        "chapter_id": workflow.chapter_id,
+        "repair_mode": "full" if blocking and is_script else "partial",
+        "feedback": str(result.get("summary") or "请修复审核发现的问题"),
+        "script_version_id": workflow.script_version_id,
+        "storyboard_version_id": workflow.storyboard_version_id,
+        "review": child.details,
+        "automatic_review": True,
+        "version_count": version_count,
+    }
+    if target == "storyboard" and result.get("storyboard_review_cache"):
+        request_payload["storyboard_review_cache"] = copy.deepcopy(result["storyboard_review_cache"])
     task, event, _ = await _queue_child(
         session,
         workflow,
         kind="script_repair" if is_script else "storyboard_repair",
         task_type="director_script_repair" if is_script else "director_storyboard_repair",
-        request_payload={
-            "chapter_id": workflow.chapter_id,
-            "repair_mode": "full" if blocking and is_script else "partial",
-            "feedback": str(result.get("summary") or "请修复审核发现的问题"),
-            "script_version_id": workflow.script_version_id,
-            "storyboard_version_id": workflow.storyboard_version_id,
-            "review": child.details,
-            "automatic_review": True,
-            "version_count": version_count,
-        },
+        request_payload=request_payload,
         message="剧本自动修复" if is_script else "分镜自动修复",
         parent=child,
     )
@@ -2123,6 +2139,53 @@ async def _advance_director_task_terminal(task_id: str) -> None:
             )
             child.summary = task.error_message or "子智能体执行未完成"
             child.details = {**child.details, "error": task.error_message or ""}
+            if child.kind == "storyboard_repair" and _is_stale_storyboard_repair_error(
+                task.error_message
+            ):
+                # A repair request is tied to the board it read. Once another
+                # repair or a manual version switch makes that board inactive,
+                # retrying the same payload can never succeed and used to create
+                # an unbounded retry chain. Rebase the workflow to the current
+                # active board and review that board once, carrying its valid
+                # checkpoint along when possible.
+                latest_board = await session.scalar(
+                    select(StoryboardVersion)
+                    .where(
+                        StoryboardVersion.tenant_id == workflow.tenant_id,
+                        StoryboardVersion.user_id == workflow.user_id,
+                        StoryboardVersion.project_id == workflow.project_id,
+                        StoryboardVersion.chapter_id == workflow.chapter_id,
+                        StoryboardVersion.is_active.is_(True),
+                    )
+                    .order_by(StoryboardVersion.version.desc())
+                    .limit(1)
+                )
+                if latest_board is not None:
+                    workflow.storyboard_version_id = latest_board.id
+                    snapshot = dict(workflow.context_snapshot or {})
+                    checkpoint = task.request_payload.get("storyboard_review_cache")
+                    if checkpoint:
+                        snapshot["storyboard_review_cache"] = copy.deepcopy(checkpoint)
+                    workflow.context_snapshot = snapshot
+                    workflow.stage = DirectorWorkflowStage.STORYBOARD_REVIEWING
+                    workflow.status = DirectorWorkflowStatus.RUNNING
+                    workflow.current_task_id = None
+                    workflow.last_error = None
+                    workflow.last_message = (
+                        "检测到分镜版本已切换，已切换到最新版本重新审核；"
+                        "已停止重试旧修复任务"
+                    )
+                    queued.append(
+                        await _queue_review(session, workflow, target="storyboard", parent=child)
+                    )
+                else:
+                    workflow.stage = DirectorWorkflowStage.FAILED
+                    workflow.status = DirectorWorkflowStatus.FAILED
+                    workflow.current_task_id = None
+                    workflow.last_error = "分镜版本已切换，当前没有可用的生效分镜"
+                    workflow.last_message = "分镜版本已切换，请重新生成或选择一个生效分镜后继续"
+                await _commit_and_dispatch(session, queued)
+                return
             from app.services.jev_control import pending as jev_pending
             from app.services.storyboard_preparation import budget_blocked
             input_blocked = budget_blocked(task.error_message)
@@ -2294,6 +2357,11 @@ async def _advance_director_task_terminal(task_id: str) -> None:
             if workflow.automation_mode:
                 _increment_workflow_counter(workflow, "storyboard_version_count")
             workflow.context_snapshot = {**(workflow.context_snapshot or {}), "assets_for_storyboard_review": True}
+            if result.get("storyboard_review_cache"):
+                workflow.context_snapshot = {
+                    **workflow.context_snapshot,
+                    "storyboard_review_cache": copy.deepcopy(result["storyboard_review_cache"]),
+                }
             queued.extend(await _queue_asset_preparation(session, workflow))
         elif child.kind == "storyboard_review":
             approved = bool(result.get("approved"))

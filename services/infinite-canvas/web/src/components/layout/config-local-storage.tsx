@@ -40,7 +40,9 @@ export function ConfigLocalStorage({ active }: { active: boolean }) {
     }, [active, refresh, usage]);
 
     const indexedDbBytes = usage?.contentBytes ?? 0;
-    const percent = usage ? Math.min(100, (usage.usage / usage.quota) * 100) : 0;
+    const percent = usage?.usage != null && usage.quota != null ? Math.min(100, (usage.usage / usage.quota) * 100) : null;
+    const integrated = Boolean(window.cineforgeCanvas);
+    const unavailable = t("config.localStorage.unavailable");
 
     return (
         <div className="space-y-3">
@@ -49,9 +51,9 @@ export function ConfigLocalStorage({ active }: { active: boolean }) {
                     <div>
                         <div className="flex items-center gap-2 text-sm font-semibold">
                             <Database className="size-4" />
-                            {t("config.localStorage.title")}
+                            {t(integrated ? "config.localStorage.cacheTitle" : "config.localStorage.title")}
                         </div>
-                        <div className="mt-1 text-xs text-stone-500">{t("config.localStorage.description")}</div>
+                        <div className="mt-1 text-xs text-stone-500">{t(integrated ? "config.localStorage.serverDescription" : "config.localStorage.description")}</div>
                     </div>
                     <Button icon={<RefreshCw className="size-4" />} loading={loading} onClick={() => void refresh()}>
                         {t("config.localStorage.refresh")}
@@ -64,16 +66,16 @@ export function ConfigLocalStorage({ active }: { active: boolean }) {
                     <>
                         <div className="mt-4 grid gap-3 sm:grid-cols-3">
                             <StorageMetric icon={<Database className="size-4" />} label={t("config.localStorage.indexedDbUsage")} value={formatStorageBytes(indexedDbBytes)} hint={t("config.localStorage.contentEstimate")} />
-                            <StorageMetric icon={<HardDrive className="size-4" />} label={t("config.localStorage.siteUsage")} value={formatStorageBytes(usage.usage)} hint={t("config.localStorage.siteUsageHint")} />
-                            <StorageMetric icon={<Layers3 className="size-4" />} label={t("config.localStorage.quota")} value={formatStorageBytes(usage.quota)} hint={t("config.localStorage.quotaHint")} />
+                            <StorageMetric icon={<HardDrive className="size-4" />} label={t("config.localStorage.siteUsage")} value={usage.usage == null ? unavailable : formatStorageBytes(usage.usage)} hint={t(usage.usage == null ? "config.localStorage.unavailableHint" : "config.localStorage.siteUsageHint")} />
+                            <StorageMetric icon={<Layers3 className="size-4" />} label={t("config.localStorage.quota")} value={usage.quota == null ? unavailable : formatStorageBytes(usage.quota)} hint={t(usage.quota == null ? "config.localStorage.unavailableHint" : "config.localStorage.quotaHint")} />
                         </div>
-                        <div className="mt-4">
+                        {percent != null ? <div className="mt-4">
                             <div className="mb-1 flex justify-between text-xs text-stone-500">
                                 <span>{t("config.localStorage.quotaProgress")}</span>
                                 <span className="tabular-nums">{percent.toFixed(2)}%</span>
                             </div>
                             <Progress percent={percent} showInfo={false} />
-                        </div>
+                        </div> : null}
                     </>
                 ) : null}
             </section>

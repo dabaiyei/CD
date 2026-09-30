@@ -46,8 +46,38 @@ def test_transport_failure_is_explicit_pending_not_model_fallback(monkeypatch):
         raise httpx.ReadTimeout("timeout")
 
     monkeypatch.setattr(module, "post", post)
-    with pytest.raises(module.JevDecisionPending, match="未转交其它模型"):
+    with pytest.raises(module.JevTransientPending, match="连接暂时失败"):
         asyncio.run(module.chat_intent(module.Controller(config()), {"message": "讨论"}))
+
+
+def test_provider_503_is_resumable_and_does_not_discard_checkpoint(monkeypatch):
+    async def post(*args):
+        request = httpx.Request("POST", "https://opencode.ai/zen/v1/systemone")
+        raise httpx.HTTPStatusError("temporarily unavailable", request=request,
+                                    response=httpx.Response(503, request=request))
+
+    monkeypatch.setattr(module, "post", post)
+    with pytest.raises(module.JevTransientPending, match="HTTP 503"):
+        asyncio.run(module.Controller(config()).choose(
+            "单镜局部审核", {"shot_index": 44},
+            {"frame_layout": module.choice("是否修改", {"edit": "修改", "keep": "保留"})},
+        ))
+
+
+@pytest.mark.parametrize("status", [400, 401, 403, 422])
+def test_jev_auth_and_contract_errors_require_configuration_fix(monkeypatch, status):
+    async def post(*args):
+        request = httpx.Request("POST", "https://opencode.ai/zen/v1/systemone")
+        raise httpx.HTTPStatusError("configuration error", request=request,
+                                    response=httpx.Response(status, request=request))
+
+    monkeypatch.setattr(module, "post", post)
+    with pytest.raises(module.JevDecisionPending) as error:
+        asyncio.run(module.Controller(config()).choose(
+            "单镜局部审核", {"shot_index": 44},
+            {"frame_layout": module.choice("是否修改", {"edit": "修改", "keep": "保留"})},
+        ))
+    assert not isinstance(error.value, module.JevTransientPending)
 
 
 def test_rate_limit_is_distinguished_from_configuration_failure(monkeypatch):

@@ -76,8 +76,15 @@ async def main():
                             assert payload["protocolVersion"] == 6
                             hello.set()
                         elif event == "tool_call":
-                            assert payload["name"] == "canvas_apply_ops"
-                            for operation in payload["input"]["ops"]:
+                            is_video_result = (
+                                payload["name"] == "canvas_get_video_analysis"
+                            )
+                            assert (
+                                is_video_result or payload["name"] == "canvas_apply_ops"
+                            )
+                            for operation in (
+                                [] if is_video_result else payload["input"]["ops"]
+                            ):
                                 assert operation["type"] == "add_node"
                                 snapshot["nodes"].append(
                                     {
@@ -94,7 +101,20 @@ async def main():
                                 params=params,
                                 json={
                                     "requestId": payload["requestId"],
-                                    "result": snapshot,
+                                    "result": (
+                                        {
+                                            "nodeId": "analysis-probe",
+                                            "status": "success",
+                                            "results": [
+                                                {
+                                                    "nodeId": "probe-node",
+                                                    "text": "视频分析完成",
+                                                }
+                                            ],
+                                        }
+                                        if is_video_result
+                                        else snapshot
+                                    ),
                                 },
                             )
                             response.raise_for_status()
@@ -160,6 +180,15 @@ async def main():
             assert any(
                 tool["name"] == "canvas_generate_video" for tool in listing["tools"]
             )
+            assert {
+                "canvas_extract_video_frames",
+                "canvas_analyze_video",
+                "canvas_get_video_analysis",
+                "canvas_extract_audio",
+                "canvas_mux_audio",
+                "canvas_trim_video",
+                "canvas_create_video_replica",
+            } <= {tool["name"] for tool in listing["tools"]}
             written = await rpc(
                 {
                     "jsonrpc": "2.0",
@@ -193,6 +222,25 @@ async def main():
             )
             print(
                 f"Live same-origin SSE and {len(listing['tools'])} MCP tools: read/write/result roundtrip passed; no inference sent"
+            )
+            video_read = await rpc(
+                {
+                    "jsonrpc": "2.0",
+                    "id": 5,
+                    "method": "tools/call",
+                    "params": {
+                        "name": "canvas_get_video_analysis",
+                        "arguments": {"nodeId": "analysis-probe"},
+                    },
+                }
+            )
+            assert not video_read.get("isError"), video_read
+            assert (
+                json.loads(video_read["content"][0]["text"])["results"][0]["text"]
+                == "视频分析完成"
+            )
+            print(
+                "Video analysis MCP tool routed through live same-origin SSE and returned the browser result"
             )
         finally:
             receiving.cancel()

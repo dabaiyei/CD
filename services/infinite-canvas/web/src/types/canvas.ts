@@ -44,6 +44,25 @@ export type CanvasNodeText = {
     content: string;
 };
 
+export type CanvasVideoEvidence = {
+    duration: number; start: number; end: number; has_audio: boolean;
+    source_key: string; source_revision: number;
+    frames: Array<{ storageKey: string; at: number; nodeId?: string; role?: string }>;
+    sheets: Array<{ storageKey: string }>;
+    sampling?: 'adaptive' | 'uniform' | 'exact';
+    transitions?: Array<{ at: number; before: number; after: number; score: number }>;
+    transition_count?: number;
+};
+export type CanvasVideoSegment = {
+    start: number; end: number; description: string; action: string;
+    camera: string; lighting: string; videoPrompt: string; frameTimes: number[];
+};
+export type CanvasVideoAnalysis = {
+    sourceNodeId: string; groupNodeId: string; referenceNodeIds: string[];
+    evidence: CanvasVideoEvidence;
+    timeline?: { summary: string; segments: CanvasVideoSegment[] };
+};
+
 export type CanvasNodeMetadata = {
     content?: string;
     composerContent?: string;
@@ -85,6 +104,9 @@ export type CanvasNodeMetadata = {
     videoTaskProvider?: "openai" | "gemini";
     groupId?: string;
     interactive?: boolean; // Plugin node interaction/move state; see CanvasNodeDefinition.interactionToggle.
+    videoAnalysis?: CanvasVideoAnalysis;
+    videoFrame?: { sourceNodeId: string; at: number; sourceRevision: number };
+    mediaSource?: { nodeId: string; operation: 'extract_audio' | 'mux_audio' | 'trim_video'; start: number; end: number; audioNodeId?: string; audioStart?: number; offset?: number };
 };
 
 export type CanvasNodeData = {

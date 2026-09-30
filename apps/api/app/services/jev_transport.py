@@ -12,6 +12,7 @@ _request_lock_loop = None
 _last_request_at = 0.0
 _MIN_INTERVAL_SECONDS = 0.35
 _RATE_LIMIT_RETRIES = 3
+_CONNECT_RETRIES = 2
 
 
 def _lock():
@@ -33,8 +34,17 @@ async def post(config, payload, *, timeout=None):
                 await asyncio.sleep(wait)
             _last_request_at = time.monotonic()
             try:
-                async with asyncio.timeout(seconds):
-                    return await _post(config, payload, seconds)
+                for connection_attempt in range(_CONNECT_RETRIES + 1):
+                    try:
+                        async with asyncio.timeout(seconds):
+                            return await _post(config, payload, seconds)
+                    except (httpx.ConnectError, httpx.ConnectTimeout):
+                        # The inference has not been sent: retry the handshake,
+                        # including transient TLS failures. Never duplicate a
+                        # sent inference in this transport retry loop.
+                        if connection_attempt >= _CONNECT_RETRIES:
+                            raise
+                        await asyncio.sleep(0.35 * (2 ** connection_attempt))
             except httpx.HTTPStatusError as exc:
                 if exc.response.status_code != 429 or attempt >= _RATE_LIMIT_RETRIES:
                     raise

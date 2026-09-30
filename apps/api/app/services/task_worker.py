@@ -58,6 +58,7 @@ from app.db.models import (
     DialogueLine,
     DialogueVersion,
     DirectorChildRun,
+    DirectorChildStatus,
     DirectorDecisionRequest,
     DirectorWorkflowRun,
     Handbook,
@@ -1861,10 +1862,14 @@ async def run_claimed_task(
         with suppress(Exception):
             await on_director_task_terminal(task_id)
     except Exception as exc:
-        from app.services.jev_control import JevRateLimitPending
+        from app.services.jev_control import JevRateLimitPending, JevTransientPending
         if isinstance(exc, JevRateLimitPending):
             logger.warning("Task %s paused for JEV rate limiting; preserving checkpoint", task_id)
             await requeue_after_jev_rate_limit(task_id, str(exc))
+            return
+        if isinstance(exc, JevTransientPending):
+            logger.warning("Task %s paused for temporary JEV outage; preserving checkpoint", task_id)
+            await requeue_after_jev_transient(task_id, str(exc))
             return
         logger.exception("Task %s failed", task_id)
         await fail_task(task_id, _safe_error_message(exc))
@@ -1879,7 +1884,34 @@ async def run_claimed_task(
 
 async def requeue_after_jev_rate_limit(task_id: str, message: str, delay_seconds: float = 45) -> None:
     """Wait out provider throttling without turning a resumable task into failure."""
-    await record_progress(task_id, 35, f"JEV 供应商限流，已保存进度，{delay_seconds:g} 秒后自动重试")
+    await _requeue_after_jev_outage(task_id, message, delay_seconds,
+                                  reason="供应商限流", marker="jev_rate_limit")
+
+
+async def requeue_after_jev_transient(task_id: str, message: str, delay_seconds: float = 30) -> None:
+    """Resume after a temporary JEV connection/provider failure.
+
+    The task remains resumable and its storyboard review cache stays in the
+    request payload. Completed review units are therefore skipped after the
+    service or provider becomes reachable again.
+    """
+    await _requeue_after_jev_outage(task_id, message, delay_seconds,
+                                  reason="暂时不可用", marker="jev_transient")
+
+
+async def _requeue_after_jev_outage(task_id: str, message: str, delay_seconds: float,
+                                   *, reason: str, marker: str) -> None:
+    async with SessionLocal() as session:
+        task = await owned_task_for_update(session, task_id)
+        if not owns_running_task(task):
+            return
+        # Waiting/requeue events must not reset an 81%-complete review to 35%.
+        previous_progress = await session.scalar(select(TaskEvent.progress).where(
+            TaskEvent.task_id == task_id, TaskEvent.status == TaskStatus.RUNNING
+        ).order_by(TaskEvent.created_at.desc()).limit(1))
+        progress = min(99, max(0, int(previous_progress or 35)))
+    await record_progress(task_id, progress,
+                          f"JEV {reason}，已保存进度，{delay_seconds:g} 秒后自动重试")
     await asyncio.sleep(delay_seconds)
     async with SessionLocal() as session:
         task = await owned_task_for_update(session, task_id)
@@ -1892,15 +1924,15 @@ async def requeue_after_jev_rate_limit(task_id: str, message: str, delay_seconds
         task.error_message = None
         task.result_payload = {
             **(task.result_payload or {}),
-            "jev_rate_limit_waiting": False,
-            "jev_rate_limit_message": message,
+            marker + "_waiting": False,
+            marker + "_message": message,
         }
         event = record_task_event(
             session,
             task,
             status=TaskStatus.QUEUED,
-            progress=35,
-            message="JEV 限流等待结束，已自动重新入队并复用已保存断点",
+            progress=progress,
+            message=f"JEV {reason}等待结束，已自动重新入队并复用已保存断点",
         )
         await session.commit()
     await enqueue_task(task_id)
@@ -5809,6 +5841,7 @@ async def execute_director_storyboard_review_task(
     task_id: str,
     runtime_factory: RuntimeFactory,
 ) -> None:
+    automatic_review = False
     async with SessionLocal() as session:
         task = await owned_task_for_update(session, task_id)
         if not owns_running_task(task):
@@ -5819,6 +5852,11 @@ async def execute_director_storyboard_review_task(
         )
         if storyboard is None:
             raise RuntimeError("分镜审核目标已不存在")
+        workflow_id = str(task.request_payload.get("workflow_id") or "")
+        if workflow_id:
+            workflow = await session.get(DirectorWorkflowRun, workflow_id)
+            automatic_review = bool(workflow and workflow.automation_mode)
+        automatic_review = automatic_review or bool(task.request_payload.get("automatic_review"))
         script = await session.get(ScriptVersion, storyboard.script_version_id)
         script_content = (script.content if script else "") or ""
         project = await session.get(Project, storyboard.project_id)
@@ -5882,7 +5920,6 @@ async def execute_director_storyboard_review_task(
             if not review_state:
                 # Clearing the notification/task center must not discard paid
                 # review checkpoints retained by the chapter workflow.
-                from app.db.models import DirectorChildRun, DirectorChildStatus, DirectorWorkflowRun
                 durable = await session.scalar(
                     select(DirectorChildRun.output_refs)
                     .join(DirectorWorkflowRun, DirectorWorkflowRun.id == DirectorChildRun.workflow_id)
@@ -5917,7 +5954,9 @@ async def execute_director_storyboard_review_task(
 
     review, review_manifest = await review_board(
         request, runtime_factory, shots=shots, script=script_content, state=review_state,
-        save=save_review, progress=review_progress, concurrency=concurrency,
+        save=save_review, progress=review_progress,
+        concurrency=1 if automatic_review else concurrency,
+        incremental=automatic_review,
     )
     # Deterministic gates run after the model and only add advisory findings; the
     # model keeps its own verdict. Re-validating keeps a malformed merge from
@@ -6154,6 +6193,7 @@ async def execute_director_storyboard_repair_task(
             "shot_count": len(records),
             "summary": f"已调整 {changed_shot_count} 个镜头，共保留 {len(records)} 个镜头",
             "runtime_manifest": result.manifest,
+            "storyboard_review_cache": task.request_payload.get("storyboard_review_cache") or {},
         }
         event = record_task_event(
             session,

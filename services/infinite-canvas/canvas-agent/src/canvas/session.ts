@@ -26,6 +26,13 @@ type McpInventoryItem = { name: string; authStatus?: string };
 export const AGENT_PROTOCOL_VERSION = 6;
 
 const SITE_TOOLS = new Set<ToolName>([
+    "canvas_extract_audio",
+    "canvas_mux_audio",
+    "canvas_trim_video",
+    "canvas_create_video_replica",
+    "canvas_extract_video_frames",
+    "canvas_analyze_video",
+    "canvas_get_video_analysis",
     "site_navigate",
     "canvas_list_projects",
     "workbench_image_get_config",

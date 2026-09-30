@@ -27,6 +27,10 @@ class JevRateLimitPending(JevDecisionPending):
     """The provider is throttling us; the task should be delayed and resumed."""
 
 
+class JevTransientPending(JevDecisionPending):
+    """A temporary network/provider outage; keep the checkpoint and requeue."""
+
+
 def pending(value):
     return PENDING_PREFIX in str(value)
 
@@ -118,8 +122,17 @@ class Controller:
                 raise JevRateLimitPending(
                     "单镜修复范围接口被供应商限流，已保留断点，稍后自动重试"
                 ) from exc
+            if exc.response.status_code in {408, 425, 500, 502, 503, 504}:
+                raise JevTransientPending(
+                    f"{stage}接口暂时不可用（HTTP {exc.response.status_code}），已保留断点，稍后自动重试"
+                ) from exc
             raise JevDecisionPending(
                 f"{stage}接口暂不可用，检查 JEV 配置后重试；未转交其它模型"
+            ) from exc
+        except (httpx.ConnectError, httpx.ConnectTimeout, httpx.ReadTimeout,
+                httpx.RemoteProtocolError) as exc:
+            raise JevTransientPending(
+                f"{stage}接口连接暂时失败，已保留断点，稍后自动重试"
             ) from exc
         except (httpx.HTTPError, ValueError, KeyError, TypeError, AttributeError) as exc:
             raise JevDecisionPending(f"{stage}接口暂不可用，检查 JEV 配置后重试；未转交其它模型") from exc

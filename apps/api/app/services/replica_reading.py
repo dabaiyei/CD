@@ -55,28 +55,35 @@ async def pictures(source, root, start, end, count=16, max_sheets=4):
         frames = sorted(extracted.get("frames", []), key=lambda f: float(f["at"]))
         if len(frames) < 2:
             raise RuntimeError("参考画面抽取失败，未向模型发送空证据")
-        attachments = []
-        per_sheet = max(4, math.ceil(len(frames) / max_sheets))
-        for n in range(0, len(frames), per_sheet):
-            sheet = Image.new("RGB", (1024, 312 * math.ceil(per_sheet / 2)), "#161616")
-            draw = ImageDraw.Draw(sheet)
-            for cell, frame in enumerate(frames[n : n + per_sheet]):
-                x, y = cell % 2 * 512, cell // 2 * 312
-                with Image.open(frame["path"]) as picture:
-                    picture.thumbnail((512, 288))
-                    sheet.paste(picture.convert("RGB"), (x + (512 - picture.width) // 2, y))
-                draw.text((x + 8, y + 290), f"{float(frame['at']):.3f}s", fill="white")
-            data = io.BytesIO()
-            sheet.save(data, "WEBP", quality=85)
-            attachments.append(
-                AgentRuntimeAttachment(
-                    id=f"evidence-{start}-{n}",
-                    name=f"{start:g}-{end:g}-{n}.webp",
-                    mime_type="image/webp",
-                    data=base64.b64encode(data.getvalue()).decode(),
-                )
+        return [
+            AgentRuntimeAttachment(
+                id=f"evidence-{start}-{n}",
+                name=f"{start:g}-{end:g}-{n}.webp",
+                mime_type="image/webp",
+                data=base64.b64encode(data).decode(),
             )
-        return attachments
+            for n, data in enumerate(contact_sheets(frames, max_sheets))
+        ]
+
+
+def contact_sheets(frames, max_sheets=4):
+    """Shared Hypit/canvas evidence layout; timestamps belong to each source frame."""
+    result = []
+    per_sheet = max(4, math.ceil(len(frames) / max_sheets))
+    for n in range(0, len(frames), per_sheet):
+        batch = frames[n : n + per_sheet]
+        sheet = Image.new("RGB", (1024, 312 * math.ceil(len(batch) / 2)), "#161616")
+        draw = ImageDraw.Draw(sheet)
+        for cell, frame in enumerate(batch):
+            x, y = cell % 2 * 512, cell // 2 * 312
+            with Image.open(frame["path"]) as picture:
+                picture.thumbnail((512, 288))
+                sheet.paste(picture.convert("RGB"), (x + (512 - picture.width) // 2, y))
+            draw.text((x + 8, y + 290), frame.get("label") or f"{float(frame['at']):.3f}s", fill="white")
+        data = io.BytesIO()
+        sheet.save(data, "WEBP", quality=85)
+        result.append(data.getvalue())
+    return result
 
 
 async def ask(

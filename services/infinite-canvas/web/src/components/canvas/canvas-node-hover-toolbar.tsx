@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { App, Modal, Segmented, Tooltip } from "antd";
 import { Download, Ellipsis, FolderPlus, Image as ImageIcon, Info, MessageSquare, Minus, Music2, Plus, RefreshCw, Settings2, Trash2, Ungroup, Upload, Video } from "lucide-react";
 import { useTranslation } from "react-i18next";
@@ -86,6 +86,23 @@ export function CanvasNodeHoverToolbar({
     const { message } = App.useApp();
     const { t } = useTranslation();
     const copyText = useCopyText();
+    const toolbarRef = useRef<HTMLDivElement>(null);
+    const [toolbarBounds, setToolbarBounds] = useState({ width: 0, containerWidth: 0 });
+    useLayoutEffect(() => {
+        const element = toolbarRef.current;
+        const parent = element?.parentElement;
+        if (!element || !parent) return;
+        const update = () => {
+            const width = element.getBoundingClientRect().width;
+            const containerWidth = parent.clientWidth;
+            setToolbarBounds(current => current.width === width && current.containerWidth === containerWidth ? current : { width, containerWidth });
+        };
+        update();
+        const observer = new ResizeObserver(update);
+        observer.observe(element);
+        observer.observe(parent);
+        return () => observer.disconnect();
+    }, [node?.id]);
 
     useEffect(() => {
         try {
@@ -185,8 +202,9 @@ export function CanvasNodeHoverToolbar({
     return (
         <>
             <div
+                ref={toolbarRef}
                 className="canvas-node-hover-toolbar absolute z-[70] flex h-12 -translate-x-1/2 -translate-y-full items-center overflow-visible rounded-[18px] border border-black/10 bg-white text-[15px] text-[#242529] shadow-[0_8px_28px_rgba(15,23,42,.12)]"
-                style={{ left, top }}
+                style={{ left: toolbarBounds.width ? Math.max(toolbarBounds.width / 2 + 12, Math.min(left, toolbarBounds.containerWidth - toolbarBounds.width / 2 - 12)) : left, top, maxWidth: 'calc(100% - 24px)', width: 'max-content' }}
                 onMouseEnter={() => onKeep(node.id)}
                 onMouseLeave={() => {
                     if (!imageToolSettingsOpen) onLeave();
@@ -194,10 +212,12 @@ export function CanvasNodeHoverToolbar({
                 onMouseDown={(event) => event.stopPropagation()}
                 onPointerDown={(event) => event.stopPropagation()}
             >
+                <div className="flex max-w-full items-center overflow-x-auto rounded-[inherit]" data-canvas-no-zoom>
                 {toolbarTools.map((tool) => (
                     <ToolbarAction key={tool.id} {...tool} showLabel={isImage ? showImageToolLabels : true} />
                 ))}
                 {hasImage ? <ToolbarAction id="more" title={t("canvas.imageTools.configure")} label={t("canvas.imageTools.more")} icon={<Ellipsis className="size-4" />} active={imageToolSettingsOpen} onClick={openImageToolSettings} showLabel={showImageToolLabels} /> : null}
+                </div>
             </div>
             {hasImage ? (
                 <ImageToolSettingsModal

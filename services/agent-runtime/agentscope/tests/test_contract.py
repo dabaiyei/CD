@@ -9,6 +9,7 @@ from typing import Any
 
 import pytest
 from fastapi.testclient import TestClient
+from pydantic import ValidationError
 
 from runtime import AGENTSCOPE_VERSION, CONTRACT_VERSION, RUNTIME_VERSION
 from runtime.adapter import (
@@ -452,11 +453,22 @@ def test_project_files_and_structured_diff_are_preserved(tmp_path: Path) -> None
     assert changes[0].base_sha256 == request.project_files[0].sha256
 
 
-def test_v2_contract_accepts_image_attachments() -> None:
-    request = AgentRunRequest.model_validate(attachment_payload())
+@pytest.mark.parametrize("count", [1, 4, 7, 17, 50])
+def test_v2_contract_accepts_image_attachments(count) -> None:
+    payload = attachment_payload()
+    payload["attachments"] = [dict(payload["attachments"][0], id=f"attachment-{i}") for i in range(count)]
+    request = AgentRunRequest.model_validate(payload)
 
+    assert len(request.attachments) == count
     assert request.attachments[0].name == "shot-reference.webp"
     assert request.attachments[0].mime_type == "image/webp"
+
+
+def test_v2_contract_rejects_more_than_fifty_image_attachments() -> None:
+    payload = attachment_payload()
+    payload["attachments"] *= 51
+    with pytest.raises(ValidationError):
+        AgentRunRequest.model_validate(payload)
 
 
 def test_read_only_project_files_can_share_an_explicit_directory(tmp_path: Path) -> None:
