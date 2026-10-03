@@ -623,6 +623,21 @@ def decode_repair_reply(text: str) -> list[dict]:
             return [value]
         if isinstance(value.get("shots"), list):
             return [row for row in value["shots"] if isinstance(row, dict)]
+        if isinstance(value.get("field"), str) and "value" in value:
+            return [{
+                "order_index": value.get("order_index"),
+                "fields": {value["field"]: value["value"]},
+            }]
+        # Models sometimes omit the wrapper and return the named fields at the
+        # top level. Normalize that shape before merge_shot_patch rejects it as
+        # an empty patch; the allowed-field filter still protects untouched data.
+        direct_fields = {key: value[key] for key in value if key in REPAIR_FIELDS}
+        if direct_fields:
+            return [{
+                "order_index": value.get("order_index"),
+                "fields": direct_fields,
+                "edits": value.get("edits", []),
+            }]
         return [value]
     if isinstance(value, list):
         return [row for row in value if isinstance(row, dict)]
@@ -748,7 +763,8 @@ def merge_shot_patch(stored: dict, rows: list[dict], index: int, fields: list[st
     return merged
 
 
-def direct_patch_request(request, instructions, candidate, neighbors, *, budget=50000):
+def direct_patch_request(request, instructions, candidate, neighbors, *, budget=50000,
+                         rewrite_target=False):
     """Small, evidence-complete field patches do not need a file-reading agent."""
     if request.tool_mode != "retrieval" or request.documents or request.attachments:
         return None
@@ -771,8 +787,11 @@ def direct_patch_request(request, instructions, candidate, neighbors, *, budget=
     prompt += "\n本次局部规则和资产证据：" + json.dumps({"references": references, "assets": assets}, ensure_ascii=False)
     from app.services.cinematography import REVIEW_RULES as CAMERA_REVIEW_RULES
     system = (CLIP_RULES + CAMERA_REVIEW_RULES + "\n你是单镜字段补丁编辑器。平台已提供本次完整局部证据，不调用工具。"
-              "只修正本镜明确点名的问题，不重新设计或改写其它镜头，保留原画风、台词和未涉及字段。"
-              "字段内部未涉及问题的有效信息也必须保留。画风与导演风格沿用原字段，"
+              + ("本轮是自动升级的单镜完整重写：目标镜头必须返回完整可执行 fields，"
+                 "但仍只允许修改这个目标镜头；不得输出其它镜头。"
+                 if rewrite_target else
+                 "只修正本镜明确点名的问题，不重新设计或改写其它镜头，保留原画风、台词和未涉及字段。")
+              + "字段内部未涉及问题的有效信息也必须保留。画风与导演风格沿用原字段，"
               "具体违反规则的内容以审核意见中的证据和修复建议为准，不主动重新解释全部手册。"
               "本次输出协议优先于参考资料中的整章输出协议：只返回 JSON fields 和/或 edits 补丁；"
               "仅明确授权补镜时允许 insert_after，禁止返回整章或审核结论。")
@@ -903,7 +922,8 @@ async def generate(request, runtime_factory, *, plan, durations, state, save, pr
                    findings: list[dict] | None = None,
                    feedback: str = "", batch_attempts: int = 3, partial: bool = True,
                    concurrency: int = 1, isolate_failures: bool = False,
-                   first_frame_mode: bool | None = None, repair_blocking_only: bool = False):
+                   first_frame_mode: bool | None = None, repair_blocking_only: bool = False,
+                   repair_strategy: str = "targeted_patch"):
     from app.services.task_worker import GeneratedStoryboardShotPayload, StoryboardGenerationPayload
     from app.services.creation_context import contains_combat
     from app.services.clip_timeline import CLIP_RULES
@@ -1188,6 +1208,9 @@ async def generate(request, runtime_factory, *, plan, durations, state, save, pr
                 issues.append({"issue": feedback})
             named_fields = finding_fields(issues)
             fields = coherent_repair_fields(named_fields)
+            single_shot_rewrite = repair_strategy == "single_shot_rewrite"
+            if single_shot_rewrite:
+                fields = sorted(REPAIR_FIELDS)
             addition_issues = [issue for issue in issues if (missing_shot_finding(issue) or split_shot_finding(issue))
                                and index == min(parse_finding_targets([issue], len(existing_by_index)) or [index])]
             allow_insert = bool(addition_issues) and not plan
@@ -1201,7 +1224,7 @@ async def generate(request, runtime_factory, *, plan, durations, state, save, pr
             if insertions.get(str(index - 1)):
                 neighbors[str(index - 1)] = insertions[str(index - 1)][-1]
             deferred_fields = []
-            if repair_control:
+            if repair_control and not single_shot_rewrite:
                 try:
                     mandatory = sorted(set(named_fields) | ({'duration_seconds', 'action_description',
                         'dialogue', 'emotion_plan', 'combat_plan', 'internal_shots'} if allow_split else set()))
@@ -1214,12 +1237,20 @@ async def generate(request, runtime_factory, *, plan, durations, state, save, pr
                     from app.services.jev_control import JevDecisionPending
                     raise JevDecisionPending(f'镜头 {index} 尚未定位可修改字段')
             request_prompt = (
-                f'只修复第 {index} 镜，返回 {{"fields":{{...}},"edits":[{{"field":"action_description","old":"待替换的唯一原句","new":"修正后的原句"}}]}}。'
-                '文本字段局部修正优先用 edits 精确替换，未匹配文字由平台逐字保留；不要重新输出整段动作和图片提示词。'
-                'old 必须逐字来自本镜原文且唯一；确需替换全部相同原句时才设置 replace_all=true。'
+                (f'只重写第 {index} 镜，返回该镜完整可执行字段，格式为 '
+                 f'{{"order_index":{index},"fields":{{...}}}}；fields 必须覆盖当前镜已有的全部有效字段，不能返回空补丁。'
+                 if single_shot_rewrite else
+                 f'只修复第 {index} 镜，返回 {{"fields":{{...}},"edits":[{{"field":"action_description","old":"待替换的唯一原句","new":"修正后的原句"}}]}}。')
+                + ('本轮 fields 必须覆盖该镜头已有的全部有效字段，并在原内容基础上修正审核问题；'
+                   '不输出其它镜头。'
+                   if single_shot_rewrite else
+                   '文本字段局部修正优先用 edits 精确替换，未匹配文字由平台逐字保留；不要重新输出整段动作和图片提示词。')
+                 + 'old 必须逐字来自本镜原文且唯一；确需替换全部相同原句时才设置 replace_all=true。'
                 '结构化字段或明确需要重排的时间轴可用 fields，同一个字段不得同时使用 fields 与 edits。'
-                "未被审核点名、也不需要配合修改的字段必须原样省略，不要复述整个镜头。"
-                "允许的字段：title、shot_type、duration_seconds、scene_description、"
+                 + ("目标镜头的其它有效字段必须原样保留并一并放入 fields，不得遗漏；"
+                 if single_shot_rewrite else
+                 "未被审核点名、也不需要配合修改的字段必须原样省略，不要复述整个镜头。")
+                 + "允许的字段：title、shot_type、duration_seconds、scene_description、"
                 "action_description、dialogue、image_prompt、asset_names、"
                 "continuity_group、frame_layout、combat_plan、emotion_plan、internal_shots。\n"
                 f'合法时长：{json.dumps(durations)}'
@@ -1292,7 +1323,7 @@ async def generate(request, runtime_factory, *, plan, durations, state, save, pr
                     "资产名称、补镜授权及完整局部规则在 project-files/retrieval-repair-instructions/repair-instructions.md，"
                     "先搜索再读取相关内容，不读取全章分镜。")
             error_hint = ""
-            if repair_control:
+            if repair_control and not single_shot_rewrite:
                 constraint = ('\n【单镜修复写入边界】唯一允许写入的字段：' + json.dumps(fields, ensure_ascii=False)
                     + '。不得自行扩大范围或重新选择字段；生成补丁只负责修改这些字段的内容。')
                 request_prompt += constraint
@@ -1304,7 +1335,13 @@ async def generate(request, runtime_factory, *, plan, durations, state, save, pr
                 try:
                     saved_patch = raw_repairs.get(str(index))
                     direct = patch_format_request(request, saved_patch, candidate, fields) if saved_patch else None
-                    direct = direct or direct_patch_request(request, direct_instructions + error_hint, candidate, neighbors)
+                    direct = direct or direct_patch_request(
+                        request,
+                        direct_instructions + error_hint,
+                        candidate,
+                        neighbors,
+                        rewrite_target=single_shot_rewrite,
+                    )
                     if direct is not None:
                         if direct_output_retry:
                             direct = direct.model_copy(update={"model_binding": {

@@ -120,6 +120,7 @@ export interface SecurityEventPage {
 }
 
 export interface Project {
+  review_enabled: boolean
   first_frame_mode: boolean
   creation_mode: 'import' | 'ai'
   cinematic: boolean

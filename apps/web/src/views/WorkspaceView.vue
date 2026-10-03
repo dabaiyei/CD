@@ -40,6 +40,7 @@ const emptyForm = (): Partial<ProjectPayload> & Pick<ProjectPayload, 'name'> => 
   creation_mode: 'import',
   cinematic: false,
   first_frame_mode: false,
+  review_enabled: true,
   text_model_id: null,
   name: '',
   description: '',
@@ -438,6 +439,14 @@ async function generateCover(): Promise<void> {
           <div class="field">
             <span>视频分辨率</span>
             <UiSelect :model-value="form.video_resolution ?? ''" :options="videoResolutionOptions" placeholder="选择视频分辨率" @update:model-value="form.video_resolution = $event" />
+          </div>
+          <div class="field field--full project-first-frame-setting">
+            <button class="button" :class="form.review_enabled !== false ? 'button--primary' : 'button--secondary'" type="button"
+              role="switch" :aria-checked="form.review_enabled !== false" aria-describedby="project-review-description"
+              @click="form.review_enabled = form.review_enabled === false">
+              <Check :size="18" /><span>内容审核</span><small>{{ form.review_enabled !== false ? '已开启' : '已关闭' }}</small>
+            </button>
+            <small id="project-review-description">{{ form.review_enabled !== false ? '默认开启：审核剧本和分镜，发现问题后自动修复并核验。' : '跳过各步骤的内容审核和审核修复，生成完成后直接推进；已有审核中的全自动流程也会接续。' }}</small>
           </div>
           <div class="field field--full project-first-frame-setting">
             <button class="button" :class="form.first_frame_mode ? 'button--primary' : 'button--secondary'" type="button"

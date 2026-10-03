@@ -381,16 +381,19 @@ def test_improving_board_continues_past_fifth_version(monkeypatch):
 
 
 @pytest.mark.parametrize("severity", ["blocking", "major"])
-def test_exhausted_review_continues_without_decision(monkeypatch, severity):
+def test_exhausted_review_escalates_without_pausing(monkeypatch, severity):
     snapshot = {"storyboard_version_count": 5}
     for _ in range(2):
         orchestration.storyboard_review_stalled(snapshot, {"findings": [{"severity": severity}]})
     snapshot["storyboard_version_count"] = 50
     workflow = SimpleNamespace(context_snapshot=snapshot, chapter_id="ch", script_version_id="script",
-        storyboard_version_id="board", tenant_id="t", user_id="u", project_id="p", id="wf", current_task_id="old")
+        storyboard_version_id="board", tenant_id="t", user_id="u", project_id="p", id="wf", current_task_id="old",
+        status=orchestration.DirectorWorkflowStatus.RUNNING)
     decisions = []
     session = SimpleNamespace(add=decisions.append)
+    calls = []
     async def queue(*args, **kwargs):
+        calls.append(kwargs)
         return "task", "event", None
     monkeypatch.setattr(orchestration, "_queue_child", queue)
     result = asyncio.run(orchestration._queue_automatic_repair(session, workflow,
@@ -398,4 +401,7 @@ def test_exhausted_review_continues_without_decision(monkeypatch, severity):
         result={"review": {"findings": [{"severity": severity}]}}))
     assert result == ("task", "event")
     assert workflow.stage == orchestration.DirectorWorkflowStage.STORYBOARD_REPAIRING
+    assert workflow.status == orchestration.DirectorWorkflowStatus.RUNNING
+    assert calls[0]["request_payload"]["repair_strategy"] == "single_shot_rewrite"
+    assert "不等待用户确认" in calls[0]["request_payload"]["feedback"]
     assert decisions == []

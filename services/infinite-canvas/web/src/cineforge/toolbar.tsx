@@ -1,12 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type CSSProperties } from 'react';
 import { Link, useLocation } from 'react-router-dom';
 import { App, Button, Input, Modal, Select } from 'antd';
-import { BookOpen, Boxes, FolderOpen, Plus, Settings2 } from 'lucide-react';
+import { BookOpen, Boxes, FolderOpen, Infinity, Plus, Settings2 } from 'lucide-react';
 import { hostApi, notify } from './api';
 import { useCanvasStore } from '@/stores/canvas/use-canvas-store';
 import { useConfigStore } from '@/stores/use-config-store';
 import { AppConfigModal } from '@/components/layout/app-config-modal';
 import { useThemeStore } from '@/stores/use-theme-store';
+import { canvasThemes } from '@/lib/canvas-theme';
 import { createCanvasNode, imageMetadata } from '@/lib/canvas/canvas-node-factory';
 import { CanvasNodeType } from '@/types/canvas';
 import { uploadImage } from '@/services/image-storage';
@@ -26,6 +27,7 @@ export function PlatformToolbar() {
     const [search, setSearch] = useState('');
     const [busy, setBusy] = useState(false);
     const [assistantOpen, setAssistantOpen] = useState(false);
+    const theme = canvasThemes[useThemeStore(state => state.theme)];
     const id = location.pathname.match(/^\/canvas\/(.+)$/)?.[1];
     useEffect(() => {
         const openAssistant = () => setAssistantOpen(true);
@@ -69,17 +71,26 @@ export function PlatformToolbar() {
     }
     return <>
         {id && <PlatformAssistant key={id} projectId={id} open={assistantOpen} onClose={() => setAssistantOpen(false)} />}
-        <header className="platform-canvas-toolbar">
-            <Link to="/canvas" className="platform-canvas-brand"><span className="platform-canvas-mark">∞</span><span>无限画布<small>Powered by infinite-canvas · basketikun</small></span></Link>
-            <div className="platform-canvas-actions">
-                <Button icon={<FolderOpen size={16} />} onClick={() => navigate('/canvas')}>画布库</Button>
-                <Button icon={<Plus size={16} />} onClick={() => navigate(`/canvas/${useCanvasStore.getState().createProject()}`)}>新画布</Button>
-                <Button disabled={!id} icon={<Boxes size={16} />} onClick={() => {
+        <header className="platform-canvas-toolbar" style={{
+            '--canvas-header-surface': theme.toolbar.panel,
+            '--canvas-header-text': theme.node.text,
+            '--canvas-header-muted': theme.toolbar.item,
+            '--canvas-header-hover': theme.toolbar.itemHover,
+            '--canvas-header-active': theme.toolbar.activeBg,
+        } as CSSProperties}>
+            <Link to="/canvas" className="platform-canvas-brand" title="Powered by infinite-canvas · basketikun">
+                <Infinity className="platform-canvas-mark" size={26} strokeWidth={1.8} aria-hidden="true" />
+                <span>无限画布</span><small>创作工作台</small>
+            </Link>
+            <nav className="platform-canvas-actions" aria-label="画布导航">
+                <Button type="text" aria-current={location.pathname === '/canvas' ? 'page' : undefined} icon={<FolderOpen size={16} />} onClick={() => navigate('/canvas')}>画布库</Button>
+                <Button type="text" disabled={!id} icon={<Boxes size={16} />} onClick={() => {
                     setAssetsOpen(true); void hostApi<Array<{ id: string; name: string }>>('/projects').then(setProjects).catch(() => {});
                 }}>资产库</Button>
-                <Button icon={<Settings2 size={16} />} onClick={() => navigate('/config')}>模型设置</Button>
-                <Button icon={<BookOpen size={16} />} onClick={() => navigate('/prompts')}>模板中心</Button>
-            </div>
+                <Button type="text" aria-current={location.pathname === '/config' ? 'page' : undefined} icon={<Settings2 size={16} />} onClick={() => navigate('/config')}>模型设置</Button>
+                <Button type="text" aria-current={location.pathname === '/prompts' ? 'page' : undefined} icon={<BookOpen size={16} />} onClick={() => navigate('/prompts')}>模板中心</Button>
+                <Button type="text" className="platform-canvas-create" icon={<Plus size={16} />} onClick={() => navigate(`/canvas/${useCanvasStore.getState().createProject()}`)}>新画布</Button>
+            </nav>
         </header>
         <Modal title="从资产库加入画布" open={assetsOpen} onCancel={() => setAssetsOpen(false)} footer={null} width={720}>
             <div className="platform-canvas-library-tools"><Select value={project} onChange={setProject} options={[

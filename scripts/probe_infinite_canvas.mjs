@@ -15,12 +15,23 @@ const caps = {schema_version:1,generation_modes:['text_to_video','first_frame','
 const models = ['text','image','video','tts'].map(type=>({id:`model-${type}`,name:`测试${type}模型`,type,is_default:true,capabilities:type==='video'?caps:{aspect_ratios:['1:1','16:9','9:16']}}));
 const browser = await puppeteer.launch({executablePath:`${process.env.LOCALAPPDATA}/ms-playwright/chromium-1228/chrome-win64/chrome.exe`,headless:true,args:['--disable-gpu']});
 try {
-    for (const width of [1366,390]) {
+    for (const width of (process.env.CANVAS_HEADER_ONLY === '1' ? [1366,390,320,844] : [1366,390])) {
         const page = await browser.newPage();
         const errors = [];
         const storage = new Map();
         const touchOnly = process.env.CANVAS_TOUCH_ONLY === '1';
+        const layoutOnly = process.env.CANVAS_LAYOUT_ONLY === '1';
         const canvasKey = 'infinite-canvas.app_state/infinite-canvas:canvas_store';
+        if (layoutOnly) {
+            const makeNode = (id,type='image',groupId)=>({id,type,title:id,width:type==='text'?360:240,height:type==='text'?420:160,position:{x:10,y:10},metadata:{groupId,...(type==='text'?{content:'镜头描述：保持动作连续、服装一致。'}:{})}});
+            const nodes = [makeNode('frames-a','group'),makeNode('frames-b','group'),
+                ...Array.from({length:28},(_,i)=>makeNode(`frame-${i}`,'image',i<14?'frames-a':'frames-b')),
+                ...Array.from({length:8},(_,i)=>[makeNode(`prompt-${i}`,'text'),makeNode(`config-${i}`,'config'),makeNode(`output-${i}`,'video'),makeNode(`note-${i}`,'text')]).flat(),
+                ...Array.from({length:5},(_,i)=>makeNode(`source-${i}`))];
+            const connections = Array.from({length:8},(_,i)=>[['source-0',`config-${i}`],[i%2?'frames-a':'frames-b',`config-${i}`],[`prompt-${i}`,`config-${i}`],[`config-${i}`,`output-${i}`],[`output-${i}`,`note-${i}`]])
+                .flat().map(([fromNodeId,toNodeId],i)=>({id:`edge-${i}`,fromNodeId,toNodeId}));
+            storage.set(canvasKey,{revision:1,kind:'json',mime:'application/json',body:JSON.stringify(JSON.stringify({state:{projects:[{id:'layout-project',title:'自动整理测试',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),nodes,connections,chatSessions:[],activeChatId:null,backgroundMode:'lines',showImageInfo:false,viewport:{x:0,y:0,k:0.5}}],deletedProjects:[]},version:0}))});
+        }
         if (touchOnly) {
             const nodes = ['touch-a','touch-b'].map((id,index)=>({id,type:'image',title:id,width:240,height:200,position:{x:80+index*350,y:500},metadata:{}}));
             storage.set(canvasKey,{revision:1,kind:'json',mime:'application/json',body:JSON.stringify(JSON.stringify({state:{projects:[{id:'touch-project',title:'触摸测试',createdAt:new Date().toISOString(),updatedAt:new Date().toISOString(),nodes,connections:[],chatSessions:[],activeChatId:null,backgroundMode:'lines',showImageInfo:false,viewport:{x:0,y:0,k:0.5}}],deletedProjects:[]},version:0}))});
@@ -36,7 +47,7 @@ try {
         const mediaRequests = [];
         page.on('pageerror',error=>errors.push(error.message));
         page.on('console',msg=>{if(msg.type()==='error') console.log(`UI ${width}: ${msg.text()}`);});
-        await page.setViewport({width,height:900,hasTouch:touchOnly});
+        await page.setViewport({width,height:900,hasTouch:touchOnly || (layoutOnly && width<=640)});
         await page.evaluateOnNewDocument(()=>{localStorage.setItem('cineforge.access-token','canvas-ui-test');localStorage.setItem('cineforge-theme','dark');});
         await page.setRequestInterception(true);
         page.on('request',req=>{
@@ -122,6 +133,103 @@ try {
                 const surface=document.querySelector('.canvas-editor-layout > section').getBoundingClientRect();
                 if(node.left<surface.left || node.right>surface.right || node.top<surface.top || node.bottom>surface.bottom) throw new Error('Focused node must fit inside the canvas: '+JSON.stringify({id,node:node.toJSON(),surface:surface.toJSON()}));
             },id).catch(async error=>{await page.screenshot({path:`.logs/infinite-canvas-focus-failed-${width}.png`});throw error;});
+        }
+        if (process.env.CANVAS_HEADER_ONLY === '1') {
+            await clickText('新画布');
+            await frame.waitForSelector('.canvas-editor-layout');
+            await page.mouse.move(0,0);
+            async function inspectHeader(label) {
+                const layout = await frame.evaluate(() => {
+                    const header = document.querySelector('.platform-canvas-toolbar');
+                    const bounds = header.getBoundingClientRect();
+                    const buttons = [...header.querySelectorAll('button')].map(el => {
+                        const r = el.getBoundingClientRect();
+                        return {text:el.textContent,width:r.width,height:r.height,left:r.left,right:r.right,top:r.top,bottom:r.bottom};
+                    });
+                    return {header:bounds.toJSON(),buttons};
+                });
+                assert.equal(layout.buttons.length,5);
+                assert(layout.header.height<=104,'Header must remain compact');
+                for (const button of layout.buttons) {
+                    assert(button.width>=40 && button.height>=40,'Header hit areas must be accessible');
+                    assert(button.left>=layout.header.left && button.right<=layout.header.right+1,'Header actions must fit the available width');
+                    assert(button.bottom<=layout.header.bottom,'Actions must stay inside the header');
+                }
+                await page.screenshot({path:`.logs/infinite-canvas-header-${label}-${width}.png`,fullPage:true});
+            }
+            for (const theme of ['dark','light']) {
+                await frame.evaluate(theme => {
+                    localStorage.setItem('cineforge-theme',theme);
+                    window.dispatchEvent(new MessageEvent('message',{origin:location.origin,source:parent,data:{source:'cineforge-host',theme}}));
+                },theme);
+                await frame.waitForFunction(theme=>document.documentElement.classList.contains('dark')===(theme==='dark'),{},theme);
+                await frame.waitForFunction(()=>getComputedStyle(document.querySelector('.platform-canvas-brand')).color===getComputedStyle(document.querySelector('.platform-canvas-toolbar')).color);
+                await inspectHeader(theme);
+            }
+            await frame.click('button[aria-label="连接 Codex"]');
+            await frame.waitForFunction(()=>Math.abs(document.querySelector('.canvas-codex-panel').getBoundingClientRect().width-Math.min(innerWidth,441))<2);
+            await inspectHeader('codex');
+            await page.setViewport({width:width===390?844:390,height:900});
+            await inspectHeader('resized');
+            assert.deepEqual(errors,[]);
+            assert.equal(generations.length,0);
+            console.log(`${width}px: header light/dark, five visible actions, Codex panel and viewport resize passed`);
+            await page.close();
+            continue;
+        }
+        if (layoutOnly) {
+            await frame.waitForSelector('article h2');
+            await frame.click('article h2');
+            const readSaved=()=>JSON.parse(JSON.parse(storage.get(canvasKey).body)).state.projects[0];
+            const original=structuredClone(readSaved());
+            const signature=project=>JSON.stringify(project.nodes.map(n=>({id:n.id,position:n.position,width:n.width,height:n.height})));
+            const originalSignature=signature(original);
+            async function waitSaved(check) {
+                for(let i=0;i<60;i++) {
+                    if(check(readSaved())) return readSaved();
+                    await new Promise(resolve=>setTimeout(resolve,100));
+                }
+                throw new Error('Arranged positions were not persisted');
+            }
+            const arrangeSelector='.canvas-creation-toolbar button[aria-label="自动整理画布"]';
+            await frame.waitForSelector(arrangeSelector);
+            await frame.$eval(arrangeSelector,el=>el.scrollIntoView({block:'nearest',inline:'center'}));
+            const buttonBounds=await frame.$eval(arrangeSelector,el=>({width:el.getBoundingClientRect().width,height:el.getBoundingClientRect().height}));
+            assert(buttonBounds.width>=40 && buttonBounds.height>=40);
+            if(width<=640) await (await frame.$(arrangeSelector)).tap();
+            else await frame.click(arrangeSelector);
+            const arranged=await waitSaved(saved=>signature(saved)!==originalSignature);
+            const arrangedSignature=signature(arranged);
+            assert.equal(arranged.nodes.length,67);
+            assert.deepEqual(arranged.connections,original.connections);
+            assert.deepEqual(arranged.nodes.map(n=>n.metadata),original.nodes.map(n=>n.metadata));
+            for(let i=0;i<arranged.nodes.length;i++) for(let j=i+1;j<arranged.nodes.length;j++) {
+                const a=arranged.nodes[i],b=arranged.nodes[j];
+                if(a.metadata?.groupId===b.id || b.metadata?.groupId===a.id) continue;
+                assert(a.position.x+a.width<=b.position.x || b.position.x+b.width<=a.position.x || a.position.y+a.height<=b.position.y || b.position.y+b.height<=a.position.y,`${a.id} overlaps ${b.id}`);
+            }
+            await page.mouse.move(0,0);
+            await page.screenshot({path:`.logs/infinite-canvas-arranged-${width}.png`,fullPage:true});
+            await frame.click('.canvas-creation-toolbar button[aria-label="撤销"]');
+            await waitSaved(saved=>signature(saved)===originalSignature);
+            await frame.click('.canvas-creation-toolbar button[aria-label="重做"]');
+            await waitSaved(saved=>signature(saved)===arrangedSignature);
+            await frame.$eval(arrangeSelector,el=>el.scrollIntoView({block:'nearest',inline:'center'}));
+            await frame.click(arrangeSelector);
+            await frame.waitForFunction(()=>document.body.textContent.includes('已整理 67 个节点'));
+            assert.equal(signature(readSaved()),arrangedSignature,'Repeated layout must remain stable');
+            await page.reload({waitUntil:'domcontentloaded'});
+            await page.waitForSelector('iframe');
+            frame=await (await page.$('iframe')).contentFrame();
+            await frame.waitForSelector('article h2');
+            await frame.click('article h2');
+            await frame.waitForSelector(arrangeSelector);
+            assert.equal(signature(readSaved()),arrangedSignature);
+            assert.deepEqual(errors,[]);
+            assert.equal(generations.length,0,'Auto layout must not call a model');
+            console.log(`${width}px: 67 nodes, group/edge/content preservation, no overlap, one-step undo/redo and reload passed`);
+            await page.close();
+            continue;
         }
         if (touchOnly) {
             await frame.waitForSelector('article h2');
@@ -284,7 +392,8 @@ try {
         await clickText('资产库');
         await frame.waitForFunction(()=>document.body.textContent.includes('测试角色'));
         await clickText('测试角色');
-        await frame.waitForFunction(()=>document.querySelector('img[src^="blob:"]'));
+        try { await frame.waitForFunction(()=>document.querySelector('img[src^="blob:"]')); }
+        catch (error) { await page.screenshot({path:`.logs/infinite-canvas-asset-failed-${width}.png`,fullPage:true}); console.log(await frame.evaluate(()=>document.body.textContent.slice(-1400))); throw error; }
         await page.waitForFunction(()=>document.body.textContent.includes('已连接'));
         await frame.waitForFunction(()=>!document.querySelector('.ant-modal-mask'));
         await frame.click('img[src^="blob:"]');

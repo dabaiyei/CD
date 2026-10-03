@@ -1,5 +1,7 @@
 import type { CanvasVideoAnalysis, CanvasVideoSegment } from '@/types/canvas';
 
+const FRAME_TIME_TOLERANCE_SECONDS = 0.05;
+
 export function parseVideoTimeline(text: string, analysis: CanvasVideoAnalysis) {
     const raw = JSON.parse(text.trim().replace(/^```(?:json)?\s*/i, '').replace(/\s*```$/, ''));
     if (typeof raw.summary !== 'string' || !Array.isArray(raw.segments) || !raw.segments.length) throw new Error('视频解析必须包含概述和连续时间轴');
@@ -11,8 +13,15 @@ export function parseVideoTimeline(text: string, analysis: CanvasVideoAnalysis) 
         }
         if (!Array.isArray(segment.frameTimes) || !segment.frameTimes.length) throw new Error('时间轴参考帧必须来自实际抽帧时间戳');
         const frameTimes = segment.frameTimes.map(at => {
-            const frame = analysis.evidence.frames.find(frame => Number.isFinite(at) && Math.abs(frame.at - at) < 0.001);
-            if (!frame || frame.at < segment.start || frame.at > segment.end) throw new Error('时间轴参考帧必须来自本段实际抽帧时间戳');
+            // Models may round a real extracted timestamp and place a frame a
+            // few milliseconds over a narrative cut such as 12.000s.
+            const frame = analysis.evidence.frames
+                .filter(frame => Number.isFinite(at) && Math.abs(frame.at - at) <= FRAME_TIME_TOLERANCE_SECONDS)
+                .sort((a, b) => Math.abs(a.at - at) - Math.abs(b.at - at))[0];
+            if (!frame || frame.at < segment.start - FRAME_TIME_TOLERANCE_SECONDS ||
+                frame.at > segment.end + FRAME_TIME_TOLERANCE_SECONDS) {
+                throw new Error('时间轴参考帧必须来自本段实际抽帧时间戳');
+            }
             return frame.at;
         });
         for (const frame of analysis.evidence.frames) {

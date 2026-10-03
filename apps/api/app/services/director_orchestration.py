@@ -59,6 +59,7 @@ from app.services.provider_adapters import (
 from app.services.task_events import publish_task_event, record_task_event
 from app.services.task_queue import enqueue_task
 from app.services.task_submission import create_queued_task
+from app.services.review_policy import workflow_review_enabled
 
 logger = logging.getLogger(__name__)
 
@@ -537,6 +538,8 @@ async def _demote_unapproved_video_stage(
     the wrong stage, so the in-flight children are cancelled and refunded and
     the run is re-driven from the board. Returns True when it was demoted.
     """
+    if not await workflow_review_enabled(session, workflow):
+        return False
     if workflow.stage not in VIDEO_STAGES or not workflow.storyboard_version_id:
         return False
     _, review = await _latest_storyboard_review(
@@ -734,7 +737,7 @@ async def start_automatic_workflow_from_progress(
     await session.flush()
 
     queued: list[tuple[AITask, TaskEvent]] = []
-    if script.status != "approved":
+    if script.status != "approved" and await workflow_review_enabled(session, workflow):
         chapter.status = ChapterStatus.REVIEWING
         queued.append(await _queue_review(session, workflow, target="script", parent=None))
         await _commit_and_dispatch(session, queued)
@@ -844,7 +847,7 @@ async def start_automatic_workflow_from_progress(
     review_child, review = await _latest_storyboard_review(
         session, workflow, storyboard_version_id=storyboard.id
     )
-    if not _storyboard_review_cleared(review, workflow):
+    if await workflow_review_enabled(session, workflow) and not _storyboard_review_cleared(review, workflow):
         chapter.status = ChapterStatus.STORYBOARD
         if review_child is None:
             workflow.stage = DirectorWorkflowStage.STORYBOARD_REVIEWING
@@ -961,6 +964,17 @@ async def _queue_review(
     target: str,
     parent: DirectorChildRun | None,
 ) -> tuple[AITask, TaskEvent]:
+    if not await workflow_review_enabled(session, workflow):
+        workflow.context_snapshot = {**(workflow.context_snapshot or {}), "review_skipped": True}
+        workflow.status = DirectorWorkflowStatus.RUNNING
+        workflow.last_error = None
+        workflow.last_message = "项目已关闭内容审核，直接推进生成流程"
+        if target == "script":
+            script = await session.get(ScriptVersion, workflow.script_version_id)
+            if script is not None and script.status == "reviewing":
+                script.status = "draft"
+            return await _queue_asset_extraction(session, workflow, parent)
+        return await _queue_video_prompts(session, workflow, parent)
     if target == "script":
         workflow.stage = DirectorWorkflowStage.SCRIPT_REVIEWING
         kind = "script_review"
@@ -1547,6 +1561,7 @@ async def _queue_video_prompts(
                 "model_name": video_model.name,
                 "capabilities": video_model.capabilities or {},
             },
+            "automatic_review": bool(workflow.automation_mode),
         },
         message=f"{len(shots)} 个镜头视频提示词生成",
         bill_task_type="shot_video_prompt_generation",
@@ -1664,6 +1679,16 @@ def _is_stale_storyboard_repair_error(message: str | None) -> bool:
     )
 
 
+def _is_non_retryable_storyboard_repair_error(message: str | None) -> bool:
+    text = str(message or "")
+    return (
+        "补丁没有可应用的目标字段" in text
+        or "没有可修复的目标字段" in text
+        or "自动升级修复未产生有效变化" in text
+        or "修复未产生有效变化" in text
+    )
+
+
 def _increment_workflow_counter(workflow: DirectorWorkflowRun, key: str) -> int:
     snapshot = dict(workflow.context_snapshot or {})
     value = int(snapshot.get(key) or 0) + 1
@@ -1706,19 +1731,25 @@ async def _queue_automatic_repair(
     target: str,
     result: dict[str, Any],
 ) -> tuple[AITask, TaskEvent] | None:
+    if not await workflow_review_enabled(session, workflow):
+        return await _queue_review(session, workflow, target=target, parent=child)
     counter_key = "script_version_count" if target == "script" else "storyboard_version_count"
     version_count = int((workflow.context_snapshot or {}).get(counter_key) or 1)
     blocking = _review_has_blocking_findings(result)
+    repair_strategy = "targeted_patch"
     if target == "storyboard":
         snapshot = dict(workflow.context_snapshot or {})
-        storyboard_review_stalled(snapshot, result)  # Diagnostics only; never a stop gate.
+        stalled = storyboard_review_stalled(snapshot, result)
         workflow.context_snapshot = snapshot
+        if stalled:
+            repair_strategy = "single_shot_rewrite"
     is_script = target == "script"
     workflow.stage = (
         DirectorWorkflowStage.SCRIPT_REPAIRING
         if is_script
         else DirectorWorkflowStage.STORYBOARD_REPAIRING
     )
+    workflow.status = DirectorWorkflowStatus.RUNNING
     request_payload = {
         "chapter_id": workflow.chapter_id,
         "repair_mode": "full" if blocking and is_script else "partial",
@@ -1728,7 +1759,14 @@ async def _queue_automatic_repair(
         "review": child.details,
         "automatic_review": True,
         "version_count": version_count,
+        "repair_strategy": repair_strategy,
     }
+    if repair_strategy == "single_shot_rewrite":
+        request_payload["feedback"] += (
+            "\n前几轮局部补丁没有收敛，本轮自动升级为目标镜头完整重写："
+            "只重写审核定位的镜头，必须返回这些镜头的完整可执行字段；"
+            "保留未被定位的其它镜头，不等待用户确认。"
+        )
     if target == "storyboard" and result.get("storyboard_review_cache"):
         request_payload["storyboard_review_cache"] = copy.deepcopy(result["storyboard_review_cache"])
     task, event, _ = await _queue_child(
@@ -1932,6 +1970,51 @@ async def _retry_child(
     child: DirectorChildRun,
     task: AITask,
 ) -> tuple[AITask, TaskEvent]:
+    retry_payload = {
+        key: copy.deepcopy(value)
+        for key, value in task.request_payload.items()
+        if key not in {
+            "child_run_id",
+            "asset_parent_waiting",
+            "asset_parent_task_id",
+            "video_continuity_waiting",
+            "video_continuity_task_id",
+            "video_continuity",
+        }
+    }
+    # A malformed local repair is deterministic: replaying the same payload
+    # only burns another model call. Escalate the repair protocol on every
+    # automatic retry while keeping the review and shot scope unchanged.
+    if task.task_type == "director_storyboard_repair":
+        previous_fallback = int(retry_payload.get("repair_fallback_attempt") or 0)
+        fallback_attempt = previous_fallback + 1
+        previous_strategy = str(retry_payload.get("repair_strategy") or "targeted_patch")
+        strategy = (
+            "field_patch_retry"
+            if previous_strategy == "targeted_patch" and fallback_attempt == 1
+            else "single_shot_rewrite"
+        )
+        retry_payload["repair_fallback_attempt"] = fallback_attempt
+        retry_payload["repair_strategy"] = strategy
+        feedback = str(retry_payload.get("feedback") or "请修复审核发现的问题")
+        # Keep user feedback once. Repeated automatic attempts must replace the
+        # protocol note, never append the full retry history to every new task.
+        feedback = feedback.split("\n上一次自动修复没有返回可应用的有效字段。", 1)[0]
+        retry_payload["feedback"] = (
+            feedback
+            + "\n上一次自动修复没有返回可应用的有效字段。"
+            "本次必须只针对审核明确定位的镜头返回合法 JSON："
+            '{"order_index":当前镜号,"fields":{实际字段名:修正值}}。'
+            "禁止返回空对象、自然语言、审核结论或未包装字段；未被定位的镜头必须保持不变。"
+            + (
+                "本次已升级为单镜完整重写：目标镜必须返回完整可执行字段，"
+                "其它镜头不得重写；至少要修正审核指出的问题并产生实际变化。"
+                if strategy == "single_shot_rewrite"
+                else "本次先重新执行字段补丁，字段名必须是实际分镜字段名。"
+            )
+        )
+    if task.task_type == "shot_video_prompt_generation" and workflow.automation_mode:
+        retry_payload["automatic_review"] = True
     retry_task = AITask(
         tenant_id=task.tenant_id,
         user_id=task.user_id,
@@ -1940,8 +2023,7 @@ async def _retry_child(
         status=TaskStatus.QUEUED,
         model_id=task.model_id,
         cost=Decimal("0"),
-        request_payload={key: value for key, value in task.request_payload.items()
-            if key not in {"child_run_id", "asset_parent_waiting", "asset_parent_task_id", "video_continuity_waiting", "video_continuity_task_id", "video_continuity"}},
+        request_payload=retry_payload,
     )
     session.add(retry_task)
     await session.flush()
@@ -2131,6 +2213,14 @@ async def _advance_director_task_terminal(task_id: str) -> None:
             DirectorChildStatus.CANCELLED,
         }:
             return
+        if child.kind in {"script_review", "script_repair", "storyboard_review", "storyboard_repair"} and not await workflow_review_enabled(session, workflow):
+            child.status = terminal_child_status
+            child.summary = "项目已关闭内容审核，跳过审核及其修复"
+            workflow.current_task_id = None
+            target = "script" if child.kind.startswith("script_") else "storyboard"
+            queued.append(await _queue_review(session, workflow, target=target, parent=child))
+            await _commit_and_dispatch(session, queued)
+            return
         if task.status != TaskStatus.SUCCEEDED:
             child.status = (
                 DirectorChildStatus.CANCELLED
@@ -2186,10 +2276,41 @@ async def _advance_director_task_terminal(task_id: str) -> None:
                     workflow.last_message = "分镜版本已切换，请重新生成或选择一个生效分镜后继续"
                 await _commit_and_dispatch(session, queued)
                 return
+            if child.kind == "storyboard_repair" and _is_non_retryable_storyboard_repair_error(
+                task.error_message
+            ):
+                queued.append(await _retry_child(session, workflow, child, task))
+                workflow.stage = DirectorWorkflowStage.STORYBOARD_REPAIRING
+                workflow.status = DirectorWorkflowStatus.RUNNING
+                workflow.last_error = task.error_message
+                workflow.last_message = (
+                    "局部修复未产生可应用结果，已自动升级为新的单镜修复策略；"
+                    "已完成镜头保留，继续处理当前问题"
+                )
+                await _commit_and_dispatch(session, queued)
+                return
             from app.services.jev_control import pending as jev_pending
             from app.services.storyboard_preparation import budget_blocked
             input_blocked = budget_blocked(task.error_message)
             if input_blocked or jev_pending(task.error_message):
+                # Optional JEV module selection must not park a full automatic
+                # run. The video-prompt worker has a deterministic local
+                # module inference fallback and will keep the completed shots.
+                if (
+                    workflow.automation_mode
+                    and task.task_type == "shot_video_prompt_generation"
+                    and jev_pending(task.error_message)
+                ):
+                    queued.append(await _retry_child(session, workflow, child, task))
+                    workflow.stage = DirectorWorkflowStage.VIDEO_PROMPT_GENERATING
+                    workflow.status = DirectorWorkflowStatus.RUNNING
+                    workflow.last_error = task.error_message
+                    workflow.last_message = (
+                        "JEV模块选择未收敛，已自动按当前镜头内容推断语速、表情和行走模块；"
+                        "已保存提示词保留，继续处理未完成镜头"
+                    )
+                    await _commit_and_dispatch(session, queued)
+                    return
                 # This is an unresolved decision, not another generation attempt.
                 # A user can continue after clarifying evidence or fixing the provider.
                 workflow.status = DirectorWorkflowStatus.WAITING_USER
@@ -2552,6 +2673,7 @@ async def recover_automatic_workflows() -> int:
 
     terminal_task_ids: list[str] = []
     gap_workflow_ids: list[str] = []
+    legacy_stalled_repairs: list[tuple[AITask, TaskEvent]] = []
     repaired_workflows = 0
     async with SessionLocal() as session:
         workflows = list(
@@ -2655,7 +2777,82 @@ async def recover_automatic_workflows() -> int:
                     repaired_workflows += 1
                 else:
                     gap_workflow_ids.append(workflow.id)
+
+        # Older builds parked an automatic run behind a
+        # ``storyboard_review_stalled`` decision after a malformed local patch.
+        # That state is no longer a valid automatic-flow stop condition. Reuse
+        # the saved review child and enqueue the upgraded single-shot repair;
+        # completed batches remain in the child's durable checkpoint.
+        stalled_rows = list((await session.execute(
+            select(DirectorWorkflowRun, DirectorDecisionRequest)
+            .join(
+                DirectorDecisionRequest,
+                DirectorDecisionRequest.workflow_id == DirectorWorkflowRun.id,
+            )
+            .where(
+                DirectorWorkflowRun.automation_mode.is_(True),
+                DirectorWorkflowRun.stop_requested.is_(False),
+                DirectorWorkflowRun.status == DirectorWorkflowStatus.WAITING_USER,
+                DirectorWorkflowRun.stage == DirectorWorkflowStage.AWAITING_STORYBOARD_DECISION,
+                DirectorDecisionRequest.resolved.is_(False),
+                DirectorDecisionRequest.decision_type == "storyboard_review_stalled",
+            )
+        )).all())
+        for workflow, decision in stalled_rows:
+            child = await session.get(DirectorChildRun, decision.child_run_id)
+            if child is None or child.kind != "storyboard_review":
+                continue
+            repair = await _queue_automatic_repair(
+                session,
+                workflow,
+                child,
+                target="storyboard",
+                result={"review": child.details or {}},
+            )
+            decision.selected_option = "partial_repair"
+            decision.resolved = True
+            decision.feedback = "历史自动暂停已由新策略自动接续"
+            workflow.last_error = None
+            workflow.last_message = "已从历史自动暂停点接续，正在执行单镜升级修复"
+            legacy_stalled_repairs.append(repair)
+            repaired_workflows += 1
+        # The previous video-prompt path also parked automatic runs when JEV
+        # could not decide an optional module. Requeue those failed prompt
+        # tasks with the local module inference fallback enabled.
+        jev_video_rows = list((await session.execute(
+            select(DirectorWorkflowRun, DirectorDecisionRequest)
+            .join(
+                DirectorDecisionRequest,
+                DirectorDecisionRequest.workflow_id == DirectorWorkflowRun.id,
+            )
+            .where(
+                DirectorWorkflowRun.automation_mode.is_(True),
+                DirectorWorkflowRun.stop_requested.is_(False),
+                DirectorWorkflowRun.status == DirectorWorkflowStatus.WAITING_USER,
+                DirectorDecisionRequest.resolved.is_(False),
+                DirectorDecisionRequest.decision_type == "jev_control",
+            )
+        )).all())
+        for workflow, decision in jev_video_rows:
+            child = await session.get(DirectorChildRun, decision.child_run_id)
+            if child is None or child.kind != "video_prompt" or not child.task_id:
+                continue
+            failed_task = await session.get(AITask, child.task_id)
+            if failed_task is None or failed_task.status != TaskStatus.FAILED:
+                continue
+            repair = await _retry_child(session, workflow, child, failed_task)
+            decision.selected_option = "partial_repair"
+            decision.resolved = True
+            decision.feedback = "历史JEV模块选择暂停已由本地规则自动接续"
+            workflow.last_error = None
+            workflow.last_message = (
+                "已从历史JEV模块选择暂停点接续，按当前镜头内容自动补齐未完成视频提示词"
+            )
+            legacy_stalled_repairs.append(repair)
+            repaired_workflows += 1
         await session.commit()
+        for repair in legacy_stalled_repairs:
+            await _commit_and_dispatch(session, [repair])
 
     for task_id in dict.fromkeys(terminal_task_ids):
         try:

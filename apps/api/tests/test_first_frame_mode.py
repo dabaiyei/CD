@@ -47,6 +47,25 @@ def test_setting_validates_effective_model_and_partial_updates(client, creator_h
     assert client.patch(endpoint, headers=creator_headers, json={"first_frame_mode": False}).status_code == 200
 
 
+def test_review_setting_defaults_on_and_can_be_disabled(client, creator_headers, combat_project):
+    endpoint = f"/api/v1/projects/{combat_project}"
+    current = client.get(endpoint, headers=creator_headers)
+    assert current.status_code == 200
+    assert current.json()["review_enabled"] is True
+
+    disabled = client.patch(endpoint, headers=creator_headers, json={"review_enabled": False})
+    assert disabled.status_code == 200, disabled.text
+    assert disabled.json()["review_enabled"] is False
+
+    renamed = client.patch(endpoint, headers=creator_headers, json={"name": "跳过审核仍保留设置"})
+    assert renamed.status_code == 200
+    assert renamed.json()["review_enabled"] is False
+
+    enabled = client.patch(endpoint, headers=creator_headers, json={"review_enabled": True})
+    assert enabled.status_code == 200
+    assert enabled.json()["review_enabled"] is True
+
+
 def test_disabled_mode_releases_waiting_video_without_using_previous_tail(
     client, creator_headers, combat_project, encoded_video,
 ):

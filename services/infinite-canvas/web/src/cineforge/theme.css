@@ -1,12 +1,21 @@
 :root { --background: #e6ecec; --foreground: #1b343a; }
 .dark { --background: #101b25; --foreground: #e3edf0; }
 body { -webkit-font-smoothing: antialiased; }
-.platform-canvas-toolbar { display:flex;align-items:center;justify-content:space-between;gap:16px;padding:12px 20px;flex-shrink:0;background:color-mix(in srgb,var(--background) 82%,transparent);box-shadow:0 1px 0 rgb(114 147 157 / 18%),0 8px 28px rgb(0 0 0 / 5%);backdrop-filter:blur(20px);z-index:20; }
-.platform-canvas-brand { display:flex;gap:12px;align-items:center;color:var(--foreground);font-size:17px;font-weight:600;white-space:nowrap; }
-.platform-canvas-brand small { display:block;font-size:10px;font-weight:400;opacity:.65;margin-top:2px; }
-.platform-canvas-mark { display:grid;place-items:center;font-size:34px;line-height:1;width:44px;height:44px;border-radius:14px;background:linear-gradient(145deg,#70b6b7a8,#557c9b45);box-shadow:inset 0 1px 0 #ffffff50; }
-.platform-canvas-actions { display:flex;gap:8px; }
-.platform-canvas-actions .ant-btn { min-height:40px;border-radius:12px; }
+.platform-canvas-main { container:canvas-workspace / inline-size; }
+.platform-canvas-toolbar { display:flex;align-items:center;justify-content:space-between;gap:16px;min-height:60px;padding:8px 20px;flex-shrink:0;color:var(--canvas-header-text);background:linear-gradient(110deg,color-mix(in srgb,var(--canvas-header-text) 2%,transparent),transparent 60%),var(--canvas-header-surface);backdrop-filter:blur(20px);z-index:20; }
+.platform-canvas-brand { display:flex;gap:10px;align-items:center;min-height:40px;color:var(--canvas-header-text);font-size:14px;font-weight:600;letter-spacing:.02em;white-space:nowrap;text-decoration:none; }
+.platform-canvas-brand:hover { color:var(--canvas-header-text); }
+.platform-canvas-brand small { margin-left:6px;padding-left:16px;border-left:1px solid color-mix(in srgb,var(--canvas-header-text) 12%,transparent);color:var(--canvas-header-muted);font-size:11px;font-weight:400;letter-spacing:.08em; }
+.platform-canvas-mark { flex-shrink:0;color:var(--canvas-header-muted); }
+.platform-canvas-actions { display:flex;align-items:center;gap:4px;min-width:0; }
+.platform-canvas-actions .ant-btn { display:inline-flex;align-items:center;justify-content:center;gap:7px;height:40px;padding:0 12px;border:0;border-radius:8px;background:transparent;box-shadow:none;color:var(--canvas-header-muted);font-size:13px;font-weight:500;transition:background-color 150ms ease,color 150ms ease; }
+.platform-canvas-actions .ant-btn:not(:disabled):hover { background:var(--canvas-header-hover);color:var(--canvas-header-text); }
+.platform-canvas-actions .ant-btn[aria-current="page"] { background:var(--canvas-header-active);color:var(--canvas-header-text); }
+.platform-canvas-actions .ant-btn:disabled { color:color-mix(in srgb,var(--canvas-header-muted) 38%,transparent); }
+.platform-canvas-actions .platform-canvas-create { margin-left:10px;color:var(--canvas-header-text); }
+.platform-canvas-actions .platform-canvas-create::before { content:"";position:absolute;left:-7px;top:12px;bottom:12px;width:1px;background:color-mix(in srgb,var(--canvas-header-text) 12%,transparent); }
+.platform-canvas-brand:focus-visible,.platform-canvas-actions .ant-btn:focus-visible { outline:2px solid var(--canvas-header-text);outline-offset:2px; }
+@container canvas-workspace (max-width:960px) { .platform-canvas-brand small { display:none; }.platform-canvas-toolbar { padding-inline:14px;gap:10px; }.platform-canvas-actions .ant-btn { padding-inline:10px; } }
 .platform-canvas-library-tools { display:flex;gap:12px;margin:16px 0; }
 .platform-canvas-library-tools .ant-select { width:180px;flex-shrink:0; }
 .platform-canvas-asset-grid { display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:12px;max-height:60dvh;overflow:auto;padding:2px; }
@@ -15,7 +24,20 @@ body { -webkit-font-smoothing: antialiased; }
 .dark .platform-canvas-asset-grid img { outline-color:rgb(255 255 255 / 10%); }
 .platform-canvas-asset-grid span { display:block;padding:10px 12px; }
 .platform-canvas-model-row { display:grid;gap:7px;margin:16px 0; }
-@media(max-width:640px) { .platform-canvas-toolbar { padding:10px 12px;gap:8px;flex-wrap:wrap; }.platform-canvas-brand { font-size:15px; }.platform-canvas-actions { width:100%;justify-content:space-between;gap:4px; }.platform-canvas-actions .ant-btn { font-size:12px;padding:0 8px;min-height:44px; }.platform-canvas-asset-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
+@container canvas-workspace (max-width:760px) {
+    .platform-canvas-toolbar { display:grid;grid-template-columns:minmax(0,1fr);gap:4px;padding:6px 10px; }
+    .platform-canvas-brand { gap:8px;font-size:13px;padding-inline:4px; }
+    .platform-canvas-brand small { display:block;margin-left:auto;padding-left:0;border:0; }
+    .platform-canvas-mark { width:22px;height:22px; }
+    .platform-canvas-actions { display:grid;grid-template-columns:repeat(5,minmax(0,1fr));gap:2px; }
+    .platform-canvas-actions .ant-btn { height:44px;padding:0 4px;gap:4px;font-size:11px; }
+    .platform-canvas-actions .ant-btn-icon { display:flex; }
+    .platform-canvas-actions .platform-canvas-create { margin-left:0; }
+    .platform-canvas-actions .platform-canvas-create::before { display:none; }
+}
+@container canvas-workspace (max-width:360px) { .platform-canvas-actions .ant-btn { flex-direction:column;gap:2px; }.platform-canvas-actions .ant-btn-icon svg { width:15px;height:15px; } }
+@media(prefers-reduced-motion:reduce) { .platform-canvas-actions .ant-btn { transition:none; } }
+@media(max-width:640px) { .platform-canvas-asset-grid { grid-template-columns:repeat(2,minmax(0,1fr)); } }
 .platform-canvas-settings { width:min(320px,calc(100vw - 48px));display:flex;flex-direction:column;gap:14px;padding:8px; }
 .platform-canvas-settings p,.platform-canvas-settings small { font-size:12px;line-height:1.6;opacity:.7; }
 .platform-canvas-settings label { display:flex;align-items:center;justify-content:space-between;gap:14px;font-size:13px; }
@@ -42,7 +64,6 @@ body { -webkit-font-smoothing: antialiased; }
     .canvas-editor-topbar button[aria-label="系统模型设置"],.canvas-editor-topbar button[aria-label="画布插件"] { display:none; }
     .platform-canvas-library-tools { flex-direction:column; }
     .platform-canvas-library-tools .ant-select { width:100%; }
-    .platform-canvas-actions { flex-wrap:wrap; }
 }
 .canvas-node-hover-toolbar { background:color-mix(in srgb,var(--background) 90%,transparent);color:var(--foreground);border-color:color-mix(in srgb,var(--foreground) 15%,transparent);backdrop-filter:blur(18px); }
 @media(max-width:640px) {

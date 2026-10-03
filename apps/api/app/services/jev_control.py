@@ -3,6 +3,7 @@
 import hashlib
 import json
 import math
+import re
 
 import httpx
 from cryptography.fernet import InvalidToken
@@ -327,6 +328,46 @@ async def modules(control, row, *, context=None):
             ),
         },
     )
+
+
+def infer_modules(row):
+    """Deterministically choose optional modules when automatic mode cannot
+    obtain a confident JEV answer.
+
+    This is deliberately conservative and local: it only reads the current
+    shot. The fallback never authorizes a project operation or changes the
+    shot's story; it prevents one unresolved optional flag from blocking the
+    other unfinished shots in an automatic run.
+    """
+    from app.services.creation_context import contains_combat
+    from app.services.locomotion import locomotion_guidance
+
+    scene = str(row.get("scene_description") or "")
+    action = str(row.get("action_description") or "")
+    dialogue = str(row.get("dialogue") or "")
+    source = f"{scene}\n{action}"
+    combat = "none"
+    if row.get("combat_plan") or contains_combat(source):
+        if re.search(r"瞬秒|碾压|压倒性|一击制胜|overpower", source, re.I):
+            combat = "overpower"
+        elif re.search(r"大招|绝招|终结技|蓄力|法天象地|宝术|神诀|finisher", source, re.I):
+            combat = "finisher"
+        else:
+            combat = "exchange"
+    normalized_dialogue = re.sub(r"[\s\W]+", "", dialogue).lower()
+    speech = bool(normalized_dialogue and normalized_dialogue not in {"无", "无对白", "无台词", "无对话", "none"})
+    speech = speech or bool(re.search(r"旁白|画外音|心声|独白|喊话|呼喊|嘶吼|说道|说：|说:|唱歌|歌唱", source))
+    has_person = bool(re.search(r"人物|角色|男子|女子|男人|女人|少年|少女|老人|女孩|男孩|他|她|人群|仙|侠|character|person", source, re.I))
+    # Character shots should keep expression continuity by default; empty
+    # environment/object shots do not need the expression skill payload.
+    emotion = bool(row.get("emotion_plan")) or has_person
+    locomotion = bool(locomotion_guidance(action))
+    return {
+        "combat": combat,
+        "emotion": "yes" if emotion else "no",
+        "locomotion": "yes" if locomotion else "no",
+        "speech": "yes" if speech else "no",
+    }
 
 
 def module_instructions(selected):

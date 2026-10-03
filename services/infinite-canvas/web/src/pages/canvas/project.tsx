@@ -23,6 +23,7 @@ import { useAssetStore } from "@/stores/use-asset-store";
 import { useThemeStore } from "@/stores/use-theme-store";
 import { cropDataUrl, splitDataUrl, upscaleDataUrl } from "@/lib/canvas/canvas-image-data";
 import { fitNodeSize, nodeSizeFromRatio } from "@/lib/canvas/canvas-node-size";
+import { autoLayoutCanvas } from '@/lib/canvas/canvas-auto-layout';
 import { captureVideoFrame, type VideoFramePosition } from "@/lib/canvas/canvas-video-frame";
 import { App, Button, Modal } from "antd";
 import { NODE_DEFAULT_SIZE, getNodeSpec } from "@/constant/canvas";
@@ -1185,6 +1186,42 @@ function InfiniteCanvasPage() {
         historyRef.current.past.push(current);
         applyHistory(next);
     }, [applyHistory]);
+
+    const arrangeCanvas = useCallback(() => {
+        try {
+            const before = createHistoryEntry();
+            const arranged = autoLayoutCanvas(before.nodes, before.connections);
+            if (historyCommitTimerRef.current) {
+                clearTimeout(historyCommitTimerRef.current);
+                historyCommitTimerRef.current = null;
+                if (lastHistoryRef.current) historyRef.current.past.push(lastHistoryRef.current);
+            }
+            historyRef.current.past = [...historyRef.current.past.slice(-49), before];
+            historyRef.current.future = [];
+            lastHistoryRef.current = { ...before, nodes: arranged };
+            setNodes(arranged);
+            setHistoryState({ canUndo: true, canRedo: false });
+            setExpandedBatchNodeIds(new Set());
+            setSelectedNodeIds(new Set());
+            setSelectedConnectionId(null);
+            setToolbarNodeId(null);
+            setHoveredNodeId(null);
+            setDialogNodeId(null);
+            setContextMenu(null);
+            if (focusAnimRef.current) { cancelAnimationFrame(focusAnimRef.current); focusAnimRef.current = null; }
+            const rect = containerRef.current?.getBoundingClientRect();
+            if (rect && arranged.length) {
+                const width = Math.max(...arranged.map(node => node.position.x + node.width));
+                const height = Math.max(...arranged.map(node => node.position.y + node.height));
+                const k = Math.max(0.05, Math.min(1, (rect.width - 64) / Math.max(1, width), (rect.height - 160) / Math.max(1, height)));
+                setViewport({ x: (rect.width - width * k) / 2, y: (rect.height - height * k - 80) / 2, k });
+            }
+            message.success(t('canvas.toolbar.arranged', { count: arranged.length }));
+        } catch (error) {
+            message.error(t('canvas.toolbar.arrangeFailed'));
+            console.error('Canvas layout failed', error);
+        }
+    }, [createHistoryEntry, message, t]);
 
     const createAndOpenProject = useCallback(() => {
         const id = createProject(t("canvas.defaultTitle", { count: useCanvasStore.getState().projects.length + 1 }));
@@ -3377,6 +3414,7 @@ function InfiniteCanvasPage() {
                     canvasTool={canvasTool}
                     canUndo={historyState.canUndo}
                     canRedo={historyState.canRedo}
+                    canArrange={nodes.length > 1 && !isNodeDragging && !isNodeResizing}
                     backgroundMode={backgroundMode}
                     showImageInfo={showImageInfo}
                     onAddImage={() => createNode(CanvasNodeType.Image)}
@@ -3391,6 +3429,7 @@ function InfiniteCanvasPage() {
                     onUpload={() => handleUploadRequest()}
                     onDelete={() => deleteNodes(new Set(selectedNodeIds))}
                     onClear={() => setClearConfirmOpen(true)}
+                    onArrange={arrangeCanvas}
                     onCanvasToolChange={setCanvasTool}
                     onBackgroundModeChange={setBackgroundMode}
                     onShowImageInfoChange={setShowImageInfo}

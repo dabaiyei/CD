@@ -107,7 +107,8 @@ def _asset_fingerprint(shots):
 
 async def storyboard_response(task_id, prompt_code, prompt, runtime_factory, *, validator=None,
                               timing_plan=None, durations=None, script="", budget=None,
-                              repair_shots=None, findings=None, feedback="", partial=True):
+                              repair_shots=None, findings=None, feedback="", partial=True,
+                              repair_strategy: str = "targeted_patch"):
     """Keep the exact board across extraction retries; never regenerate batch inputs."""
     from app.services import task_worker as worker
     from types import SimpleNamespace
@@ -200,7 +201,8 @@ async def storyboard_response(task_id, prompt_code, prompt, runtime_factory, *, 
             durations=durations, state=state, save=save, progress=progress, script=script,
             budget=budget, repair_shots=repair_shots, findings=findings, feedback=feedback, partial=partial,
             concurrency=concurrency, isolate_failures=True, first_frame_mode=first_frame_mode,
-            repair_blocking_only=repair_blocking_only and not draft_repair)
+            repair_blocking_only=repair_blocking_only and not draft_repair,
+            repair_strategy=repair_strategy)
         if validator:
             validator(text)
         result = SimpleNamespace(final_response=text, manifest=manifest)

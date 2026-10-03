@@ -44,3 +44,17 @@ test('轻微时间戳取整仍匹配真实图片，不能引用另一段的画�
     assert.throws(()=>parseVideoTimeline(JSON.stringify({...result,segments:[{...segment,end:8,frameTimes:[11.75]},{...segment,start:8,frameTimes:[11.75]}]}),analysis));
     assert.throws(()=>parseVideoTimeline(JSON.stringify({...result,segments:[{...segment,frameTimes:['7.5']}]}),analysis));
 });
+
+test('分段边界附近的真实抽帧不会被误判为非法',()=>{
+    const boundary = 12.0069443125;
+    const evidence = {...analysis.evidence, end:24,
+        frames:[...analysis.evidence.frames,
+            {at:boundary, nodeId:'boundary', storageKey:'image:boundary'},
+            {at:19.5902775625, nodeId:'middle', storageKey:'image:middle'}]};
+    const timeline = parseVideoTimeline(JSON.stringify({summary:'连续动作',segments:[
+        {...segment, end:12, frameTimes:[3.25,boundary]},
+        {...segment, start:12, end:24, frameTimes:[boundary,19.5902775625]},
+    ]}), {...analysis, evidence});
+    assert.deepEqual(timeline.segments[0].frameTimes,[3.25,boundary]);
+    assert.deepEqual(timeline.segments[1].frameTimes,[boundary,19.5902775625]);
+});

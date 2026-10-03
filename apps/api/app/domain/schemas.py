@@ -515,6 +515,7 @@ class HandbookPublic(ApiModel):
 
 
 class ProjectCreate(BaseModel):
+    review_enabled: bool = True
     first_frame_mode: bool = False
     creation_mode: Literal["import", "ai"] = "import"
     cinematic: bool = False
@@ -538,6 +539,7 @@ class ProjectCreate(BaseModel):
 
 
 class ProjectUpdate(BaseModel):
+    review_enabled: bool = True
     first_frame_mode: bool = False
     text_model_id: str | None = None
     creation_mode: Literal["import", "ai"] | None = None
@@ -555,6 +557,7 @@ class ProjectUpdate(BaseModel):
 
 
 class ProjectPublic(ApiModel):
+    review_enabled: bool = True
     first_frame_mode: bool
     creation_mode: str
     cinematic: bool

@@ -5,6 +5,10 @@ description: Implemented changes that still need manual verification
 
 # Pending Tests
 
+- Auto arrange: the bottom dock action lays out connected flows from left to right, packs unrelated resources, resizes groups around their arranged members and preserves all content/edges. Expanded alternatives and editing panels close during layout. Verify one-step undo/redo, saved positions after reload, empty canvas, cycles, varied node sizes and phone operation.
+
+- Canvas header: verify the neutral glass navigation matches the canvas in light/dark themes, active pages and keyboard focus are visible, and all five actions fit on narrow screens and after rotation. Existing library, asset import, model settings, templates and canvas creation remain available.
+
 - Audio and fast transitions: extract a playable/downloadable audio node from the video toolbar; choose canvas audio and source/output offsets to mux a new video, replacing old sound while padding/truncating audio to picture duration. Codex media tools return processing nodes polled by generation_get_status; failures remain visible and sources stay unchanged. Adaptive sampling prioritizes actual frames before/after visual changes within the existing count budget, supports exact times, and reports coverage. Replica configs trim and attach the original segment when the declared model supports video references, retaining local timing and identity images; insufficient image slots are explicit. Automated checks cover a single-frame flash, WAV/MP3/FLAC alignment, preserved video packets, duration and ownership. Verify real fast outfit-change clips and actual provider output separately.
 
 - Canvas focusing: measure the actual viewport after the restored canvas mounts. List navigation must center the complete timeline or config on mobile and after orientation changes; reopening a populated canvas retains its saved pan and zoom.

@@ -117,7 +117,7 @@ export async function analyzeVideo(nodeId: string, input: EvidenceOptions & { pr
         + (videoDurations.length ? `\n当前视频模型支持时长：${videoDurations.join('、')}秒。叙事片段过长时在真实动作接点拆成连续片段，每段不超过${Math.max(...videoDurations)}秒，不要机械按取样帧划分。` : '')
         + `\n画面变化位置与前后参考：${JSON.stringify(extracted.transitions || [])}。共检测${extracted.transition_count || 0}处明显变化，已覆盖${extracted.transitions?.length || 0}处；没有覆盖不能捏造。快速变装必须明确原片绝对时间、段内相对时间、变装前后服装/站位、动作触发、遮挡/闪白/匹配剪辑、转场前后构图和运动方向，保留原节拍，不把快速动作改成慢动作；不能仅写“顺滑转场”。每段 frameTimes 必须保留本段已经取到的转场前后参考时间。`
         + '\n严格输出一个 JSON 对象：{"summary":"原视频概述与替换人物关系","segments":[{"start":0,"end":12,"description":"场景与站位","action":"完整连续动作、表情与因果","camera":"景别、机位、运镜与切点","lighting":"光线与材质","videoPrompt":"包含原片完整动作节奏、运镜、身份替换约束的中文复刻提示词","frameTimes":[0.375,6.375,11.625]}]}。'
-        + '\nsegments 按真实叙事或镜头切点分段，连续覆盖完整分析范围，不能按每张抽帧拆成视频任务，不允许捏造未观察的动作；frameTimes 必须选择本次实际时间戳，优先本段起点、关键动作、结束附近。证据图的原片编号与用户人物参考图序号分开描述。没有音频转写就明确声音未知。';
+        + '\nsegments 按真实叙事或镜头切点分段，连续覆盖完整分析范围，不能按每张抽帧拆成视频任务，不允许捏造未观察的动作；frameTimes 必须选择本次实际时间戳，优先本段起点、关键动作、结束附近。分段边界可能落在两张真实抽帧之间，必须选择距离该边界最近的实际时间戳，不要填写未经抽取的整秒时间；同一张边界附近的实际帧可作为相邻段的衔接参考。证据图的原片编号与用户人物参考图序号分开描述。没有音频转写就明确声音未知。';
     context.applyOps([
         { type: 'update_node', id: node.id, metadata: { storageKey: extracted.source_key } },
         { type: 'add_node', id: configId, nodeType: CanvasNodeType.Config, title: `${node.title} · 视频分析`,

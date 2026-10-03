@@ -145,6 +145,7 @@ from app.services.provider_adapters import (
     supported_video_durations,
     validate_video_generation_request,
 )
+from app.services.review_policy import review_enabled as project_review_enabled
 from app.services.task_events import (
     publish_agent_stream_event,
     publish_task_event,
@@ -5664,6 +5665,17 @@ async def execute_director_script_review_task(
         if chapter is None or script is None or script.chapter_id != chapter.id:
             raise RuntimeError("剧本审核目标已不存在")
         project = await session.get(Project, chapter.project_id)
+        if not project_review_enabled(project):
+            await _complete_director_agent_task(
+                task_id,
+                result_payload={
+                    "approved": True,
+                    "summary": "项目已关闭内容审核，已跳过剧本审核",
+                    "review": {"approved": True, "skipped": True, "findings": []},
+                },
+                message="项目已关闭内容审核，跳过剧本审核",
+            )
+            return
         video_model = await project_video_model_for_storyboard(
             session,
             project=project,
@@ -5733,6 +5745,17 @@ async def execute_director_script_repair_task(
         if chapter is None or script is None or script.chapter_id != chapter.id:
             raise RuntimeError("剧本修复目标已不存在")
         project = await session.get(Project, chapter.project_id)
+        if not project_review_enabled(project):
+            await _complete_director_agent_task(
+                task_id,
+                result_payload={
+                    "script_version_id": script.id,
+                    "script_version": script.version,
+                    "summary": "项目已关闭内容审核，已跳过剧本修复",
+                },
+                message="项目已关闭内容审核，跳过剧本修复",
+            )
+            return
         video_model = await project_video_model_for_storyboard(
             session,
             project=project,
@@ -5860,6 +5883,17 @@ async def execute_director_storyboard_review_task(
         script = await session.get(ScriptVersion, storyboard.script_version_id)
         script_content = (script.content if script else "") or ""
         project = await session.get(Project, storyboard.project_id)
+        if not project_review_enabled(project):
+            await _complete_director_agent_task(
+                task_id,
+                result_payload={
+                    "approved": True,
+                    "summary": "项目已关闭内容审核，已跳过分镜审核",
+                    "review": {"approved": True, "skipped": True, "findings": []},
+                },
+                message="项目已关闭内容审核，跳过分镜审核",
+            )
+            return
         video_model = await project_video_model_for_storyboard(
             session,
             project=project,
@@ -6003,6 +6037,16 @@ async def execute_director_storyboard_repair_task(
         if chapter is None or script is None or storyboard is None:
             raise RuntimeError("分镜修复上下文已不存在")
         project = await session.get(Project, chapter.project_id)
+        if not project_review_enabled(project):
+            await _complete_director_agent_task(
+                task_id,
+                result_payload={
+                    "storyboard_version_id": storyboard.id,
+                    "summary": "项目已关闭内容审核，已跳过分镜修复",
+                },
+                message="项目已关闭内容审核，跳过分镜修复",
+            )
+            return
         video_model = await project_video_model_for_storyboard(
             session,
             project=project,
@@ -6040,6 +6084,12 @@ async def execute_director_storyboard_repair_task(
         # like it was generated. Dumping the whole board into every request is
         # what let a truncated reply pass for a complete rewrite.
         from app.services.storyboard_generation import allocate_timeline, segment_script
+        from app.services.storyboard_generation import REPAIR_FIELDS, parse_finding_targets
+
+        repair_strategy = str(task.request_payload.get("repair_strategy") or "targeted_patch")
+        repair_review = dict(task.request_payload.get("review") or {})
+        repair_findings = list(repair_review.get("findings") or [])
+        target_indices: set[int] = set()
 
         timing_plan = allocate_timeline(
             chapter.original_content,
@@ -6051,6 +6101,31 @@ async def execute_director_storyboard_repair_task(
             **row, "asset_names": [asset_names_by_id[asset_id] for asset_id in row.get("asset_ids", [])
                                     if asset_id in asset_names_by_id],
         }).model_dump(mode="json") for row in (storyboard.content or []) if isinstance(row, dict)]
+        if repair_strategy == "single_shot_rewrite":
+            target_map = parse_finding_targets(repair_findings, len(repair_source))
+            target_indices = set(target_map)
+            if not target_indices:
+                raise RuntimeError("自动升级修复缺少明确的目标镜号，已保留已完成分镜")
+            repair_findings = [
+                {
+                    **finding,
+                    "fields": sorted(REPAIR_FIELDS),
+                    "suggestion": (
+                        str(finding.get("suggestion") or "")
+                        + " 本轮为自动升级单镜重写，只重写该目标镜并返回完整可执行字段。"
+                    ),
+                }
+                for finding in repair_findings
+                if any(index in target_indices for index in (finding.get("shot_indices") or []))
+                or bool(set(parse_finding_targets([finding], len(repair_source))) & target_indices)
+            ]
+        repair_review["findings"] = repair_findings
+        repair_feedback = str(task.request_payload.get("feedback") or "")
+        if repair_strategy == "single_shot_rewrite":
+            repair_feedback += (
+                "\n自动升级规则：只重写已定位的目标镜头，必须返回该镜头完整可执行字段；"
+                "未定位镜头逐字保留，且目标镜头必须实际修正审核问题。"
+            )
         original_board = (
             "原分镜将按场景随每个场景的修复指令分开发送，不要期待这里看到全部分镜。"
             if scene_repair
@@ -6076,13 +6151,13 @@ async def execute_director_storyboard_repair_task(
             '"image_prompt":"首帧提示词","video_prompt":"","asset_names":["资产名"]}]}\n'
             "分镜修复阶段不生成最终视频模型提示词，video_prompt 必须返回空字符串。\n"
             "结构示例中的时长只表示数字字段类型，不是默认时长。\n\n"
-            f"修复模式：{task.request_payload.get('repair_mode')}\n"
+            f"修复模式：{task.request_payload.get('repair_mode')}；自动修复策略：{repair_strategy}\n"
             "目标视频模型时长约束："
             f"{json.dumps(duration_contract, ensure_ascii=False)}\n"
             f"目标视频模型完整执行契约：{json.dumps(model_contract, ensure_ascii=False)}\n"
             f"目标图片模型完整执行契约：{json.dumps(image_contract, ensure_ascii=False)}\n"
-            f"用户意见：{task.request_payload.get('feedback') or '无补充'}\n"
-            f"审核结果：{json.dumps(task.request_payload.get('review') or {}, ensure_ascii=False)}\n"
+            f"用户意见：{repair_feedback or '无补充'}\n"
+            f"审核结果：{json.dumps(repair_review, ensure_ascii=False)}\n"
             f"资产清单：{json.dumps(asset_context, ensure_ascii=False)}\n"
             f"剧本：\n{script.content}\n{original_board}"
         )
@@ -6105,11 +6180,12 @@ async def execute_director_storyboard_repair_task(
         # partial mode names the offending shots and only those are patched;
         # full mode deliberately rewrites the whole board.
         findings=(
-            list((task.request_payload.get("review") or {}).get("findings") or [])
+            repair_findings
             if task.request_payload.get("repair_mode") != "full" else []
         ),
-        feedback=str(task.request_payload.get("feedback") or ""),
+        feedback=repair_feedback,
         partial=task.request_payload.get("repair_mode") != "full",
+        repair_strategy=repair_strategy,
     )
     try:
         repaired = StoryboardGenerationPayload.model_validate(parse_json_object(result.final_response))
@@ -6123,6 +6199,18 @@ async def execute_director_storyboard_repair_task(
         )
         for shot in repaired.shots
     ]
+    if repair_strategy == "single_shot_rewrite":
+        changed_targets = {
+            index
+            for index, (shot, original) in enumerate(zip(repaired.shots, repair_source), 1)
+            if shot.model_dump(mode="json", exclude={"video_prompt"}) != {
+                key: value for key, value in original.items() if key != "video_prompt"
+            }
+        }
+        if not (changed_targets & target_indices):
+            raise RuntimeError(
+                "自动升级修复未产生有效变化：目标镜头仍与原分镜相同，继续自动升级单镜修复"
+            )
 
     definitions, bindings = await storyboard_assets.plan(
         task_id, repaired.shots, runtime_factory, previous_shots=repair_source,
@@ -7575,6 +7663,8 @@ async def execute_shot_video_prompt_task(task_id: str, runtime_factory: RuntimeF
     )
     failures = {}
     changed_shot_ids = []
+    module_fallbacks = dict((task.result_payload or {}).get('jev_module_fallbacks') or {})
+    automatic_module_fallback = bool(task.request_payload.get('automatic_review'))
     concurrency = await reserve_task_slots(task_id, min(3, max(1, len(shot_rows))))
     runtime_factory = ParallelRuntime(runtime_factory, concurrency, task_id=task_id)
     versions_at_start = {s.id: s.version for s in shots}
@@ -7602,10 +7692,31 @@ async def execute_shot_video_prompt_task(task_id: str, runtime_factory: RuntimeF
             from app.services.combat_choreography import generate as generate_combat
             from app.services.creation_context import contains_combat
             combat_record = None
-            from app.services.jev_control import controller, modules, module_instructions
+            from app.services.jev_control import (
+                JevDecisionPending,
+                controller,
+                infer_modules,
+                modules,
+                module_instructions,
+            )
             module_checkpoint = dict((task.result_payload or {}).get('jev_modules') or {})
-            control = await controller(runtime_context.tenant_id, module_checkpoint)
-            selected_modules = await modules(control, row) if control else None
+            fallback_reason = ""
+            stored_fallback = module_fallbacks.get(shot_id)
+            selected_modules = (
+                stored_fallback.get('modules')
+                if isinstance(stored_fallback, dict) and isinstance(stored_fallback.get('modules'), dict)
+                else stored_fallback
+            )
+            if selected_modules is None:
+                try:
+                    control = await controller(runtime_context.tenant_id, module_checkpoint)
+                    selected_modules = await modules(control, row) if control else None
+                except JevDecisionPending as exc:
+                    if not automatic_module_fallback:
+                        raise
+                    selected_modules = infer_modules(row)
+                    fallback_reason = str(exc)
+                    module_fallbacks[shot_id] = selected_modules
             is_combat = (selected_modules['combat'] != 'none' if selected_modules else
                          bool(row.get('combat_plan') or contains_combat(row['action_description'])))
             use_emotion = not selected_modules or selected_modules['emotion'] == 'yes'
@@ -7618,8 +7729,17 @@ async def execute_shot_video_prompt_task(task_id: str, runtime_factory: RuntimeF
                     current = await owned_task_for_update(session, task_id)
                     if not owns_running_task(current):
                         raise RuntimeError('提示词任务已停止')
-                    current.result_payload = {**(current.result_payload or {}),
+                    result_payload = {**(current.result_payload or {}),
                         'jev_modules': {**(current.result_payload or {}).get('jev_modules', {}), **module_checkpoint}}
+                    if fallback_reason:
+                        result_payload['jev_module_fallbacks'] = {
+                            **(result_payload.get('jev_module_fallbacks') or {}),
+                            shot_id: {
+                                'modules': selected_modules,
+                                'reason': fallback_reason[:800],
+                            },
+                        }
+                    current.result_payload = result_payload
                     await session.commit()
             if is_combat:
                 text, combat_record = await generate_combat(task_id, row, execution_contract, protocol, runtime_factory)

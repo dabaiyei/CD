@@ -472,6 +472,7 @@ class Project(Base, TimestampMixin):
     creation_mode: Mapped[str] = mapped_column(String(16), default="import", server_default="import")
     cinematic: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
     first_frame_mode: Mapped[bool] = mapped_column(Boolean, default=False, server_default="0")
+    review_enabled: Mapped[bool] = mapped_column(Boolean, default=True, server_default="1")
     text_model_id: Mapped[str | None] = mapped_column(String(36), nullable=True)
     creation_state: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict, server_default="{}")
     video_model_id: Mapped[str | None] = mapped_column(ForeignKey("ai_models.id"), nullable=True)

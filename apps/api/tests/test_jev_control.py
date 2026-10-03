@@ -181,6 +181,30 @@ def test_modules_use_independent_flags_instead_of_keyword_override(monkeypatch):
     assert selected == {"combat": "none", "emotion": "yes", "speech": "yes", "locomotion": "no"}
 
 
+def test_infer_modules_keeps_automatic_prompt_generation_moving_without_jev():
+    selected = module.infer_modules({
+        "scene_description": "白衣女子在宫殿长廊中",
+        "action_description": "女子快速奔跑，急停后回头",
+        "dialogue": "快走，敌人追上来了！",
+    })
+    assert selected == {
+        "combat": "none",
+        "emotion": "yes",
+        "locomotion": "yes",
+        "speech": "yes",
+    }
+
+
+def test_infer_modules_uses_combat_mode_from_current_shot_only():
+    selected = module.infer_modules({
+        "scene_description": "浮空战场",
+        "action_description": "双方连续交锋，最后释放大招命中",
+        "dialogue": "",
+    })
+    assert selected["combat"] == "finisher"
+    assert selected["speech"] == "no"
+
+
 def test_local_finding_targets_only_provided_shot_and_actual_fields(monkeypatch):
     mock_answers(monkeypatch, identity_start="conflict", first_frame="clear", layout="clear")
     shot = {

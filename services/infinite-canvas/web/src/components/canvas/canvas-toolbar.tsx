@@ -1,7 +1,7 @@
 import type { CSSProperties, MouseEvent as ReactMouseEvent, ReactNode, RefObject } from "react";
 import { useEffect, useRef, useState } from "react";
 import { Button, Segmented, Switch } from "antd";
-import { CircleDot, Eraser, Grid2x2, Group, Hand, Image as ImageIcon, Info, Moon, MousePointer2, Music2, Palette, Puzzle, Redo2, Settings2, Square, Sun, Trash2, Type, Undo2, Upload, Video } from "lucide-react";
+import { CircleDot, Eraser, Grid2x2, Group, Hand, Image as ImageIcon, Info, LayoutGrid, Moon, MousePointer2, Music2, Palette, Puzzle, Redo2, Settings2, Square, Sun, Trash2, Type, Undo2, Upload, Video } from "lucide-react";
 
 import { canvasThemes, type CanvasBackgroundMode, type CanvasColorTheme, type CanvasTheme } from "@/lib/canvas-theme";
 import { getNodePluginId, listNodeDefinitions, useNodeRegistryVersion } from "@/lib/canvas/node-registry";
@@ -14,6 +14,7 @@ export function CanvasToolbar({
     canvasTool,
     canUndo,
     canRedo,
+    canArrange,
     backgroundMode,
     showImageInfo,
     onAddImage,
@@ -28,6 +29,7 @@ export function CanvasToolbar({
     onUpload,
     onDelete,
     onClear,
+    onArrange,
     onCanvasToolChange,
     onBackgroundModeChange,
     onShowImageInfoChange,
@@ -36,6 +38,7 @@ export function CanvasToolbar({
     canvasTool: "select" | "pan";
     canUndo: boolean;
     canRedo: boolean;
+    canArrange: boolean;
     backgroundMode: CanvasBackgroundMode;
     showImageInfo: boolean;
     onAddImage: () => void;
@@ -50,6 +53,7 @@ export function CanvasToolbar({
     onUpload: () => void;
     onDelete: () => void;
     onClear: () => void;
+    onArrange: () => void;
     onCanvasToolChange: (tool: "select" | "pan") => void;
     onBackgroundModeChange: (mode: CanvasBackgroundMode) => void;
     onShowImageInfoChange: (show: boolean) => void;
@@ -160,6 +164,9 @@ export function CanvasToolbar({
                     }}
                 >
                     <Palette className="size-4.5" />
+                </ToolbarButton>
+                <ToolbarButton id="tool-arrange" label={t("canvas.toolbar.arrange")} disabled={!canArrange} hovered={hovered} hoverStyle={hoverStyle} wrapRef={wrapRef} onTipX={setTipX} onHover={setHovered} onClick={onArrange}>
+                    <LayoutGrid className="size-4.5" />
                 </ToolbarButton>
                 {selectedCount ? (
                     <>
@@ -303,7 +310,7 @@ function ToolbarButton({
         <Button
             type="text"
             aria-label={label}
-            className="!h-8 !w-8 !min-w-8 !p-0"
+            className={id === 'tool-arrange' ? '!h-10 !w-10 !min-w-10 !p-0' : '!h-8 !w-8 !min-w-8 !p-0'}
             disabled={disabled}
             style={active ? activeStyle : hovered === id && !disabled ? hoverStyle : { color: danger ? "#f87171" : theme.toolbar.item, opacity: disabled ? 0.35 : 1 }}
             icon={children}
@@ -365,6 +372,7 @@ function toolLabel(id: string, t: (key: string) => string) {
     if (id === "tool-extensions") return t("canvas.toolbar.extensions");
     if (id === "tool-upload") return t("canvas.toolbar.upload");
     if (id === "tool-style") return t("canvas.toolbar.appearance");
+    if (id === "tool-arrange") return t("canvas.toolbar.arrange");
     if (id === "tool-delete") return t("canvas.deleteSelected");
     if (id === "tool-clear") return t("canvas.toolbar.clear");
     return "";
